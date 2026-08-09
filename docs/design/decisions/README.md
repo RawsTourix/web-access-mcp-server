@@ -47,6 +47,8 @@ ADR должен содержать:
 | [ADR-0016](ADR-0016-s3-content-store.md) | S3-compatible ContentStore использует boto3 в bounded I/O executor и сохраняет тот же staged/finalized Content lifecycle | accepted |
 | [ADR-0017](ADR-0017-job-outbox-arq-delivery.md) | Durable Jobs доставляются `PostgreSQL outbox → arq wake-up → authoritative DB claim`; Redis не является source of truth | accepted |
 | [ADR-0018](ADR-0018-v0.6-durable-job-types-and-items.md) | Первые durable workloads — retrieval/content parse batches с persistent `JobItem` checkpoints; crawl/browser workflow отложены | accepted |
+| [ADR-0019](ADR-0019-dynamic-policy-registry.md) | Dynamic non-secret policy хранится как revisioned PostgreSQL snapshots; replicas используют bounded-staleness immutable PolicySnapshot | accepted |
+| [ADR-0020](ADR-0020-durable-quota-and-usage-accounting.md) | Durable resource quotas/billable budgets учитываются transactionally в PostgreSQL; Redis остаётся flow limiter, не accounting source | accepted |
 
 ## Приоритет при чтении Browser ADR
 
@@ -83,3 +85,12 @@ ADR-0018  first typed batch Job workloads + JobItem checkpoints
 ```
 
 Queue/runtime остаётся generic внутри backend, но public Job creation — typed; arbitrary task execution не вводится.
+
+## Policy/operations ADR progression
+
+```text
+ADR-0019  revisioned dynamic non-secret policy registry
+ADR-0020  durable principal quota/billable usage accounting
+```
+
+Secrets остаются deployment configuration; dynamic policy не может расширять отсутствующие auth scopes или обходить software hard ceilings.
