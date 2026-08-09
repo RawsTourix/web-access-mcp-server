@@ -21,10 +21,11 @@ Contract spec не может изменить lifecycle/security semantics, о�
 
 # Документы
 
-- [`common-models.md`](common-models.md) — общие public result/error/resource/cursor модели.
-- [`mcp-tools.md`](mcp-tools.md) — exact freeze-candidate MCP input/output contracts для tool catalog ADR-0022.
+- [`common-models.md`](common-models.md) — общие public result/error/resource/cursor модели и сериализация.
+- [`mcp-tools.md`](mcp-tools.md) — exact freeze-candidate MCP input/output contracts, bounds, unions и execution metadata для catalog ADR-0022.
+- [`rest-api-v1.md`](rest-api-v1.md) — exact freeze-candidate REST `/api/v1`: endpoint tree, DTO, bounds, streaming/admin/operational contracts.
 
-REST exact contract может дополняться отдельным документом после проверки текущего `rest-api.md`; v0.8 generated OpenAPI является окончательным executable contract artifact.
+Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable contract artifacts и должны соответствовать этим specs.
 
 ---
 
@@ -38,4 +39,18 @@ REST exact contract может дополняться отдельным док�
 6. Cross-field invariants выражаются JSON Schema `oneOf`/discriminator и runtime validation.
 7. Runtime error remains structured/repairable.
 8. Internal provider/Playwright/SQL/Redis fields не попадают сюда.
-9. Generated actual FastMCP/OpenAPI contract в v0.8 должен соответствовать этим specs или design меняется явно до freeze.
+9. Contract spec не имеет права самовольно расширять capability beyond canonical component/facade design.
+10. Generated actual FastMCP/OpenAPI contract в v0.8 должен соответствовать этим specs или design меняется явно до freeze.
+
+---
+
+# Compatibility
+
+После v0.8 freeze изменения проверяются через `../compatibility.md`:
+
+- removal/rename/meaning change — breaking;
+- bounds/default/required changes — compatibility-sensitive;
+- additive optional output fields проходят compatibility review;
+- новый MCP tool требует отдельного semantic intent/execution-class review;
+- новый REST endpoint может быть additive, если не меняет существующую semantics;
+- behavioral retry/ownership/security change считается contract change даже без изменения JSON shape.
