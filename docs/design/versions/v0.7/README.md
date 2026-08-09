@@ -4,30 +4,30 @@
 
 `ready for implementation`
 
-v0.7 не добавляет новую web capability. Она делает уже реализованные Search/Retrieval/Content/Browser/Jobs управляемыми и предсказуемыми в multi-replica/multi-principal production deployment.
+v0.7 не добавляет новую web capability. Она делает уже работающие Search/Retrieval/Content/Browser/Jobs управляемыми и предсказуемыми в multi-replica/multi-principal production deployment.
 
 ---
 
 # 1. Цель
 
-После v0.7 operator должен уметь безопасно:
+После v0.7 operator должен безопасно:
 
-- менять non-secret runtime policies без redeploy;
-- ограничивать principal capabilities/quotas;
+- менять non-secret task/resource policy без redeploy;
+- задавать principal quotas;
 - ограничивать billable provider usage;
-- управлять retention;
-- наблюдать provider/worker/queue/resource state;
-- draining workers;
-- запускать строго typed maintenance actions;
-- получать durable security/operator audit;
+- управлять Content retention defaults;
+- наблюдать provider/worker/job/storage state;
+- draining workers generation-safe;
+- запускать только typed bounded maintenance;
+- получать durable operator/security audit;
 
-при этом replicas должны использовать совместимые revisioned policy snapshots и не расходиться по durable quota/accounting state.
+при этом replicas используют одну revisioned logical policy state, а durable quota/accounting correctness не зависит от Redis counters.
 
 ---
 
 # 2. Prerequisites
 
-- v0.1–v0.6;
+- accepted v0.1–v0.6;
 - `../../policy-and-operations.md`;
 - `../../security.md`;
 - `../../observability.md`;
@@ -36,130 +36,55 @@ v0.7 не добавляет новую web capability. Она делает уж
 - `../../search.md`;
 - `../../browser.md`;
 - `../../jobs.md`;
+- `../../contracts/policy-models.md`;
+- `../../contracts/admin-api-v1.md`;
 - ADR-0019 dynamic policy registry;
-- ADR-0020 durable quota/accounting.
+- ADR-0020 durable quota/accounting;
+- ADR-0023 admin control-plane authority.
 
 ---
 
 # 3. Explicit non-goals
 
-- end-user account product;
-- password/email authentication;
-- OAuth/OIDC provider implementation;
-- general RBAC/group expression engine;
+v0.7 не вводит:
+
+- user account/password product;
+- OAuth/OIDC implementation;
+- arbitrary RBAC/expression policy language;
 - billing/invoice system;
 - secret-management UI;
 - MCP admin tools;
-- arbitrary SQL/Redis/shell maintenance;
+- generic SQL/Redis/shell maintenance;
 - scheduler/workflow engine;
-- architecture rewrite to distributed — distributed assumptions already exist.
+- architecture rewrite single-node→distributed;
+- dynamic policy control над собственным admin recovery API.
 
 ---
 
-# 4. New durable tables
+# 4. Dynamic policy model
 
-## Policy
+Exact v1 model: `../../contracts/policy-models.md`.
 
-```text
-policy_revisions
-current_policy
-```
-
-## Usage
+Logical state:
 
 ```text
-principal_usage
-provider_usage_periods
-provider_usage_reservations/events
-```
-
-## Audit
-
-```text
-audit_events
-```
-
-Exact schema follows ADR-0019/0020.
-
----
-
-# 5. Bootstrap policy
-
-On empty deployment, policy bootstrap is explicit.
-
-Priority:
-
-```text
-validated bootstrap policy file/config
-→ create revision 1
-```
-
-If absent, service may use a compiled conservative development/default snapshot only in allowed local/dev profile.
-
-Production profile should require explicit accepted bootstrap policy rather than silently inheriting developer quotas.
-
-Bootstrap policy contains no secrets.
-
----
-
-# 6. Policy snapshot
-
-Every Operation receives immutable effective policy with:
-
-```text
-policy_revision
-capabilities
-principal quotas
-provider policy
-retention policy
-operational limits
-```
-
-Auth scopes remain maximum authority.
-
-Policy can restrict; it cannot mint missing scope.
-
----
-
-# 7. Policy refresh
-
-Initial targets:
-
-```text
-revision poll <= 5 s
-high-risk stale grace <= 30 s
-```
-
-Optional Redis invalidation accelerates refresh, but PostgreSQL revision check remains correctness path.
-
-Replica with incompatible/too-stale high-risk policy becomes capability-degraded/fail-closed according policy class.
-
----
-
-# 8. Policy update API
-
-Admin-only typed revision update with optimistic concurrency:
-
-```text
-expected_revision
-validated patch/new policy
-```
-
-Transaction:
-
-```text
-new immutable revision
+GlobalPolicyDocument
 +
-current pointer CAS
-+
-AuditEvent
+exact PrincipalPolicyOverride exceptions
+→ immutable policy revision
 ```
 
-Rollback creates a new revision; history remains monotonic.
+Every mutation creates monotonic top-level revision.
+
+Public admin API разделяет global policy и principal overrides, чтобы оператор не пересылал giant document со всеми exceptions.
+
+Persistent implementation ADR-0019 materializes complete validated logical snapshot/state per revision.
 
 ---
 
-# 9. Initial capability policy classes
+# 5. Dynamic task capabilities
+
+Exact v1:
 
 ```text
 search
@@ -170,342 +95,300 @@ browser.read
 browser.interact
 jobs.read
 jobs.create
-admin
 ```
 
-Provider/job/parser-specific subpolicy may refine limits but does not create arbitrary permission language.
+Effective task permission:
+
+```text
+AuthProvider task scope
+∩ global policy
+∩ principal override restrictions
+∩ ownership/resource policy
+```
+
+Policy can restrict, not mint absent task scope.
 
 ---
 
-# 10. Principal durable quota accounting
+# 6. Admin authority
 
-`principal_usage` tracks transactionally materialized:
+Согласно ADR-0023:
+
+```text
+admin:read / admin:write
+```
+
+принадлежат AuthProvider/deployment control plane и **не входят dynamic TaskCapabilityCode**.
+
+Dynamic policy не может self-lockout policy read/update/rollback.
+
+Admin API всё равно защищён:
+
+- dedicated scopes;
+- deployment/network boundary;
+- exact typed DTO;
+- software hard ceilings;
+- optimistic revisions;
+- audit.
+
+Full deployment disable admin surface — static deployment decision with documented recovery path.
+
+---
+
+# 7. Durable policy state
+
+PostgreSQL:
+
+```text
+policy_revisions
+current_policy
+```
+
+Each revision includes schema version and complete validated logical state/normalized representation.
+
+Update transaction:
+
+```text
+expected revision CAS
+→ validate exact policy models + runtime registries + hard ceilings
+→ create revision N+1
+→ update current pointer
+→ AuditEvent
+→ commit
+```
+
+Rollback creates a new revision; history remains monotonic.
+
+---
+
+# 8. Policy distribution
+
+Control Plane replica:
+
+- loads valid current snapshot startup;
+- immutable in-process reference;
+- revision poll target <=5 s + jitter;
+- optional Redis invalidation acceleration;
+- lost invalidation recovered by DB poll;
+- incompatible/invalid newer snapshot produces degraded/fail-safe state.
+
+High-risk **task** admission stale grace baseline <=30 s.
+
+---
+
+# 9. Durable usage/accounting
+
+New durable state covers:
+
+```text
+principal_usage
+provider usage periods/reservations/events
+audit_events
+```
+
+Materialized principal usage baseline:
 
 ```text
 active_browser_sessions
 nonterminal_jobs
 active_job_attempts
 retained_content_bytes
+retained_content_objects
 ```
 
 Counters reconcile against authoritative resources.
 
-No Redis reset can reset durable usage.
+Redis reset cannot reset durable quota consumption.
 
 ---
 
-# 11. Browser principal quota
+# 10. Browser quota
 
-BrowserSession create reserves principal slot in DB transaction before worker create.
+BrowserSession creation needs:
 
-Slot released exactly once on terminal `failed/closed/lost/expired` transition.
+```text
+task scope/policy
+→ durable principal session slot
+→ Browser create rate
+→ deployment/worker capacity
+```
+
+Principal slot acquired transactionally enough to avoid multi-replica oversubscription and released exactly once on terminal logical lifecycle.
 
 Worker physical capacity remains separate.
 
-Initial bootstrap/local policy may use a conservative value such as 2 active sessions/principal; production policy explicit.
-
 ---
 
-# 12. Job principal quota/fairness
+# 11. Job quota/fairness
 
 Enforce:
 
-- non-terminal Jobs/principal;
+- nonterminal Jobs/principal;
 - active JobAttempts/principal;
-- per-job-type active limit;
-- global backlog thresholds.
+- per-job-type/global attempt policy;
+- Job create rate;
+- global backlog admission.
 
-Queue order alone does not grant unlimited worker share.
+Hot-principal backlog must not permanently consume all workers.
 
-If active execution quota reached, worker claim does not execute body and job remains eligible for bounded later wake-up.
+Quota-unavailable claim defers through durable scheduling, not busy loop.
 
 ---
 
-# 13. Content logical storage quota
+# 12. Content logical storage quota
 
-Charge logical `size_bytes` of owner’s available retained ContentObjects.
+Charge logical owner-visible available ContentObjects, not deduplicated physical storage bytes.
 
-Physical S3/filesystem dedup does not affect owner quota.
-
-Before `creating → available`:
-
-```text
-lock PrincipalUsage
-→ quota check
-→ Content available + usage increment same transaction
-```
+Availability transition + usage accounting must prevent concurrent oversubscription.
 
 Expiry/delete releases exactly once.
 
+Same physical blob referenced by two owners counts independently for logical quota.
+
 ---
 
-# 14. Billable provider budgets
+# 13. Billable provider budgets
 
-Search paid providers use durable unit budgets.
+Billable providers use durable **provider units**, not currency hardcoded in adapter.
 
-Baseline unit for Yandex-like search adapter can be:
+Before actual paid upstream attempt:
 
 ```text
-search_request = 1 billable unit per actual admitted upstream request
+idempotent usage_attempt reservation
+→ upstream send
+→ consumed/released finalization based on evidence
 ```
 
-Policy limits units per UTC-normalized period.
+Possible sent/billed + unknown response → conservative consumption.
 
-No hardcoded ruble price inside provider adapter.
+Retry creates separate reservation.
+
+Cache hit does not consume upstream unit.
 
 ---
 
-# 15. Billable reservation/finalization
+# 14. Retention policy
 
-Before paid upstream call:
-
-```text
-idempotent usage_attempt_id
-→ transaction reserve units
-→ upstream call
-→ finalize consumed/released according send evidence
-```
-
-If request may have been sent/billed but response outcome unknown, baseline is conservative consumption rather than automatic refund.
-
-Retry requires new budget reservation.
-
----
-
-# 16. Retention policy
-
-v0.7 formalizes at least:
+v0.7 centralizes at least:
 
 ```text
 transient
 job_result
 ```
 
-and internal/system classes where necessary.
+TTL defaults move from scattered settings into typed dynamic global policy within software ceilings.
 
-Existing v0.3 defaults become policy defaults rather than scattered constants.
-
-No arbitrary infinite client retention baseline.
-
-Retention/cleanup admin surface can inspect policy and trigger bounded maintenance, not delete arbitrary physical storage key.
+Principal override changes storage quota, not arbitrary infinite/custom TTL in v1 baseline.
 
 ---
 
-# 17. Operator REST surface
+# 15. Admin REST
 
-REST-only, `admin` scope.
+Exact namespace: `../../contracts/admin-api-v1.md`.
 
-Conceptual groups:
+Includes:
 
 ```text
-/api/v1/admin/status
-/api/v1/admin/policy
-/api/v1/admin/policy/revisions
-/api/v1/admin/providers
-/api/v1/admin/workers
-/api/v1/admin/jobs
-/api/v1/admin/storage
-/api/v1/admin/usage
-/api/v1/admin/audit
+current global policy
+principal override CRUD/list
+policy revision history/detail/rollback
+provider status/budget summary
+principal usage
+Browser Worker list/drain
+Job Worker list/drain
+Job/outbox backlog
+audit list
+bounded Content/Jobs/Usage/provider maintenance
+protected status
 ```
 
-Exact resource-oriented paths finalized in implementation OpenAPI.
+No admin MCP tools.
 
-No generic command endpoint.
-
----
-
-# 18. Provider controls
-
-Admin can inspect:
-
-- configured/enabled providers;
-- readiness/degraded reason;
-- rate/capacity policy;
-- billable usage/budget summary;
-- default provider.
-
-Can change only non-secret policy.
-
-Credentials/endpoints remain deployment config.
-
-Provider disable does not trigger hidden fallback.
+No generic maintenance command.
 
 ---
 
-# 19. Worker controls
+# 16. Worker drain
 
-Admin can inspect Browser/Job workers:
+Browser/Job worker drain:
 
-- ID/generation;
-- state;
-- heartbeat/lease;
-- capacity/utilization;
-- runtime revision.
+- uses stable worker ID + expected generation;
+- blocks new work;
+- preserves component lifecycle semantics for active work;
+- bounded deadline;
+- audited;
+- stale generation rejected.
 
-Typed action:
+No arbitrary PID kill public endpoint.
+
+---
+
+# 17. Typed maintenance
+
+Only explicit bounded operations:
+
+- Content reconcile/GC;
+- Job/outbox reconcile;
+- Usage reconcile;
+- provider status refresh;
+- eligible Job recover through state machine.
+
+No raw storage key, SQL, Redis, shell or arbitrary function name input.
+
+---
+
+# 18. Audit
+
+Required admin mutation + `AuditEvent` commit atomically.
+
+Audit fields include actor/action/resource/policy revision/outcome/correlation + bounded redacted metadata.
+
+Never store:
+
+- auth/provider secrets;
+- full page/document content;
+- form/password values;
+- arbitrary giant bodies.
+
+Audit application semantics append-only.
+
+---
+
+# 19. Capability-aware health/readiness
+
+Detailed protected status distinguishes examples:
 
 ```text
-drain worker(expected generation)
-```
-
-No arbitrary kill PID.
-
-Drain delegates to existing Browser/Job lifecycle contracts.
-
----
-
-# 20. Maintenance controls
-
-Allowed typed operations can include:
-
-- trigger bounded Content reconciliation/GC pass;
-- trigger Job/outbox reconciliation pass;
-- refresh provider capability/status;
-- re-enable/requeue eligible durable Job through state-aware application operation;
-- rebuild/reconcile principal usage counters;
-- worker drain.
-
-Every mutating operator action audited.
-
----
-
-# 21. AuditEvent
-
-Minimum durable fields:
-
-```text
-audit_id
-timestamp
-actor_principal_id
-delegated_subject | null
-action_code
-resource refs/policy revision
-outcome
-operation_id/request correlation
-bounded metadata
-```
-
-Append-only application semantics.
-
-Never persist secrets/full page content/password form values.
-
----
-
-# 22. Audit transactional coupling
-
-For required admin mutation:
-
-```text
-mutation + AuditEvent
-```
-
-must commit in same PostgreSQL transaction.
-
-Audit append failure aborts mutation.
-
-Read-only high-volume operations remain telemetry, not necessarily durable audit.
-
----
-
-# 23. Usage reconciliation
-
-Periodic UsageReconciler verifies:
-
-- active BrowserSessions;
-- non-terminal Jobs;
-- active JobAttempts;
-- retained Content bytes.
-
-Repair drift with CAS and expose metric/audit warning.
-
-Billable usage ledger has separate reconciliation/evidence rules and is not recomputed from resource rows.
-
----
-
-# 24. Redis flow limits
-
-Existing Search rate/concurrency model generalizes where needed to:
-
-- principal Retrieval rate;
-- Browser create rate;
-- request-bound concurrent operations.
-
-Redis failures obey explicit fail-closed/open class.
-
-Durable resources/budgets never rely only on these counters.
-
----
-
-# 25. Fairness load gate
-
-Load test must include at least:
-
-```text
-principal A creates sustained Job backlog
-principal B submits small Jobs concurrently
-```
-
-and prove active-attempt quotas prevent A from permanently consuming all worker execution capacity under configured fair policy.
-
-Exact scheduling fairness is bounded/admission-based, not guaranteed strict round-robin.
-
----
-
-# 26. S3 production hardening
-
-v0.7 production profile finalizes:
-
-- workload/static secret credential mode chosen by deployment;
-- TLS/CA;
-- bucket lifecycle for incomplete multipart/staging as defense in depth;
-- retention/GC metrics;
-- shared replica tests;
-- backup/replication expectations documented operationally.
-
-Application S3 contract unchanged from v0.5.
-
----
-
-# 27. Health/readiness finalization
-
-Detailed status includes capability matrix, e.g.:
-
-```text
-search.searxng ready/degraded
-search.yandex ready/disabled/budget_exhausted
-retrieval ready
-content filesystem/s3 ready/degraded
+search provider ready/degraded/disabled/budget_exhausted
+retrieval ready/degraded
+content store/parser/maintenance state
 browser ready/no_workers/egress_unavailable
 jobs ready/queue_unavailable/no_workers/backlog_limit
 policy current/stale/incompatible
 ```
 
-Public liveness remains simple and non-sensitive.
-
-Detailed status protected.
+Public liveness remains minimal/non-sensitive.
 
 ---
 
-# 28. Rolling compatibility
+# 20. Rolling compatibility
 
-Every replica exposes runtime/schema revisions.
+Mixed old/new replicas/workers tests cover:
 
-Rolling deployment tests cover:
-
-- old/new policy schema compatible overlap;
-- old/new Job Worker handler revisions;
-- Browser worker runtime compatibility;
-- database migrations expand-first where needed;
-- no incompatible policy made current before rollout support.
+- policy schema readable overlap;
+- policy cannot become current before rollout support;
+- Job handler revisions;
+- Browser runtime revisions;
+- expand-first DB migrations;
+- current revision refresh under mixed deployment.
 
 ---
 
-# 29. MCP behavior
+# 21. MCP impact
 
-No admin MCP tools.
+No admin tools are added.
 
-Existing tools gain normalized quota/policy errors/hints where applicable:
+Existing task tools only gain normalized policy/quota outcomes/codes such as:
 
 ```text
 capability_disabled_by_policy
@@ -516,62 +399,46 @@ billable_budget_exceeded
 job_backlog_limit
 ```
 
-Descriptions remain task-oriented, not operator documentation.
+MCP schemas cannot gain operator settings as arguments.
 
 ---
 
-# 30. Observability
+# 22. Required tests
 
-Add:
+At minimum:
 
-- policy revision age/refresh failures;
-- quota utilization/rejects;
-- usage reconciliation drift;
-- billable units/reservation states;
-- audit append failures;
-- admin operation outcomes;
-- worker drain durations;
-- retention/GC activity;
-- fairness/backlog signals.
-
-No principal ID as unbounded metric label.
-
----
-
-# 31. Required tests
-
-- policy concurrent updates/conflicts;
-- lost invalidation/poll recovery;
-- stale high-risk policy fail-safe;
-- rolling policy schema compatibility;
+- global policy CAS conflict;
+- principal override create/replace/delete with revision bump;
+- dynamic schema rejects `admin` task capability;
+- authorized admin can recover from task policy disabling all task capabilities;
+- lost Redis invalidation + polling refresh;
+- stale/incompatible policy behavior;
 - Browser/Job/Content quota races;
-- counter drift reconciliation;
-- billable reservation double-spend race;
-- response-loss billing accounting;
-- policy lowering below consumed usage;
-- admin auth;
-- audit atomicity;
-- worker drain generation safety;
+- UsageReconciler drift;
+- billable double-spend/unknown accounting;
+- policy lowering below current usage;
+- audit atomic rollback;
+- worker drain generation races;
 - hot-principal fairness;
-- S3 production-profile contract;
-- retention/GC races;
-- detailed readiness redaction.
+- maintenance bounds;
+- admin auth/network restrictions;
+- no secrets in policy/audit/status.
 
 ---
 
-# 32. Definition of Done
+# 23. Definition of Done
 
 v0.7 complete only if:
 
-1. Dynamic policy revision works across replicas within bounded staleness.
-2. Policy cannot bypass auth scope/hard ceilings.
-3. Durable quotas survive Redis loss.
-4. Concurrent resource creation cannot oversubscribe principal quota.
-5. Content dedup does not distort/logically leak storage quota.
+1. Exact policy/admin contracts implemented and OpenAPI-tested.
+2. Policy revision works across replicas within bounded staleness.
+3. Dynamic task policy cannot mint auth scope or self-disable admin recovery control plane.
+4. Durable quotas survive Redis loss.
+5. Concurrent resource creation cannot oversubscribe principal quota.
 6. Billable provider budget cannot double-spend through replica race.
 7. Admin mutations are audited transactionally.
-8. No operator MCP tools exist.
-9. Worker drain/status is typed and generation-safe.
+8. No admin MCP tools exist.
+9. Worker drain is typed/generation-safe.
 10. Health/readiness is capability-aware.
-11. Fairness load gate passes.
+11. Fairness/load gates pass.
 12. Applicable production/HA release gates green.
