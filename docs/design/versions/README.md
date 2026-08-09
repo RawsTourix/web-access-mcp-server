@@ -23,7 +23,7 @@ Version docs не создают новую архитектуру без отд
 | `v0.9` | Production Hardening | ready for implementation |
 | `v1.0` | Stable Web Access | release contract defined |
 
-Эти статусы относятся только к **дизайну**. Ни одна будущая версия не считается реализованной/accepted, пока нет фактического кода и required release evidence.
+Design status не означает implemented/accepted code.
 
 ---
 
@@ -42,13 +42,13 @@ v0.1 Foundation
 → v1.0 stable release
 ```
 
-Design readiness следующей версии **не разрешает** реализовывать её до acceptance prerequisites.
+Design readiness поздней версии не разрешает перепрыгнуть acceptance prerequisites.
 
 ---
 
-# 3. Обязательная структура version folder
+# 3. Version folder
 
-Минимум для implementation-bearing version:
+Для implementation-bearing version минимум:
 
 ```text
 versions/vX.Y/
@@ -56,7 +56,7 @@ versions/vX.Y/
 └── implementation-sequence.md
 ```
 
-Дополнительно по необходимости:
+По необходимости:
 
 ```text
 migration-plan.md
@@ -65,102 +65,137 @@ acceptance.md
 release-checklist.md
 ```
 
-`v1.0` является release contract и может использовать release checklist вместо обычного feature implementation sequence.
+`v1.0` — release contract, поэтому может использовать release checklist вместо feature sequence.
 
 ---
 
-# 4. Version README обязан содержать
+# 4. Version README
+
+Обязан содержать:
 
 - status;
-- goal;
-- prerequisites;
+- goal/prerequisites;
 - canonical Design/ADR/contracts;
-- scope;
-- explicit non-goals;
-- external/public contract impact;
-- persistence/migration impact;
-- security impact;
+- scope/non-goals;
+- public contract impact;
+- persistence/security impact;
 - required gates;
 - acceptance criteria;
-- unresolved blockers — их не должно остаться перед `ready for implementation`.
+- no unresolved implementation blocker before `ready for implementation`.
 
 ---
 
 # 5. Implementation sequence
 
-Должен быть patch-oriented и пригоден для Codex/ChatGPT.
+Patch-oriented, пригодный для Codex/ChatGPT.
 
-Обычное направление:
+Typical direction:
 
 ```text
 preconditions/characterization
 → contracts/models/ports
 → persistence/infrastructure/runtime
-→ application services
+→ application
 → REST
 → MCP
-→ fault/race/security/load tests по scope
-→ documentation/evidence closure
+→ race/fault/security/load tests according scope
+→ docs/evidence closure
 ```
 
-Но конкретная версия может иметь более строгий порядок. Например Browser сначала строит ownership/worker/subprocess/egress runtime и только затем Playwright facade.
+Concrete version may enforce stricter ordering.
 
-Каждый patch должен иметь:
+Each patch specifies:
 
-- exact scope;
-- expected modules/files;
+- exact scope/modules;
 - invariants;
-- forbidden shortcuts/non-goals;
+- forbidden shortcuts;
 - tests;
 - gate before next patch.
 
 ---
 
-# 6. Статусы implementation
+# 6. Status vocabulary
 
-- `planned` — milestone существует, detailed design ещё не готов;
-- `design in progress` — version design/ADR уточняются;
-- `ready for implementation` — architecture blockers закрыты, можно готовить coding task;
-- `in implementation` — код разрабатывается;
-- `implemented, pending acceptance` — production code готов, required gates ещё не полностью пройдены;
-- `accepted` — required gates/evidence версии пройдены;
-- `superseded` — версия/plan заменены явно;
-- `release contract defined` — стабильный release milestone описан, но может быть достигнут только после acceptance prerequisites.
+- `planned` — milestone exists, detailed design not ready;
+- `design in progress` — version design/ADR open;
+- `ready for implementation` — architecture blockers closed;
+- `in implementation` — code work active;
+- `implemented, pending acceptance` — code exists, gates incomplete;
+- `accepted` — required gates/evidence green;
+- `superseded` — explicit replacement;
+- `release contract defined` — stable release milestone defined, reachable only after prerequisites.
 
 ---
 
-# 7. Coding handoff rule
+# 7. Coding handoff
 
-Перед coding prompt обязательно читать:
+Before target patch read:
 
 ```text
 docs/AGENTS.md
 → docs/design/current.md
-→ target component design
-→ accepted ADR
-→ relevant docs/design/contracts/*
+→ relevant component/cross-cutting Design
+→ relevant accepted ADR
+→ relevant contracts/*
 → target version README
-→ target implementation-sequence
-→ testing/release-gates
+→ target implementation sequence
+→ testing/release gates
 ```
 
-Codex/ChatGPT нельзя просить самостоятельно выбрать решение, которое остаётся blocker/open question. Перед implementation оно должно быть:
-
-- закрыто Design/ADR;
-- либо явно исключено из scope текущей версии.
+Coding agent не выбирает сам blocker/open-question architecture.
 
 ---
 
-# 8. Public contract timing
+# 8. Exact public contract timing
 
-Semantic public facade design принадлежит `rest-api.md`/`mcp.md`.
+Semantic owners:
 
-Exact DTO/schema baseline принадлежит:
+```text
+REST → ../rest-api.md
+MCP  → ../mcp.md
+```
 
-- `../contracts/common-models.md`;
-- `../contracts/mcp-tools.md`;
-- `../contracts/rest-api-v1.md`.
+Exact target specs:
 
-До v0.8 implementation эти specs являются target contracts.
+```text
+../contracts/common-models.md
+../contracts/mcp-tools.md
+../contracts/rest-api-v1.md
+../contracts/browser-api-v1.md
+../contracts/policy-models.md
+../contracts/admin-api-v1.md
+```
 
-В v0.8 generated actual FastMCP schemas/OpenAPI становятся executable freeze-candidate fixtures. Если реализация не может корректно воспроизвести contract, исправляется Design/ADR явно — не производится скрытое расхождение документации и кода.
+Specificity:
+
+```text
+Browser REST → browser-api-v1.md
+Admin REST   → admin-api-v1.md + policy-models.md
+Other REST   → rest-api-v1.md
+MCP          → mcp-tools.md
+```
+
+До v0.8 это reviewed target contracts.
+
+В v0.8 actual FastMCP/OpenAPI/public model artifacts становятся generated executable freeze fixtures after matching reviewed specs.
+
+Implementation/framework inconvenience не является разрешением на silent contract drift.
+
+---
+
+# 9. Cross-version ADR still applies to earlier capabilities
+
+Поздний ADR может уточнять semantics capability, реализованной ранней version, до external freeze.
+
+Пример:
+
+```text
+ADR-0024
+→ v0.2 Search retry/cost semantics
+→ v0.3 Retrieval/Content resource-creation retry semantics
+→ v0.4 Browser artifact/action retry semantics
+```
+
+Поэтому target coding task обязан читать **current relevant ADR**, а не только ADR, существовавшие в момент первоначального version-plan draft.
+
+После v0.8 freeze такие semantic изменения проходят compatibility policy.
