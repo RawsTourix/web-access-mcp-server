@@ -2,280 +2,363 @@
 
 ## Назначение
 
-Этот файл задаёт обязательные правила для Codex/ChatGPT/другого coding agent при изменении проекта.
+Обязательные правила для Codex/ChatGPT/другого coding agent.
 
-Проект спроектирован как production-oriented Web Access service. Coding agent должен **реализовывать уже принятую архитектуру и target version**, а не заменять её MVP/shortcut по собственному усмотрению.
+Проект production-oriented. Coding agent должен **реализовывать принятую архитектуру и target version**, а не заменять её упрощённым MVP/shortcut.
 
 ---
 
 # 1. Перед любой production-работой
 
-1. Проверить фактический git HEAD/status/diff.
-2. Прочитать [`README.md`](README.md).
-3. Прочитать [`design/current.md`](design/current.md).
-4. Определить target version и exact patch/step.
-5. Прочитать:
+1. Проверить фактический HEAD/status/diff.
+2. Прочитать `docs/README.md` и `design/current.md`.
+3. Определить target version + exact patch step.
+4. Прочитать:
    - `design/principles.md`;
    - `design/dependency-rules.md`;
-   - relevant component/cross-cutting design;
-   - relevant accepted ADR;
-   - relevant `design/contracts/*`, если меняется public facade/DTO;
+   - relevant component/cross-cutting Design;
+   - **все current relevant accepted ADR**, включая поздние cross-version refinements;
+   - relevant `design/contracts/*`;
    - target version README;
    - target implementation sequence/release checklist;
    - `design/testing.md`;
    - applicable `design/release-gates.md`.
-6. Проверить prerequisites предыдущей версии/шага.
+5. Проверить acceptance prerequisites предыдущего шага/версии.
 
-Не начинать patch только по краткому task prompt без восстановления repository design context.
+Краткий task prompt не заменяет repository design context.
 
 ---
 
-# 2. Канонический владелец темы
-
-Не дублировать и не переопределять canonical contracts локально.
-
-Примеры:
+# 2. Canonical owners
 
 ```text
-application result/retry/batch semantics
+application execution/outcome/retry/batch
 → design/application-contracts.md
 
 resource ownership/lifecycle
 → design/resource-model.md
 
-MCP semantic catalog
-→ design/mcp.md + ADR-0022
+persistence/consistency
+→ design/persistence.md
 
-exact MCP fields/defaults/bounds/result shapes
+Browser semantics
+→ design/browser.md + current Browser ADR
+
+Jobs
+→ design/jobs.md + Jobs ADR
+
+Policy/quotas/operator semantics
+→ design/policy-and-operations.md + ADR-0019/0020/0023
+
+MCP semantic facade
+→ design/mcp.md
+
+exact MCP DTO/catalog
 → design/contracts/mcp-tools.md
 
 REST semantic facade
 → design/rest-api.md
 
-exact REST /api/v1 contract
+common REST exact baseline
 → design/contracts/rest-api-v1.md
 
-common public DTO/error/resource shapes
+Browser REST exact
+→ design/contracts/browser-api-v1.md
+
+dynamic policy exact
+→ design/contracts/policy-models.md
+
+Admin REST exact
+→ design/contracts/admin-api-v1.md
+
+common public models
 → design/contracts/common-models.md
 
-Browser semantics
-→ design/browser.md + Browser ADR
-
-Jobs lifecycle
-→ design/jobs.md + Jobs ADR
-
-Content L0/L1 boundary
-→ design/content.md
-
-External compatibility
+compatibility
 → design/compatibility.md
 ```
 
-Если implementation обнаружил реальную невозможность/конфликт, сначала оформить design/ADR change и dependent contract update; затем менять код.
+Specific contract wins for its namespace, but cannot override lifecycle/security semantics Design/ADR.
 
 ---
 
-# 3. Иерархия при конфликте
-
-Использовать:
+# 3. Conflict precedence
 
 ```text
-accepted latest ADR + canonical Design semantics
-→ exact public contract spec
+latest accepted/non-superseded ADR + canonical Design semantics
+→ exact specialized public contract
 → target version README
-→ target implementation sequence
+→ implementation sequence
 → concept docs
 ```
 
-Exact contract spec фиксирует transport shape, но не может самовольно отменить security/lifecycle invariant Design/ADR.
+Superseded ADR is history, not alternative implementation.
 
-Superseded ADR не реализуется как альтернативный вариант.
+Examples:
+
+- ADR-0012 direct ownership part superseded by ADR-0013;
+- ADR-0022 count/retry wording refined by ADR-0024/0025;
+- dynamic `admin` capability prohibited by ADR-0023.
 
 ---
 
 # 4. Version boundaries
 
-Не переходить к следующей версии без отдельной задачи и acceptance prerequisites.
+Canonical order:
 
-Design readiness `v0.8` не означает, что можно реализовывать v0.8 до фактически accepted v0.1–v0.7.
+```text
+v0.1 → v0.2 → v0.3 → v0.4 → v0.5 → v0.6 → v0.7 → v0.8 → v0.9 → v1.0
+```
 
-Version `implementation-sequence.md` задаёт обязательный порядок патчей. Не начинать с REST/MCP facade, если sequence сначала требует domain/persistence/runtime foundation.
+`ready for implementation` is design status, not permission to skip previous acceptance.
 
-Не добавлять следующую roadmap capability «заодно».
+Implementation sequence is mandatory patch order.
+
+Do not add later roadmap capability «заодно».
 
 ---
 
-# 5. Запрещённые архитектурные shortcuts
+# 5. Forbidden shortcuts
 
 Без explicit accepted design change нельзя:
 
 - помещать business logic в FastAPI/FastMCP handlers;
-- запускать Playwright прямо в Control Plane request handler;
-- хранить authoritative Browser/Job/resource state только в RAM/Redis;
+- запускать Playwright in-process в Control Plane request handler;
+- хранить authoritative durable state only RAM/Redis;
 - заменять outbox/claim/fencing прямым `DB commit → Redis enqueue`;
 - доверять client `user_id` как identity;
-- ослаблять SSRF/browser egress/parser isolation;
+- ослаблять SSRF/browser egress/parser/session isolation;
 - автоматически запускать Browser/OCR/LibreOffice/provider fallback;
-- добавлять generic raw HTTP/Playwright/shell/Python public tools;
+- добавлять generic raw HTTP/Playwright/JS/shell/Python public primitive;
 - создавать `*_many` alias вместо batch-first schema;
-- добавлять MCP tool на каждый parser/file format;
-- объединять direct operation и durable Job creation в один MCP tool;
-- объединять read-only и mutating intents ради уменьшения числа tools;
-- менять public contract потому, что internal library API удобнее;
-- использовать CSS/XPath как core MCP targeting вместо ElementRef;
+- создавать MCP tool на каждый file parser;
+- объединять direct call и durable Job creation в один MCP tool;
+- смешивать read-only/mutating intents ради меньшего tool count;
+- использовать CSS/XPath core MCP targeting вместо ElementRef;
+- скрывать scroll внутри snapshot;
 - давать Browser child DB/Redis/ContentStore/provider credentials;
-- отключать failing race/security/fault test и считать задачу завершённой.
+- считать «read-oriented» operation automatically retry-safe, игнорируя cost/resource creation;
+- добавлять dynamic `admin` task capability;
+- отключать failing race/security/fault test ради green run.
 
 ---
 
 # 6. Backend-first
 
-Правильное направление:
-
 ```text
 transport
 → application
 → domain/ports
-← infrastructure implementations
+← infrastructure adapters
 ```
 
-REST и MCP вызывают общий application layer.
+REST/MCP вызывают общий application layer и не вызывают друг друга в baseline composition.
 
-MCP не вызывает собственный REST, REST не вызывает собственный MCP в baseline composition.
-
-Provider/library types не выходят наружу без явного mapping.
+Provider/library/ORM/worker types не становятся public application model.
 
 ---
 
 # 7. Exact public contracts
 
-Перед facade/schema implementation читать [`design/contracts/README.md`](design/contracts/README.md).
+Всегда сначала читать `design/contracts/README.md`.
 
-Target specs:
+Exact current target:
 
 ```text
 common public models
-→ design/contracts/common-models.md
+→ common-models.md
 
-MCP
-→ design/contracts/mcp-tools.md
+MCP 28-tool target
+→ mcp-tools.md
 
-REST
-→ design/contracts/rest-api-v1.md
+normal REST
+→ rest-api-v1.md
+
+Browser REST
+→ browser-api-v1.md
+
+policy
+→ policy-models.md
+
+Admin REST
+→ admin-api-v1.md
 ```
 
 Rules:
 
-- unknown public input fields rejected;
+- unknown input fields rejected;
 - required/default/min/max/enums/list bounds machine-readable;
-- discriminated unions отражаются actual JSON Schema;
-- runtime validation не заменяется schema-only validation;
-- `null`, omitted и default имеют разные описанные semantics;
-- private DB/Redis/provider/worker/Playwright fields не попадают public DTO;
-- public contract divergence требует explicit docs/ADR update, не молчаливого «implementation detail».
+- unions/discriminators present in actual generated schema;
+- runtime validation repeats/strengthens schema validation;
+- omission/null/default not conflated;
+- no private DB/Redis/provider/worker/Playwright fields;
+- contract drift requires explicit Design/ADR/contracts change.
 
 ---
 
-# 8. MCP правила
+# 8. MCP rules
 
-- agent-facing descriptions/fields — на русском;
-- каждый public/nested field имеет description;
-- exact catalog/fields брать из `design/mcp.md` + `design/contracts/mcp-tools.md`;
-- один tool имеет один stable execution/lifecycle class;
-- batch only for independent items or one semantic compound action;
+Current freeze candidate = **28 tools**.
+
+- Russian agent-facing descriptions;
+- every nested field described;
+- one tool = one primary semantic intent/execution class;
+- batch only for independent items or one designed compound action;
 - large result → ContentRef/cursor;
-- auth secrets не входят arguments;
-- unknown mutating outcome нельзя превращать в blind retry;
-- no raw selectors, JavaScript, local paths, provider internals;
-- FastMCP annotations должны совпадать с exact contract.
+- credentials never tool args;
+- no selectors/raw JS/local paths/admin controls;
+- `browser_scroll` explicit, no auto-scroll snapshot;
+- `browser_fill_form` sequential fail-fast, later fields `not_attempted`;
+- `browser_press` structured key + modifiers;
+- `browser_upload` accepts bounded ContentId list for multi-file controls;
+- FastMCP annotations + own-agent retry descriptors obey ADR-0024.
 
-Actual FastMCP schema tests обязательны.
+Actual FastMCP client schema tests mandatory.
 
 ---
 
-# 9. REST правила
+# 9. Retry/cost/resource rules
 
-REST — rich typed facade, но не infrastructure console.
+Read `application-contracts.md` + ADR-0024.
 
-- exact baseline: `design/contracts/rest-api-v1.md`;
-- reuse application logic;
-- validate auth/owner/scopes;
-- use common result/error contracts;
+Critical examples:
+
+```text
+web_search
+→ may dispatch billable provider
+→ no blind Agent-level replay after ambiguous result
+
+web_fetch
+→ creates Content resources
+→ no blind duplicate acquisition
+
+content_parse
+→ idempotent only after canonical representation reuse proved
+
+Browser mutating actions including scroll
+→ no blind retry after dispatch uncertainty
+
+cleanup/cancel
+→ idempotent only according exact contract
+```
+
+`PublicError.retryable=true` does not override stronger operation semantics.
+
+---
+
+# 10. REST rules
+
+REST is rich typed facade, not infrastructure console.
+
+- use specialized exact contract by namespace;
+- auth/owner/scope checks application-side;
+- common result/error models;
+- Content bytes stream, not base64 JSON;
+- only designed Idempotency-Key operations;
+- Browser HTTP method/header does not make mutation blind-retry-safe;
+- Admin API requires `admin:read/admin:write` + deployment boundary;
+- dynamic task policy cannot self-disable Admin control plane;
 - no raw SQL/Redis/Playwright/provider leakage;
-- binary Content — streaming endpoint, не base64 JSON;
-- only explicitly designed `Idempotency-Key` semantics;
-- mutating Browser endpoint не становится безопасным blind retry из-за HTTP method/header;
-- admin surface protected/admin-scoped;
-- generated OpenAPI contract-test-ится.
+- generated OpenAPI contract-tested.
 
 ---
 
-# 10. Security
+# 11. Security
 
-Web input считается недоверенным.
+Web input untrusted.
 
-Нельзя ослаблять без explicit review:
+Never silently weaken:
 
-- URL/DNS/redirect/TLS validation;
-- public-only browser egress;
-- Browser session subprocess boundary;
+- URL/DNS/redirect/TLS checks;
+- Browser public-only egress;
+- BrowserSession subprocess boundary;
 - parser process isolation;
 - package/decompression/input/output limits;
 - owner/resource authorization;
 - secret redaction;
-- path/temp safety;
+- temp/path safety;
 - quotas/backpressure;
-- internal service authentication.
+- internal service auth.
 
-Если library требует disabling sandbox/security ради работы, это blocker/design issue, а не повод молча выключить protection.
-
----
-
-# 11. Persistence / consistency
-
-PostgreSQL — authoritative durable structured state.
-
-Redis — cache/coordination/flow limiting/queue wake-up/short-lived route cache, но не единственный source of truth для durable resource.
-
-ContentStore — large immutable payload storage.
-
-Repositories не hidden-commit.
-
-Crash windows должны иметь explicit state/reconciler/fault test.
-
-Content/Jobs/Browser lifecycle transitions используют state/revision/CAS/fencing согласно design.
+Library incompatibility with security boundary = blocker/design issue.
 
 ---
 
-# 12. Browser-specific rules
+# 12. Persistence/consistency
 
-Canonical process model:
+```text
+PostgreSQL → authoritative durable structured state
+Redis      → cache/coordination/flow/queue wake-up/route cache
+ContentStore→ immutable large payloads
+```
+
+Repositories do not hidden-commit.
+
+Crash windows require explicit state/reconciler/fault tests.
+
+Content/Job/Browser use revision/CAS/fencing according design.
+
+---
+
+# 13. Browser rules
+
+Canonical:
 
 ```text
 Browser Worker supervisor
-→ one BrowserSession subprocess per logical session
+→ one BrowserSession subprocess
 → Playwright
 → dedicated Chromium
 ```
 
-Do not implement old direct Browser Worker ownership variant from superseded portion of ADR-0012.
+Per session:
 
-Browser actions:
+- serial action lane;
+- internal action ID/ledger/status recovery;
+- exact ElementRef identity/stale validation;
+- no fuzzy retargeting;
+- explicit scroll;
+- artifact handoff to Content;
+- response-loss may become `unknown`;
+- TTL/reaper independent of MCP connection.
 
-- serialize per session;
-- use action IDs/ledger/status recovery internally;
-- ElementRef exact/stale validation;
-- no heuristic retargeting;
-- response loss after possible side effect may produce `unknown`;
-- downloads/screenshots/rendered content become ContentObjects before operation is considered durably handed off where required.
+Do not implement superseded direct Browser Worker ownership model.
 
 ---
 
-# 13. Tests
+# 14. Policy/Admin rules
 
-Не ограничиваться happy path.
+Dynamic policy exact task capabilities:
 
-Для изменённой capability проверить applicable:
+```text
+search
+retrieval
+content.read
+content.parse
+browser.read
+browser.interact
+jobs.read
+jobs.create
+```
+
+No `admin` value.
+
+Admin authority:
+
+```text
+AuthProvider admin:read/admin:write
++ deployment/network boundary
+```
+
+Policy can restrict task capability/quota/provider admission, not mint scopes or self-lock policy recovery.
+
+Admin mutation is typed/bounded/audited; no generic command/SQL/Redis/shell endpoint.
+
+---
+
+# 15. Tests
+
+For changed scope run applicable:
 
 ```text
 unit
@@ -289,51 +372,49 @@ security
 browser lifecycle
 soak/leak
 load/backpressure
-actual REST/OpenAPI
+REST/OpenAPI
 actual FastMCP schemas
 e2e
 ```
 
-Flaky failure — defect до объяснения причины. Один green rerun не является доказательством исправления.
+Flaky failure is defect until explained. One green rerun is not evidence.
 
 ---
 
-# 14. Documentation with code changes
+# 16. Documentation with code
 
-Если код реализует accepted version:
-
-- обновлять `design/current.md` только после factual verification;
-- version status менять только по реальному evidence;
-- public contract divergence сначала согласовать и отразить в Design/ADR/contracts;
-- generated runtime contract fixtures в v0.8+ обновлять только через reviewed compatible change;
-- не переписывать архитектуру silently в code comments.
+- `design/current.md` changes only after factual verification;
+- version status changes only from evidence;
+- public contract divergence is reviewed Design/ADR/contracts change first;
+- v0.8+ generated fixtures update only through compatibility process;
+- no silent architecture rewrite in code comments.
 
 ---
 
-# 15. External references
+# 17. Reference repositories
 
-Reference repositories:
+Useful implementation references:
 
 ```text
 RawsTourix/kudago-nominatim-mcp-server
 RawsTourix/internet-search-bot
 ```
 
-Их можно использовать как проверенные implementation patterns/contracts, но Web Access остаётся самостоятельным сервисом и не импортирует их runtime код как hidden dependency без отдельного design.
+Reuse proven patterns/contracts, not hidden runtime dependency/copy without design.
 
 ---
 
-# 16. Completion report
+# 18. Completion report
 
-Coding agent final report должен указать:
+Final coding-agent report includes:
 
-- target version/patch step;
+- target version/patch;
 - changed files;
 - migrations/config/dependencies;
-- tests и exact results;
-- race/security/fault/load evidence where applicable;
+- exact test results;
+- applicable race/security/fault/load evidence;
 - unresolved defects/limitations;
-- changed ли public REST/MCP contract;
-- какой следующий шаг разрешён implementation sequence.
+- public contract impact;
+- next step allowed by implementation sequence.
 
-Не писать «всё готово», если applicable release gate не проверен.
+Do not state «готово» if applicable gate not checked.
