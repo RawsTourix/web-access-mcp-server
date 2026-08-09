@@ -50,8 +50,10 @@ ADR должен содержать:
 | [ADR-0019](ADR-0019-dynamic-policy-registry.md) | Dynamic non-secret policy хранится как revisioned PostgreSQL snapshots; replicas используют bounded-staleness immutable PolicySnapshot | accepted |
 | [ADR-0020](ADR-0020-durable-quota-and-usage-accounting.md) | Durable resource quotas/billable budgets учитываются transactionally в PostgreSQL; Redis остаётся flow limiter, не accounting source | accepted |
 | [ADR-0021](ADR-0021-mcp-durable-job-tool-boundary.md) | Request-bound Retrieval/Content и durable Job creation — разные MCP tools из-за разных lifecycle/retry semantics | accepted |
-| [ADR-0022](ADR-0022-v0.8-mcp-tool-catalog.md) | v0.8 MCP freeze candidate: explicit 27-tool semantic catalog; one stable execution class per tool | accepted |
+| [ADR-0022](ADR-0022-v0.8-mcp-tool-catalog.md) | Semantic catalog invariant; original count/retry wording refined by ADR-0024/0025 | superseded in part |
 | [ADR-0023](ADR-0023-admin-control-plane-authority.md) | Dynamic policy не может отключить собственный admin control plane; admin authority принадлежит AuthProvider scopes + deployment boundary | accepted |
+| [ADR-0024](ADR-0024-read-tools-resource-and-cost-effects.md) | Retry/annotation class учитывает billable provider cost и Web Access resource creation, а не только intuitive read/write | accepted |
+| [ADR-0025](ADR-0025-browser-scroll-tool.md) | Bounded Browser snapshot дополняется explicit `browser_scroll`; freeze candidate теперь 28 tools | accepted |
 
 ## Browser ADR progression
 
@@ -63,6 +65,7 @@ ADR-0011  dialogs
 ADR-0012  отдельный Chromium per session (сохраняемый инвариант)
 ADR-0013  session subprocess ownership/kill boundary
 ADR-0014  browser egress boundary
+ADR-0025  explicit scroll for bounded/lazy UI exploration
 ```
 
 При конфликте старой process-management формулировки ADR-0012 с ADR-0013 приоритет имеет ADR-0013.
@@ -96,13 +99,15 @@ ADR-0020  durable principal quota/billable usage accounting
 ADR-0023  admin control plane authority outside mutable dynamic task capability policy
 ```
 
-Secrets остаются deployment configuration; policy не расширяет auth scopes/hard ceilings. Dynamic policy управляет task/resource/provider admission, но не может логически заблокировать authorized policy recovery API.
+Secrets остаются deployment configuration; policy не расширяет auth scopes/hard ceilings. Dynamic task policy не может логически заблокировать authorized policy recovery API.
 
 ## MCP stabilization
 
 ```text
 ADR-0021  direct vs Job resource creation split
-ADR-0022  semantic freeze candidate catalog
+ADR-0022  one intent / one stable execution class foundation
+ADR-0024  cost/resource-aware retry semantics
+ADR-0025  explicit scroll capability
 ```
 
-При противоречии exploratory MCP examples ранних version docs с ADR-0021/0022 приоритет имеют ADR-0021/0022, актуальный `mcp.md` и `contracts/mcp-tools.md`.
+Актуальный exact catalog и schemas принадлежат `../mcp.md` + `../contracts/mcp-tools.md`.
