@@ -1,177 +1,141 @@
 # Общие application contracts Web Access MCP
 
-## Статус документа
+## Статус
 
-Этот документ является каноническим владельцем **общей модели выполнения application operations**.
+Канонический владелец **общей модели выполнения application operations**.
 
-Он определяет сквозные contracts, которыми должны пользоваться Search, Retrieval, Content, Browser, Jobs, REST и MCP.
+Search, Retrieval, Content, Browser, Jobs, REST и MCP используют эти concepts и не создают несовместимые модели operation identity, outcome, batch, warning/hint/error, deadline/cancellation и retry.
 
-Компонентные документы могут добавлять собственные inputs/results/errors, но не должны создавать несовместимые модели operation identity, outcome, batch semantics, hints, warnings, deadline/cancellation и retry.
+Public serialization уточняется `contracts/common-models.md`.
+
+ADR-0024 уточняет cost/resource-aware retry classification и является частью текущего contract.
 
 ---
 
-# 1. Основная единица выполнения — Operation
+# 1. Operation
 
 `Operation` — один логически завершённый вызов application capability.
 
-Примеры:
+Examples:
 
-- выполнить один batch Search;
-- получить batch известных URL;
-- выполнить Content Inspection;
-- создать BrowserSession;
-- выполнить один browser action;
-- закрыть BrowserSession;
-- создать durable Job;
-- запросить Job cancellation.
+```text
+Search batch
+Retrieval batch
+Content read/parse
+BrowserSession create/close
+one Browser action
+Job create/get/cancel
+```
 
 Operation не равна:
 
-- HTTP request;
+- HTTP request/connection;
 - MCP connection;
-- durable Job;
 - database transaction;
+- durable Job;
 - worker process.
 
-Один transport request обычно инициирует одну application Operation, но architecture не должна зависеть от этого как от жёсткого правила.
+Transport request обычно инициирует одну Operation, но resource/worker lifecycle от transport не зависит.
 
 ---
 
 # 2. Operation identity
 
-Каждая application Operation получает уникальный `operation_id`.
+Каждая Operation имеет server-generated unique `operation_id`.
 
-Требования:
+Properties:
 
-- генерируется на application boundary или передаётся trusted execution context;
-- не зависит от REST/MCP transport connection;
-- не переиспользуется для отдельного нового execution attempt;
-- пригоден для logs, tracing, diagnostics и provenance;
-- не обязан быть durable database row для каждой короткой операции.
+- stable for that logical execution;
+- пригоден для logs/traces/provenance;
+- не является `job_id`/resource ID;
+- caller cannot replace authority by supplying arbitrary operation ID;
+- новая отдельная execution = новый operation ID unless explicit idempotent replay contract says response is replay of same logical creation.
 
-`operation_id` не является `job_id`.
-
-Если Job исполняется несколькими attempts, каждый execution attempt может иметь собственный `operation_id`, а `job_id` остаётся identity durable Job resource.
+Job attempts can have separate operation IDs while same JobRef persists.
 
 ---
 
-# 3. Correlation identity
+# 3. ExecutionContext
 
-Помимо `operation_id` система может использовать `correlation_id`/trace context для связывания цепочки нескольких operations.
-
-Например:
-
-```text
-MCP call
-→ Search operation
-→ несколько provider HTTP calls
-```
-
-или:
-
-```text
-REST call
-→ Browser operation
-→ Browser Worker action
-→ ContentObject creation
-```
-
-Correlation identity не заменяет identity конкретной Operation.
-
----
-
-# 4. ExecutionContext
-
-Каждая Application Operation получает общий execution context.
-
-Концептуально:
+Conceptual:
 
 ```text
 ExecutionContext
 ├── operation_id
-├── correlation / trace context
-├── principal context
-├── owner context, если применимо
-├── deadline
+├── request/correlation/trace context
+├── PrincipalContext
+├── owner/delegation context where applicable
+├── absolute deadline / remaining budget
 ├── cancellation context
-├── idempotency context, если поддерживается операцией
-└── policy context
+├── idempotency context where designed
+└── immutable policy snapshot/effective policy reference
 ```
 
-Точная Python-модель будет определена implementation design, но семантика полей является общей.
+Application code never extracts these directly from FastAPI/FastMCP objects.
 
 ---
 
-# 5. PrincipalContext
+# 4. Principal / ownership
 
-`PrincipalContext` описывает субъект, от имени которого выполняется операция.
+Transport authentication produces trusted `PrincipalContext`.
 
-На ранних версиях principal model может быть минимальной, но contract должен позволять дальнейшее расширение до multi-user режима.
+Client-supplied `user_id`/session ID is not authority.
 
-Application code не должен извлекать principal напрямую из FastAPI/FastMCP objects.
-
-Transport adapter формирует trusted PrincipalContext и передаёт его application layer.
-
----
-
-# 6. OwnerContext
-
-OwnerContext используется, когда операция создаёт или обращается к addressable resource.
-
-Ресурс не становится доступным только по знанию handle.
-
-Application layer должен иметь возможность проверить:
+Resource access checks:
 
 ```text
 principal
-+
-resource owner
-+
-policy
++ resource owner
++ authenticated scopes
++ effective policy
++ resource state
 ```
 
-Точная owner model определяется `resource-model.md`.
+Resource model owner: `resource-model.md`.
 
 ---
 
-# 7. Deadline
+# 5. Deadline
 
-Deadline является сквозным ограничением времени операции.
-
-Внешний transport может задавать deadline/timeout policy, но application layer работает с нормализованным deadline/budget.
-
-Deadline должен по возможности передаваться:
+Deadline propagates downward:
 
 ```text
 Transport
 → Application
-→ Provider / HTTP Retrieval / Browser Worker
+→ Provider / Retrieval / Worker / Parser
 ```
 
-Нельзя запускать downstream request с timeout, который заведомо превышает оставшийся application deadline без отдельной причины.
+Downstream phase cannot silently use timeout beyond remaining operation budget.
+
+No indefinite wait/retry.
+
+Durable Job has its own lifecycle/deadline semantics after creation operation returns.
 
 ---
 
-# 8. Cancellation
+# 6. Cancellation
 
-Cancellation является cooperative contract, а не гарантией мгновенного прекращения внешнего side effect.
+Cancellation is cooperative.
 
-Нужно различать:
+Distinguish:
 
-- cancellation requested;
-- execution фактически остановлен до side effect;
-- execution завершился несмотря на cancellation;
-- side effect outcome неизвестен.
+```text
+requested
+observed before dispatch
+observed during execution
+execution completed despite request
+possible side effect but confirmation lost
+```
 
-Terminal outcome `cancelled` допустим только когда система может корректно утверждать, что operation завершена как отменённая согласно её semantics.
+`cancelled` only when contract can truthfully claim cancellation terminal semantics.
 
-Если mutating action мог выполниться, но подтверждение потеряно, используется `unknown`, а не ложный `cancelled`.
+Possible effect + lost evidence → `unknown`, not fake cancelled/failed.
 
 ---
 
-# 9. OperationOutcome
+# 7. Internal OperationOutcome
 
-Канонические общие outcomes:
+Canonical application enum:
 
 ```text
 succeeded
@@ -182,72 +146,47 @@ cancelled
 unknown
 ```
 
-## `succeeded`
+Meaning:
 
-Operation выполнена согласно contract.
+- `succeeded` — contract completed;
+- `partial_success` — aggregate/composite has useful success plus non-success parts;
+- `failed` — execution failed and terminal effect is known enough not to be unknown;
+- `rejected` — precondition/validation/auth/policy/capability rejection before relevant dispatch;
+- `cancelled` — terminal cooperative cancellation;
+- `unknown` — system cannot prove terminal effect/outcome.
 
-Warning/hint не меняет succeeded в failed.
-
-## `partial_success`
-
-Применяется на aggregate уровне для batch/composite operation, когда хотя бы один независимый item успешен, а хотя бы один имеет другой terminal outcome.
-
-## `failed`
-
-Operation не выполнена из-за execution/upstream/infrastructure failure и система уверена в итоговом состоянии настолько, чтобы не использовать `unknown`.
-
-## `rejected`
-
-Operation не была принята к выполнению из-за validation, policy, permission, unsupported capability или другого precondition rejection.
-
-`rejected` отделяется от execution failure.
-
-## `cancelled`
-
-Operation корректно завершена как отменённая.
-
-## `unknown`
-
-Система не может достоверно определить terminal effect/outcome.
-
-Особенно важно для mutating Browser actions и других side-effecting operations после transport/runtime failure.
+`unknown` is first-class.
 
 ---
 
-# 10. Outcome и Error — разные понятия
+# 8. Public outcome projection
 
-Outcome описывает итог операции.
-
-`OperationError` описывает причину/класс проблемы.
-
-Например:
+Public stable contract intentionally serializes:
 
 ```text
-outcome = rejected
-error.code = validation_error
+application partial_success
+→ public "partial"
 ```
 
-или:
+Other values map one-to-one:
 
 ```text
-outcome = failed
-error.code = upstream_unavailable
+succeeded → succeeded
+failed    → failed
+rejected  → rejected
+cancelled → cancelled
+unknown   → unknown
 ```
 
-или:
+This mapping is explicit transport projection, not two competing meanings.
 
-```text
-outcome = unknown
-error.code = response_lost_after_dispatch
-```
-
-Нельзя выводить retry policy только из error code без учёта operation semantics/outcome.
+Public owner: `contracts/common-models.md`.
 
 ---
 
-# 11. OperationResult
+# 9. OperationResult[T]
 
-Концептуальная общая модель:
+Conceptual internal model:
 
 ```text
 OperationResult[T]
@@ -257,71 +196,54 @@ OperationResult[T]
 ├── error: OperationError | null
 ├── warnings[]
 ├── hints[]
-└── execution metadata
+└── bounded execution metadata
 ```
 
-Component result может содержать дополнительные typed metadata/provenance.
+Invariants:
 
-Public contract не должен превращаться в один бесконтрольный `dict[str, Any]` только ради универсальности.
+```text
+succeeded → primary error null
+partial_success → component/item evidence preserved
+non-success → normalized reason/error when semantics require
+unknown → never silently collapsed to failed
+```
+
+No giant arbitrary `dict[str, Any]` as universal public contract.
 
 ---
 
-# 12. Result invariants
+# 10. OperationError
 
-## Succeeded
-
-```text
-outcome = succeeded
-error = null
-```
-
-`data` присутствует, если operation contract предполагает данные.
-
-## Rejected/Failed/Cancelled/Unknown
-
-Для terminal non-success outcome должен присутствовать нормализованный error/reason, если отсутствие error не является частью отдельного documented contract.
-
-## Partial Success
-
-Aggregate result содержит batch data/items и aggregate metadata. Ошибки отдельных items принадлежат item results, а не теряются в одном общем message.
-
----
-
-# 13. OperationError
-
-Общая error model должна содержать как минимум концептуальные поля:
+Fields conceptually:
 
 ```text
-code
 category
+code
 message
 retryable/disposition metadata
-safe details
+retry_after where meaningful
+repairable field details
+safe bounded details
 ```
 
-Технический exception/stack trace не является public error contract.
+Machine codes English, project human/LLM messages primarily Russian.
 
-### `code`
+Never expose:
 
-Стабильный machine-readable identifier на английском.
+- stack traces;
+- secrets;
+- local paths;
+- private worker addresses;
+- Redis/SQL internals;
+- raw framework/provider exception dumps.
 
-### `message`
-
-Понятное человеку/LLM объяснение. Основной язык проекта — русский.
-
-### `details`
-
-Только безопасные структурированные данные, необходимые для исправления вызова или диагностики клиентом.
-
-Secrets, stack traces, внутренние addresses/paths не возвращаются.
+Public exact model: `contracts/common-models.md`.
 
 ---
 
-# 14. Базовые error categories
+# 11. Error categories
 
-Компоненты могут вводить более точные codes, но должны маппиться на устойчивые общие категории.
-
-Предварительный набор:
+Stable broad classes:
 
 ```text
 validation
@@ -343,170 +265,92 @@ unknown_outcome
 internal
 ```
 
-Точные code namespaces будут уточняться компонентами.
+Components add specific codes while mapping to these broad classes.
 
-REST и MCP должны сериализовать одну application taxonomy, а не изобретать разные значения для одной причины.
+REST/MCP use same application taxonomy.
 
 ---
 
-# 15. Validation errors должны быть repairable
+# 12. Repairable validation
 
-Если input некорректен, ошибка должна позволять клиенту/LLM понять, что исправить.
+Validation should identify actionable field/code/message where safe.
 
-Предпочтительная структура details:
+Example:
 
 ```json
 {
-  "field": "urls[2]",
-  "code": "invalid_scheme",
-  "message": "Разрешены только HTTP(S) URL."
+  "path":"urls[2]",
+  "code":"invalid_scheme",
+  "message":"Разрешены только HTTP(S) URL."
 }
 ```
 
-Для нескольких независимых validation issues допускается массив деталей.
-
-Нельзя ограничиваться строкой вида:
-
-```text
-invalid input
-```
-
-если можно предоставить более точную безопасную причину.
+Do not return only `invalid input` when precise safe diagnosis exists.
 
 ---
 
-# 16. Warning
+# 13. Warning vs Hint
 
-Warning сообщает значимое ограничение или аномалию текущего результата, но не требует считать operation неуспешной.
+## Warning
 
-Концептуально:
+Describes limitation/anomaly of already obtained result.
 
-```text
-Warning
-├── code
-├── message
-└── details
-```
+Examples:
 
-Примеры:
+- truncated representation;
+- declared/detected MIME mismatch;
+- optional metadata unavailable.
 
-- часть metadata отсутствует;
-- server response объявил один MIME, а inspection определил другой;
-- content representation была усечена согласно явному limit;
-- provider вернул нестандартный response, который удалось нормализовать.
+## StructuredHint
 
-Warning не является рекомендацией следующего действия.
+Trusted recommendation about a possible next step.
 
----
-
-# 17. StructuredHint
-
-Hint предлагает возможный следующий шаг.
-
-Концептуально:
+Examples:
 
 ```text
-StructuredHint
-├── code
-├── message / reason
-├── related_capability | null
-└── safe context | null
-```
-
-Пример:
-
-```json
-{
-  "code": "browser_may_be_required",
-  "message": "Полученный HTML содержит минимальное статическое содержимое.",
-  "related_capability": "browser"
-}
+browser_may_be_required
+snapshot_refresh_recommended
+advanced_processing_may_be_required
 ```
 
 Hint:
 
-- не является error;
-- не меняет outcome;
-- не инициирует следующий operation;
-- не является web-content instruction;
-- генерируется trusted application logic.
+- does not change outcome;
+- does not execute next capability;
+- cannot be created by web/document text;
+- same-service recommendation can name exact tool/capability;
+- external L2 recommendation normally names capability class, not assumed product.
 
 ---
 
-# 18. Hints о внешних capabilities
+# 14. Provenance
 
-Если следующий шаг находится за границей Web Access, hint должен быть нейтральным.
-
-Предпочтительно:
+Results/resources preserve enough provenance to reconstruct meaningful origin:
 
 ```text
-advanced_processing_may_be_required
-native_text_unavailable
-unsupported_native_format
+Search → provider/query/page/retrieved_at
+Content → source resource + producer/parser revision
+Browser artifact → session/page/action/source metadata where appropriate
+Job result → job/item/producer relationship
 ```
 
-Вместо:
-
-```text
-use_liteparse
-use_libreoffice
-```
-
-если конкретный внешний processor не является частью deployment/application contract.
+Full provenance graph need not be inline every response.
 
 ---
 
-# 19. Provenance references
+# 15. Batch-first semantics
 
-Application result может ссылаться на provenance без обязательного встраивания полного provenance graph в каждый response.
+For naturally independent items:
 
-Общий principle:
+1. non-empty bounded input list;
+2. each item stable index;
+3. output preserves input order;
+4. one item failure does not delete successful siblings;
+5. each item has own terminal outcome/error;
+6. aggregate outcome derived deterministically;
+7. internal concurrency is not public promise.
 
-- URL/provider origin не теряется;
-- Content derived representation знает source ContentObject;
-- parser/producer revision может быть восстановлен;
-- Browser-produced Content знает browser/session/page origin настолько, насколько это нужно для audit/reproducibility.
-
-Каноническая resource/provenance model определяется `resource-model.md`.
-
----
-
-# 20. Execution metadata
-
-Общая execution metadata может включать:
-
-- started/completed timestamps;
-- duration;
-- attempt information;
-- cache/freshness marker, если применимо;
-- worker/provider reference в безопасной форме;
-- trace/correlation reference.
-
-Не все поля обязаны публично сериализоваться каждым transport.
-
-REST может предоставлять более полную operational metadata, чем MCP.
-
----
-
-# 21. Batch-first semantics
-
-Для естественно независимых операций batch является canonical input form.
-
-Требования:
-
-1. input list непустой;
-2. каждый item имеет стабильный index;
-3. при необходимости клиент может передать собственный `item_id`, если это будет зафиксировано конкретным contract;
-4. порядок result items сохраняет соответствие input order;
-5. ошибка одного item не уничтожает результаты других независимых items;
-6. каждый item имеет собственный outcome/error;
-7. aggregate result содержит summary counts/aggregate outcome.
-
----
-
-# 22. BatchItemOutcome
-
-Отдельный независимый item использует terminal outcomes:
+Independent leaf item outcomes:
 
 ```text
 succeeded
@@ -516,313 +360,381 @@ cancelled
 unknown
 ```
 
-`partial_success` не используется для простого leaf item, если сам item не является отдельным composite result по своему contract.
+`partial_success` belongs aggregate/composite, not simple leaf item.
 
 ---
 
-# 23. Aggregate batch outcome
+# 16. Aggregate batch algorithm
 
-Канонический алгоритм:
+Canonical:
 
-1. Все items `succeeded` → `succeeded`.
-2. Есть хотя бы один `succeeded` и хотя бы один другой terminal outcome → `partial_success`.
-3. Нет `succeeded`, но есть хотя бы один `unknown` → `unknown`.
-4. Все items `rejected` → `rejected`.
-5. Все items `cancelled` → `cancelled`.
-6. Остальные combinations без успешных items → `failed`.
+1. all succeeded → `succeeded`;
+2. at least one succeeded + any other terminal item → `partial_success`;
+3. none succeeded + at least one unknown → `unknown`;
+4. all rejected → `rejected`;
+5. all cancelled → `cancelled`;
+6. remaining no-success combinations → `failed`.
 
-Per-item outcomes остаются source of truth для точной причины.
-
----
-
-# 24. Batch concurrency не является public semantics
-
-Client задаёт logical batch, а infrastructure может исполнять items последовательно или параллельно в пределах policy.
-
-Нельзя обещать конкретный internal concurrency только потому, что input является списком.
-
-Если клиенту действительно нужен control над concurrency, это должно быть отдельным application requirement, а не случайным infrastructure parameter.
+Per-item evidence remains authoritative.
 
 ---
 
-# 25. Retry semantics
+# 17. Ordered compound steps are not independent batch items
 
-Каждая operation должна иметь execution semantics, определяющую допустимость автоматического retry.
+Example:
 
-Предварительные классы:
+```text
+browser_fill_form fields[]
+```
+
+Fields execute sequentially as one compound Browser action.
+
+Substep status:
+
+```text
+succeeded
+failed
+not_attempted
+```
+
+`not_attempted` is **not** OperationOutcome.
+
+After first fail-fast error:
+
+- earlier field results remain actual;
+- failing field = failed;
+- later fields = not_attempted;
+- top-level operation can be `partial_success` if prior mutation succeeded.
+
+Exact public model: `CompoundStepOutcome` in `contracts/common-models.md`.
+
+---
+
+# 18. Retry is multidimensional
+
+Retry decision must account for:
+
+```text
+operation semantics
+execution stage
+target external side effect
+billable upstream cost
+Web Access resource creation
+idempotency/replay proof
+current deadline/policy
+```
+
+Do **not** classify solely by intuitive “read/write” or HTTP method.
+
+---
+
+# 19. Retry classes
+
+Conceptual trusted classes:
 
 ```text
 safe_retry
 idempotent_retry
 never_automatic
+conservative/phase_evidence_required
 ```
 
-## `safe_retry`
+Names in concrete agent/runtime metadata may differ, but semantics must cover these distinctions.
 
-Operation не создаёт side effect, а повтор после transient failure безопасен при соблюдении deadline/policy.
+## Safe retry
 
-Примеры-кандидаты:
+Only when operation has no relevant side effect/cost/resource ambiguity and failure stage permits replay.
 
-- Search;
-- Retrieval GET;
-- Content read/inspection.
-
-Точный retry всё равно зависит от failure stage/code.
-
-## `idempotent_retry`
-
-Повтор допустим только при гарантированном idempotency contract, например со стабильным idempotency key.
-
-## `never_automatic`
-
-Blind automatic retry запрещён после того, как operation могла быть dispatched/executed.
-
-Пример-кандидат — browser click, способный вызвать внешний side effect.
-
----
-
-# 26. Idempotency key
-
-Idempotency key не является обязательным для каждой operation.
-
-Если конкретная operation поддерживает idempotency:
-
-- key должен быть scoped по principal + operation semantics;
-- duplicate request должен иметь документированное поведение;
-- retention idempotency records должна быть определена;
-- одинаковый key с несовместимым payload должен приводить к conflict/rejection;
-- transport не должен придумывать новый key при retry, если смысл idempotency требует стабильного значения.
-
-Точный механизм определяется компонентным design.
-
----
-
-# 27. Unknown outcome
-
-`unknown` — обязательная часть модели, а не edge-case логирования.
-
-Пример:
+Examples:
 
 ```text
-Browser click отправлен owning worker
-→ click мог выполниться
-→ transport response потерян
+Content read
+Browser status/snapshot/events
+Job status
 ```
 
-Неправильно:
+## Idempotent retry
+
+Only with proven canonical replay/idempotency contract.
+
+Examples:
+
+- idempotent cleanup;
+- `content_parse` **only after** canonical compatible representation reuse is proven under concurrency/replay;
+- REST creation with exact persisted Idempotency-Key semantics.
+
+## Never automatic
+
+Possible consequential side effect after dispatch:
 
 ```text
-connection_error → retry click
+Browser navigate/click/fill/type/press/hover/drag/scroll/upload
 ```
 
-Правильно:
+## Conservative / phase evidence required
+
+Read-oriented operation can still be unsafe to blindly replay:
 
 ```text
-outcome = unknown
-→ вернуть безопасную diagnostic информацию
-→ клиент может выполнить read-only verification (например snapshot)
+web_search
+→ possible billable provider call
+
+web_fetch
+→ creates raw/derived Content resources and external acquisition
+
+browser_content/screenshot
+→ creates Content resources
+
+Job/session/page creation
+→ creates durable/remote resource
 ```
 
 ---
 
-# 28. Retry должен учитывать execution stage
+# 20. ADR-0024 examples
 
-Даже safe operation не следует бездумно повторять при любом exception.
+## Search
 
-Failure model по возможности должен различать stages вроде:
+Free/provider query may look read-only, but explicit Yandex can consume paid unit.
+
+Agent-level lost response after possible dispatch:
+
+```text
+not → automatically issue second Search
+```
+
+Service/provider implementation may retry **inside same Operation** only where send/cost evidence proves it safe and provider policy allows.
+
+## Retrieval
+
+GET does not mutate target website, but Web Access creates Content/provenance/quota state.
+
+Ambiguous lost result:
+
+```text
+not → blind duplicate web_fetch
+```
+
+## Native parse
+
+Can become idempotent only when same source + canonical parser capability/revision/profile reuses one compatible logical representation under concurrency/replay tests.
+
+---
+
+# 21. Execution stage matters
+
+Useful internal phases:
 
 ```text
 before_dispatch
-after_dispatch
+dispatched
 executing
+side_effect_possible
+terminal_known
 response_lost
 ```
 
-Не все stages обязаны публично сериализоваться, но execution layer должен иметь достаточно информации для корректной retry decision.
+Exact phases component-specific.
+
+A pre-dispatch rejection/failure can be stronger evidence than generic transport error.
+
+Public API need not expose every internal phase, but execution layer must know enough for correct retry/result.
 
 ---
 
-# 29. Rejection до side effect
+# 22. `retryable` error field does not grant blind retry
 
-Validation/policy/permission rejection должен происходить максимально рано, до внешнего side effect.
+`PublicError.retryable=true` means a corrected/new attempt may be reasonable.
 
-Если rejection действительно произошёл pre-dispatch, outcome `rejected` даёт клиенту более сильную гарантию, чем generic `failed`.
+It does not override:
+
+- tool retry class;
+- billable/resource effect;
+- unknown outcome;
+- post-dispatch ambiguity;
+- idempotency requirements.
+
+Client/Agent uses the **most conservative applicable evidence**.
 
 ---
 
-# 30. Request-bound и durable operation
+# 23. Idempotency key
 
-## Request-bound
+Only explicitly designed operations support it.
 
-Результат ожидается в рамках текущего request.
+Requirements:
 
-Client disconnect/deadline может привести к cooperative cancellation.
+- scoped by principal + endpoint/operation semantics;
+- stable key reused by client for same logical creation;
+- canonical request hash recorded;
+- same key + different payload → conflict;
+- retention/replay response defined;
+- no automatic new key generated during intended replay.
+
+Idempotency-Key does not make Browser click/navigation safe.
+
+---
+
+# 24. Unknown outcome
+
+Example:
+
+```text
+Browser click dispatched
+→ may have happened
+→ response lost
+```
+
+Correct:
+
+```text
+same-action status recovery where possible
+→ terminal result if proven
+→ otherwise outcome=unknown
+→ safe observation/snapshot/status
+```
+
+Incorrect:
+
+```text
+connection_error
+→ issue a new click
+```
+
+---
+
+# 25. Request-bound vs durable
+
+## Request-bound Operation
+
+Caller waits for immediate result. Disconnect/deadline can trigger cooperative cancellation/ambiguous response semantics.
 
 ## Durable Job
 
-Создание Job является отдельной request-bound operation, возвращающей Job handle.
+Job creation is its own request-bound resource-creation Operation.
 
-Сам Job продолжает жить независимо от transport connection.
+After JobRef exists, Job lifecycle survives transport connection and is governed by `jobs.md`.
 
-Job lifecycle определяется `jobs.md` и `resource-model.md`.
-
----
-
-# 31. Operation result не должен быть бесконечно большим
-
-Application contract должен позволять вместо огромного inline payload вернуть ContentObject/resource reference.
-
-Особенно это важно для:
-
-- HTML;
-- PDF;
-- screenshots;
-- downloads;
-- large extracted text;
-- crawl results.
-
-Inline preview/summary и durable content representation должны быть различимы.
-
-Точные thresholds/limits не фиксируются этим документом.
+Direct and durable creation are not hidden modes of one MCP tool (ADR-0021).
 
 ---
 
-# 32. Content/reference semantics не зависят от transport
+# 26. Result size
 
-Если application operation возвращает ContentReference, REST и MCP сериализуют одну и ту же logical identity разными удобными формами, но не создают собственные независимые storage handles.
+Application operations must support externalizing large payload to ContentRef/cursor.
+
+Especially:
+
+- HTML/documents;
+- extracted text;
+- screenshots/downloads;
+- large snapshots;
+- Job manifests.
+
+Inline preview is bounded and distinct from durable representation.
 
 ---
 
-# 33. Cache semantics
+# 27. Cache/freshness
 
-Cache является infrastructure optimization, но application result не должен скрывать значимую freshness информацию, когда актуальность важна для смысла операции.
+Cache is infrastructure optimization but client-visible freshness facts cannot be fabricated.
 
-Конкретный Search/Retrieval component design определяет:
+Component defines:
 
 - cacheability;
-- freshness metadata;
-- bypass/refresh semantics, если они нужны клиенту;
-- invalidation/TTL policy.
+- retrieved/freshness metadata;
+- TTL/invalidation;
+- policy scope.
 
-Запрещено возвращать произвольно старый cache как «свежий» result без соответствующей semantics.
-
----
-
-# 34. Transport mapping
-
-REST и MCP могут по-разному представлять один OperationResult.
-
-REST может отдавать:
-
-- HTTP status mapping;
-- полный structured error;
-- operational metadata;
-- richer resource links.
-
-MCP может отдавать:
-
-- компактный agent-facing envelope;
-- русскоязычный message;
-- structured repairable error;
-- hints;
-- content handles.
-
-Но canonical outcome/error code должен происходить из application result.
+Cached result never masquerades as new upstream acquisition.
 
 ---
 
-# 35. Human-readable язык и machine-readable codes
+# 28. Transport mapping
 
-Stable identifiers используются на английском:
+REST/MCP may serialize same application semantics differently.
 
-```text
-browser_may_be_required
-validation_error
-resource_lost
-unknown_outcome
-```
+REST can expose richer typed controls/diagnostics/streams.
 
-Human-readable messages для основного agent-facing/runtime contract проекта преимущественно пишутся на русском.
+MCP stays compact/LLM-facing.
 
-Это позволяет сохранять удобство сопровождения без потери стабильности protocol codes.
+But:
+
+- operation meaning;
+- ownership;
+- outcome/error code;
+- retry/resource semantics;
+- warning/hint trust boundary
+
+come from application design, not transport improvisation.
 
 ---
 
-# 36. Public details должны быть безопасными
+# 29. Security of public details
 
-OperationResult не возвращает:
+OperationResult never exposes:
 
-- stack trace;
 - secrets;
-- DB credentials;
-- internal Redis keys;
-- local filesystem paths;
-- worker private addresses;
-- raw library exceptions.
+- stack traces;
+- DB/Redis credentials/keys;
+- local storage path;
+- private worker address;
+- raw framework exception.
 
-Подробная техническая причина может попадать в logs/traces с redaction policy.
-
----
-
-# 37. Application contracts не зависят от FastAPI/FastMCP
-
-Ни одна общая сущность этого документа не должна требовать import transport framework.
-
-Transport-specific request/context преобразуются в ExecutionContext и typed application input через mapper/dependency layer.
+Diagnostics/logs follow separate redaction/access policy.
 
 ---
 
-# 38. Component extension rules
+# 30. Framework independence
 
-Search/Retrieval/Content/Browser/Jobs могут добавлять:
+Application contracts do not import FastAPI/FastMCP/Playwright/SQLAlchemy/Redis client types.
 
-- собственные result data models;
-- собственные error codes;
-- собственные structured hints;
-- дополнительные execution metadata;
-- resource handles.
+Transport/infrastructure adapters perform mapping.
 
-Они не могут переопределять:
+---
 
-- смысл `operation_id`;
-- базовые outcomes;
-- aggregate batch algorithm;
-- separation warning/hint/error;
-- unknown-outcome invariant;
+# 31. Component extension rule
+
+Components may add:
+
+- data models;
+- specific error codes;
+- hints/warnings;
+- resource refs;
+- execution metadata.
+
+They may not redefine:
+
+- operation identity;
+- core outcome meanings;
+- independent batch algorithm;
+- warning/hint/error distinction;
+- unknown invariant;
+- cost/resource-aware retry discipline;
 - transport independence.
 
 ---
 
-# 39. Acceptance criteria общего application contract
+# 32. Foundation acceptance
 
-При реализации foundation должны существовать tests, подтверждающие как минимум:
+Tests must prove at least:
 
-1. `operation_id` создаётся для каждой application operation.
-2. Result outcome соответствует заданным invariants.
-3. `succeeded` не содержит primary error.
-4. Batch сохраняет input order.
-5. Один failed batch item не уничтожает successful siblings.
-6. Aggregate outcome вычисляется детерминированно.
-7. Structured Hint не меняет outcome.
-8. Warning и Hint различаются в schema.
-9. Validation error содержит repairable field details.
-10. `unknown` не преобразуется автоматически в retry.
-11. Transport adapters не возвращают raw infrastructure exception.
-12. Deadline/cancellation context проходит в downstream ports, которые его поддерживают.
-13. Огромный result может быть вынесен в resource/content reference без смены operation semantics.
+1. operation ID for each operation;
+2. outcome invariants;
+3. public `partial_success → partial` mapping;
+4. independent batch order/aggregate algorithm;
+5. compound `not_attempted` is not OperationOutcome;
+6. Hint does not change outcome or execute action;
+7. repairable validation errors;
+8. `unknown` never becomes blind retry;
+9. `retryable=true` cannot override stronger execution semantics;
+10. deadline/cancellation propagation;
+11. huge result externalization;
+12. transport does not leak infrastructure exception;
+13. cost/resource-created operation is not mislabeled safe solely because target operation is read-oriented.
 
 ---
 
-# 40. Open questions
+# 33. Implementation representation
 
-На этом этапе намеренно остаются открытыми:
-
-1. Точный Python representation `OperationResult` — generic dataclass/Pydantic model/discriminated union.
-2. Точная Principal/Owner model до design авторизации.
-3. Полная error code taxonomy по компонентам.
-4. Универсальный public формат provenance references.
-5. Нужен ли обязательный client-supplied `item_id` в batch или достаточно input index.
-6. Нужен ли отдельный `accepted` outcome для async Job creation или `succeeded + Job handle` достаточно.
-7. Точные idempotency-key requirements для будущих mutating REST operations.
-
-Эти вопросы должны закрываться до соответствующего implementation patch, но не мешают проектировать resource/persistence/component model поверх уже принятых общих semantics.
+Exact Python choice (dataclass/Pydantic/generic union) belongs v0.1 implementation sequence, but must preserve every semantic invariant above and generate/serialize public models compatible with `contracts/common-models.md`.
