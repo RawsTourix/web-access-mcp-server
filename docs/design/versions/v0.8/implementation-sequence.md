@@ -2,362 +2,340 @@
 
 ## Назначение
 
-Порядок freeze/stabilization внешних contracts и own-agent integration.
+Порядок стабилизации внешних contracts и own-agent integration.
 
-> Нельзя сначала сохранить golden fixture, а потом объявить случайную текущую схему правильной. Сначала semantic review/fix, затем freeze.
+Ключевое правило:
 
----
-
-# F0 — Baseline inventory
-
-Generate temporary reports from actual service:
-
-- all REST routes/operationIds/schemas;
-- all MCP tools/descriptions/input schemas/annotations;
-- external error codes;
-- ResourceRef/cursor schemas;
-- own-agent expected trusted tool list.
-
-Compare with design and classify mismatches.
-
-No golden gate yet.
+> Не freeze-ить случайно сгенерированную текущую схему. Сначала actual implementation сравнивается с reviewed `contracts/*`, semantic divergences исправляются или явно пересматриваются, и только затем generated artifacts становятся golden.
 
 ---
 
-# F1 — Contract generator tooling
+# F0 — Preconditions/baseline inventory
 
-Create deterministic generator, e.g.:
+Require accepted v0.1–v0.7.
+
+Generate temporary actual inventory:
+
+- REST paths/methods/operationIds/security/schemas;
+- Browser specialized routes;
+- Admin/policy routes;
+- MCP names/descriptions/input schemas/annotations;
+- common result/error/resource serialization;
+- own-agent trusted descriptors.
+
+No fixture committed as authoritative yet.
+
+---
+
+# F1 — Contract spec consistency
+
+Read together:
 
 ```text
-scripts/generate_contracts.py
+contracts/common-models.md
+contracts/mcp-tools.md
+contracts/rest-api-v1.md
+contracts/browser-api-v1.md
+contracts/policy-models.md
+contracts/admin-api-v1.md
 ```
 
-Outputs:
+Verify no conflicting definitions for same namespace/type.
+
+Specificity:
 
 ```text
-contracts/manifest.json
-contracts/rest/openapi-v1.json
-contracts/mcp/tools-v1.json
-contracts/common/error-taxonomy-v1.json
-contracts/common/resource-schemas-v1.json
+Browser REST → browser-api-v1.md
+Admin REST   → admin-api-v1.md + policy-models.md
+Other REST   → rest-api-v1.md
+MCP          → mcp-tools.md
 ```
 
-Run twice → byte-identical output.
-
-Canonicalizer must not hide meaningful difference.
+If conflict is real, resolve Design/ADR first.
 
 ---
 
-# F2 — Common result/error/resource review
+# F2 — Common public model implementation audit
 
-Before REST/MCP individually:
+Align actual serialization with `common-models.md`:
 
-- OperationResult envelope;
-- outcomes incl. partial/unknown;
-- Warning/Hint;
-- error category/code/retryability;
-- ContentRef/BrowserSession/Page/Job refs;
-- cursor version/error.
+- OperationResult/outcomes;
+- errors/details/retryability;
+- warnings/hints;
+- batch item envelope;
+- Content/Browser/Page/Snapshot/Job refs;
+- cursors/progress.
 
-Fix inconsistency application-side first.
-
----
-
-# F3 — REST semantic cleanup
-
-Review every implemented `/api/v1` route against `rest-api.md`:
-
-- names;
-- methods;
-- resource/action structure;
-- validation envelope;
-- auth;
-- status mapping;
-- operationId;
-- bounded bodies/results;
-- no infrastructure leakage.
-
-Remove/rename pre-freeze mistakes now with migration note if any test client exists.
+No transport-specific accidental duplicate model with different semantics.
 
 ---
 
-# F4 — REST schema quality
+# F3 — MCP exact schema audit
 
-Actual OpenAPI tests verify:
+Actual FastMCP must match **28-tool** contract.
 
-- descriptions;
-- examples;
-- limits/defaults/enums;
-- security schemes;
-- common errors;
-- binary/stream endpoints documented;
-- admin endpoints protected.
+Verify:
 
-Then write candidate `openapi-v1.json`.
-
----
-
-# F5 — MCP catalog cleanup
-
-Make actual registered tools exactly ADR-0022 catalog.
-
-Remove exploratory aliases/mixed variants.
-
-Ensure:
-
-- no `execution=direct|durable`;
-- no mutating `browser_tabs` commands;
-- no `browser_select/check` duplicates baseline;
-- page create/close explicit;
-- no internal/admin tools.
-
----
-
-# F6 — MCP description/schema audit
-
-For all 27 tools:
-
-- Russian tool description;
-- Russian every field/nested description;
-- neighbor-tool distinction;
-- exact limits;
-- defaults/null;
-- `additionalProperties=false` where appropriate;
-- one execution class;
+- exact names;
+- Russian descriptions;
+- all nested descriptions;
+- no aliases/obsolete tools;
+- exact defaults/bounds/enums;
+- actual discriminated unions;
+- unknown fields rejected;
+- scroll/form/key/multi-upload semantics;
 - annotations;
-- bounded result contract.
+- no private/infrastructure fields.
 
-Run actual MCP client schema validation with positive/negative examples.
-
----
-
-# F7 — Generate MCP fixture
-
-Generate `tools-v1.json` from actual FastMCP runtime.
-
-Canonicalize only SDK-volatile non-semantic metadata through explicit normalizer.
-
-Add semantic assertions separately so wording/meaning regression is caught even when schema shape same.
+Runtime validation negative fixtures required.
 
 ---
 
-# F8 — Compatibility manifest/fingerprints
+# F4 — Retry/resource/cost metadata audit
 
-Create manifest and hashes.
+Implement/verify ADR-0024 end-to-end.
 
-Manifest generation fails if component artifact missing/inconsistent version.
+Own-agent trusted descriptor must distinguish:
 
-Package version is recorded informationally but not used as sole compatibility decision.
+- pure reads;
+- billable Search uncertainty;
+- Content/resource creating direct calls;
+- idempotent canonical parse reuse;
+- Job/session/page/artifact creation;
+- Browser mutating actions;
+- idempotent cleanup/cancel.
 
----
+Tests inject response loss at pre-dispatch/post-dispatch/terminal-response phases.
 
-# F9 — Own-agent trusted descriptor mapping
-
-In coordinated `internet-search-bot` work:
-
-- register Web Access as builtin Streamable HTTP service;
-- exact tool bindings;
-- retry/side-effect classes;
-- trusted presentation profiles;
-- BrowserSession remote resource cleanup mapping;
-- Job resource behavior;
-- timeout/budget profiles.
-
-Agent changes remain in agent repo.
+No static “all read-only tools safe retry” shortcut.
 
 ---
 
-# F10 — Agent discovery/schema tests
+# F5 — REST common exact audit
 
-Verify actual workflow:
+Compare ordinary REST implementation to `rest-api-v1.md`:
+
+- Search;
+- Retrieval;
+- Content;
+- Jobs;
+- common auth/result/error/cursor/stream semantics.
+
+Verify no raw provider/HTTP/library leakage.
+
+---
+
+# F6 — Browser REST exact audit
+
+Compare Browser namespace to `browser-api-v1.md`:
+
+- sessions/pages/navigation;
+- snapshot/rendered Content/screenshot;
+- typed actions;
+- explicit scroll;
+- fill fail-fast;
+- structured key;
+- multi-upload;
+- events;
+- retry/unknown semantics;
+- Browser read/write scopes.
+
+Actual OpenAPI unions/bounds tests required.
+
+---
+
+# F7 — Policy/Admin exact audit
+
+Compare to:
 
 ```text
-mcp_list_tools
-→ descriptions
-→ mcp_get_tool_schema
-→ correct arguments
-→ mcp_call_tool
+policy-models.md
+admin-api-v1.md
 ```
 
-Focus on neighbor confusion:
+Verify:
 
-- search vs fetch;
-- fetch vs fetch_job;
-- snapshot vs content;
-- direct parse vs parse_job;
-- browser tabs vs page create/close.
+- exact 8 task capabilities;
+- no dynamic `admin` capability;
+- global/default/max/override validation;
+- policy revisions/rollback;
+- principal override CRUD;
+- provider/usage/audit;
+- worker drain generation;
+- typed maintenance;
+- admin:read/write auth + deployment boundary;
+- no secret/raw SQL/Redis/admin MCP leakage.
 
----
-
-# F11 — Browser lifecycle integration
-
-Agent end-to-end:
+Explicit self-lockout test:
 
 ```text
-browser_create
-→ Agent registers handle
-→ actions
-→ cycle/resource cleanup hook
-→ browser_close
+disable all task capabilities
+→ authorized admin policy control remains usable
 ```
 
-Fault tests:
-
-- agent disconnect;
-- Web Access Control Plane reconnect;
-- Browser Worker loss;
-- cleanup endpoint unavailable;
-- cleanup timeout;
-- service TTL/reaper final cleanup.
-
-Final agent answer must not be invalidated solely by cleanup failure per agent contract.
-
 ---
 
-# F12 — `unknown` integration
+# F8 — Generated artifact tooling
 
-Inject response loss after Browser mutating action.
-
-Prove:
-
-- service returns/recovers same action result where possible;
-- unresolved becomes `unknown`;
-- Agent Dispatcher does not auto-repeat;
-- safe snapshot/status can follow;
-- user-facing result preserves ambiguity when evidence insufficient.
-
----
-
-# F13 — Durable Job integration
-
-Own-agent test:
+Create deterministic generators for:
 
 ```text
-web_fetch_job/content_parse_job
-→ JobRef
-→ disconnect/reconnect
-→ job_get
-→ result ContentRef
+OpenAPI v1
+FastMCP tool schema/annotations
+public model schema/serialization metadata
 ```
 
-Cancel test.
+Requirements:
 
-No automatic Job cancellation at ordinary AgentCycle end unless explicitly configured by future agent policy.
-
----
-
-# F14 — Progress/presentation
-
-Agent-side trusted presentation for Web Access tools validated:
-
-- semantic progress;
-- no raw MCP tool name only where profile exists;
-- generic fallback for unknown future tool;
-- page/tool output cannot inject trusted UI text.
-
-Web Access remains UI-agnostic.
+- stable ordering/normalization;
+- no timestamps/random build noise;
+- one command/CI step reproducible;
+- generated from actual registered runtime, not parallel hand-written JSON.
 
 ---
 
-# F15 — Generic MCP client suite
+# F9 — Golden fixtures
 
-Without own agent:
+Only after F1–F8 green, commit reviewed golden artifacts.
 
-- authenticate;
-- discovery;
-- web search/fetch/content;
-- Browser lifecycle;
-- Job lifecycle;
-- reconnect.
-
-This is separate release gate from own-agent integration.
-
----
-
-# F16 — REST representative client suite
-
-Script/client flows:
-
-- search;
-- retrieval/content stream;
-- Browser session/actions/content;
-- durable Job;
-- admin status/policy with correct scope;
-- error parsing.
-
-Generated client optional; raw HTTP contract enough.
-
----
-
-# F17 — Old/request compatibility fixtures
-
-Keep representative valid request corpus from pre-freeze implementation.
-
-Candidate service must accept them unless explicit intentional pre-v1 breaking correction documented.
-
-Cursor compatibility tests included.
-
----
-
-# F18 — Enable contract CI gate
-
-After semantic freeze accepted:
-
-CI regenerates contracts and fails on diff unless committed expected artifacts change.
-
-PR must classify diff:
+Recommended logical artifacts:
 
 ```text
-additive
-compatible behavior
-breaking candidate
+openapi-v1
+mcp-tools-v1
+public-models-v1
 ```
 
-No automatic fixture regeneration in CI that silently accepts diff.
+Path can follow repository convention.
+
+Fixture commit includes generation instructions and source revision.
 
 ---
 
-# F19 — Documentation consistency sweep
+# F10 — Compatibility diff classifier
 
-Search repository for old exploratory public interfaces:
+Implement CI diff/report according `compatibility.md`.
+
+Detect/classify at least:
+
+- route/tool removal/rename;
+- required field added;
+- field removed;
+- bound change;
+- default change;
+- enum change;
+- union/discriminator change;
+- security requirement change;
+- result/resource model change;
+- MCP annotations/own-agent retry semantic change;
+- policy schema revision/change.
+
+Some additive changes require human semantic review.
+
+---
+
+# F11 — Own-agent builtin registry integration
+
+In `internet-search-bot` integration environment:
+
+- register Web Access as builtin MCP service through standard registry/config;
+- trusted presentation descriptors per tool;
+- retry/resource/cost semantics from exact current catalog;
+- BrowserSession remote handle ownership/cleanup;
+- Job/Content lifecycle mapping;
+- no special WebToolProvider/direct REST bypass.
+
+Web Access repo must not import agent code.
+
+---
+
+# F12 — Agent UX/workflow acceptance
+
+Representative real workflows:
 
 ```text
-execution=direct|durable
-mixed browser_tabs commands
-browser_select/check baseline tools
-old names/limits
+Search only
+Search → Fetch
+Search → Browser
+Fetch HTML/PDF
+Browser navigate → snapshot → interaction
+long/lazy page snapshot → scroll → snapshot
+form fail-fast recovery
+multi-file upload
+Browser content/screenshot/download artifacts
+durable retrieval Job
+durable content parse Job
 ```
 
-Update/delete contradictions.
-
-Version docs may retain historical superseded decision only if explicitly marked as such.
+Verify user-facing progress is rendered by Agent trusted presentation, not arbitrary MCP text.
 
 ---
 
-# F20 — Cross-repo release gate
+# F13 — Response-loss/retry acceptance
 
-Run pinned Web Access candidate + pinned agent candidate in controlled environment.
+Inject failures proving:
 
-Required zero live public/provider dependencies where deterministic fake/local fixtures suffice.
-
-Then optional manual live smoke for SearXNG/public web as non-default gate.
-
-Record compatible commit/ref pair in release evidence.
+- Yandex/billable Search not double-called blindly;
+- web_fetch ambiguous response not blind duplicated;
+- content_parse canonical reuse/idempotency concurrency;
+- Job/session/page/artifact create uncertainty handled conservatively;
+- Browser navigate/click/press/scroll/upload no duplicate action;
+- close/cancel idempotent replay works;
+- unknown outcome remains visible.
 
 ---
 
-# F21 — Freeze acceptance
+# F14 — Generic MCP client acceptance
 
-Before v0.8 completion:
+Independent client:
 
-- generated artifacts committed;
-- exact MCP catalog = ADR-0022;
-- OpenAPI reviewed;
-- error/resource/cursor revisions recorded;
-- own-agent descriptors updated/tested;
-- generic client passes;
-- contract CI gate active;
-- docs contradiction search clean.
+```text
+initialize
+list tools
+inspect schemas
+call representative Web/Content/Browser/Job tools
+reconnect
+reuse BrowserSession handle
+close
+```
+
+No dependency on own-agent private protocol required.
+
+---
+
+# F15 — REST client acceptance
+
+Validate:
+
+- generic OpenAPI/raw HTTP client;
+- streaming Content;
+- cursor opacity;
+- Browser discriminated unions;
+- Admin policy exact models;
+- protected scopes;
+- normalized errors;
+- creation idempotency only where exact contract says it exists.
+
+Generated SDK optional.
+
+---
+
+# F16 — Documentation/contract freeze gate
+
+Before v0.8 accepted:
+
+1. actual MCP = 28-tool contract;
+2. actual REST = composite exact contract;
+3. generated fixtures deterministic;
+4. CI contract diff enabled;
+5. own-agent descriptors/lifecycle/retry current;
+6. generic MCP accepted;
+7. admin self-lockout impossible by dynamic task policy;
+8. no unresolved public contract drift;
+9. all relevant release gates green;
+10. `current.md`/versions updated factually from evidence.
+
+After F16, v0.9 may harden/measure but should not casually redesign public contract.
 
 ---
 
@@ -365,11 +343,12 @@ Before v0.8 completion:
 
 Do not:
 
-- freeze generated schema without semantic review;
-- copy agent presentation metadata into Web Access output;
-- add `service_info` MCP tool only to expose package version if standard discovery/contract manifest suffices;
-- require agent-specific manager functions for generic MCP operation;
-- automatically approve golden diff;
-- keep aliases indefinitely merely to avoid fixing pre-v1 mistake;
-- make tool retry class argument-dependent;
-- hide breaking change inside description-only edit.
+- freeze current accidental framework schema without target comparison;
+- hand-edit golden JSON instead of generator/source model;
+- keep old 27-tool assumption;
+- omit `browser_scroll` and hide scrolling inside snapshot;
+- mark all read-oriented tools auto-retry-safe ignoring cost/resource creation;
+- let dynamic policy include/disable admin control plane;
+- let Admin/Browser specialized routes diverge because common REST file is older;
+- change agent retry semantics without Web Access contract update;
+- make own-agent private integration mandatory for generic MCP client.
