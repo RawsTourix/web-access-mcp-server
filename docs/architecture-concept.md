@@ -2,15 +2,17 @@
 
 ## Статус документа
 
-Этот документ продолжает `docs/project-concept.md` и фиксирует предполагаемую **структуру проекта, границы модулей, process boundaries и направление зависимостей**.
+Этот документ фиксирует **макроархитектуру и границы модулей** Web Access MCP.
 
-Это всё ещё не полноценный design document. Точные классы, schemas, database tables, Redis-протоколы, endpoints, MCP tools и version roadmap будут определяться позднее по отдельным компонентам.
+Он является concept-level обзором. Точные runtime protocols, concrete libraries, database schemas, REST/MCP DTO, limits и version steps принадлежат `docs/design/` и accepted ADR.
+
+Если ранний concept расходится с поздним Design/ADR/contract, канонический design имеет приоритет.
 
 ---
 
-## 1. Главный принцип структуры
+# 1. Главный принцип структуры
 
-Структура проекта должна отражать не список библиотек, а **границы ответственности**.
+Структура отражает **границы ответственности и владения state**, а не список libraries.
 
 Базовое направление зависимостей:
 
@@ -22,21 +24,26 @@ application
 domain
 
 infrastructure
-   ↑ implements ports required by application
+   ↑ implements application ports
+
+workers/runtime executors
+   → исполняют runtime-specific contracts
 
 bootstrap
-   → связывает конкретные реализации
+   → связывает concrete implementations
+
+entrypoints
+   → запускают собранные runtimes
 ```
 
-Не следует превращать проект в формальную Clean Architecture с большим количеством искусственных слоёв. Нужны только те границы, которые реально защищают application logic от transport и infrastructure деталей.
+Проект не должен превращаться ни в плоский `services/utils`, ни в формальную Clean Architecture с искусственными слоями без реальной пользы.
 
 ---
 
-## 2. Предлагаемый repository layout
+# 2. Repository layout direction
 
 ```text
 web-access-mcp-server/
-│
 ├── src/
 │   └── web_access/
 │       ├── core/
@@ -47,311 +54,131 @@ web-access-mcp-server/
 │       ├── workers/
 │       ├── bootstrap/
 │       └── entrypoints/
-│
 ├── alembic/
 ├── tests/
 ├── docs/
 ├── deploy/
 ├── scripts/
 ├── pyproject.toml
-├── docker-compose.yml
-└── README.md
+└── docker-compose.yml
 ```
 
-Предпочтителен `src`-layout, чтобы import behavior в development и installed environment совпадал.
+Предпочтителен `src` layout.
+
+Фактическая детализация package tree определяется version implementation plans; направление зависимостей — нет.
 
 ---
 
-## 3. `domain/`
+# 3. Domain/application areas
 
-`domain/` содержит только устойчивые предметные понятия и invariants.
-
-Предварительная структура:
+Основные предметные области:
 
 ```text
-domain/
-├── search/
-├── retrieval/
-├── content/
-├── browser/
-└── jobs/
+search
+retrieval
+content
+browser
+jobs
 ```
 
-Здесь могут жить сущности и value objects вроде:
+Cross-cutting application foundation:
 
 ```text
-SearchQuery
-SearchResult
-RetrievedResource
-ContentObject
-ContentRepresentation
-BrowserSession
-BrowserSessionState
-BrowserActionResult
-Job
-JobState
+execution context
+results/errors/warnings/hints
+ownership/resource references
+policy
+observability context
 ```
 
-Здесь не должны находиться:
-
-- SQLAlchemy models;
-- FastAPI requests;
-- FastMCP schemas;
-- HTTPX responses;
-- Redis keys;
-- Playwright `Page`/`BrowserContext`;
-- SearXNG/Yandex-specific payloads.
+Domain/application code не зависит от FastAPI/FastMCP, SQLAlchemy, Redis clients, HTTP/browser libraries или конкретного provider SDK.
 
 ---
 
-## 4. `application/`
+# 4. Ports принадлежат потребителю
 
-`application/` является основным прикладным слоем проекта.
+Application module объявляет нужный port рядом со своим use case.
 
-Предварительная структура:
-
-```text
-application/
-├── common/
-│   ├── context.py
-│   ├── results.py
-│   └── errors.py
-│
-├── search/
-│   ├── service.py
-│   ├── contracts.py
-│   └── ports.py
-│
-├── retrieval/
-│   ├── service.py
-│   ├── contracts.py
-│   └── ports.py
-│
-├── content/
-│   ├── service.py
-│   ├── contracts.py
-│   ├── inspection.py
-│   ├── representations.py
-│   └── ports.py
-│
-├── browser/
-│   ├── service.py
-│   ├── lifecycle.py
-│   ├── contracts.py
-│   └── ports.py
-│
-└── jobs/
-    ├── service.py
-    ├── lifecycle.py
-    ├── contracts.py
-    └── ports.py
-```
-
-Точные имена файлов могут измениться после детального проектирования.
-
-Application layer определяет use cases и необходимые ему ports. Он не должен импортировать FastAPI router, FastMCP tool или конкретный provider client.
-
-### Почему ports располагаются рядом с владельцем
-
-Port принадлежит модулю, которому он нужен.
-
-Например Search может объявлять:
+Примеры:
 
 ```text
-SearchProvider
-SearchCache
+Search
+→ SearchProvider
+→ SearchCache/flow policy interfaces
+
+Retrieval
+→ SafeHttpFetcher / URL policy
+
+Content
+→ ContentStore / NativeParser registry
+
+Browser
+→ BrowserWorkerClient / BrowserSessionRepository
+
+Jobs
+→ JobRepository / queue-delivery abstractions
 ```
 
-Browser:
-
-```text
-BrowserWorkerClient
-BrowserSessionRepository
-```
-
-Content:
-
-```text
-ContentStore
-ContentInspector
-NativeContentParser
-```
-
-Так dependency contract остаётся рядом с application use case и не возникает глобальной папки `ports/`, превращающейся в свалку интерфейсов.
+Concrete adapter выбирается bootstrap/composition root.
 
 ---
 
-## 5. `Content` как единая предметная область
+# 5. Infrastructure
 
-Отдельного верхнеуровневого bounded context `Extraction` не предполагается.
-
-`Content` владеет:
+`infrastructure/` содержит concrete implementations:
 
 ```text
-Identification
-Inspection (L0)
-Native Parsing (L1)
-Representation management
-Storage
-Provenance
+database
+redis
+search providers
+safe retrieval
+content identification/parsers/storage
+job delivery
+observability adapters
+internal RPC clients
 ```
 
-Advanced Processing (L2) находится за границей Web Access.
+Infrastructure может зависеть от внешних libraries; application/domain — нет.
 
-Это означает, что структура может развиваться примерно так:
-
-```text
-application/content/
-    service.py
-    inspection.py
-    representations.py
-    ports.py
-
-infrastructure/content/
-    identification/
-    parsers/
-    storage/
-```
-
-### Native parsers
-
-Infrastructure может содержать registry прямых parsers:
-
-```text
-infrastructure/content/parsers/
-├── registry.py
-├── html.py
-├── text.py
-├── json.py
-├── xml.py
-├── csv.py
-├── pdf.py
-├── docx.py
-├── xlsx.py
-├── pptx.py
-├── epub.py
-└── ...
-```
-
-Поддержка нового формата не должна автоматически требовать изменений MCP/REST surface.
-
-### Representation graph
-
-Исходный объект и производные представления должны иметь явное происхождение:
-
-```text
-raw PDF
-├── native text
-├── native metadata
-└── external OCR result, если позднее создан другим processor
-```
-
-или:
-
-```text
-raw HTML
-├── native text/Markdown
-├── metadata
-└── links/structured data
-```
-
-Web Access не обязан самостоятельно создавать L2-представления, но архитектура Content должна позволять сохранить полученный извне derived result с provenance.
+Provider/library-specific payload никогда автоматически не становится public REST/MCP model.
 
 ---
 
-## 6. `infrastructure/`
+# 6. Transport
 
-Infrastructure реализует ports application layer и содержит конкретные библиотеки/интеграции.
-
-Предварительная структура:
+Два основных public facade:
 
 ```text
-infrastructure/
-├── database/
-│   ├── session.py
-│   ├── models/
-│   └── repositories/
-│
-├── redis/
-│   ├── client.py
-│   ├── cache/
-│   ├── locks/
-│   └── leases/
-│
-├── search/
-│   ├── searxng.py
-│   └── yandex.py
-│
-├── retrieval/
-│   ├── httpx_fetcher.py
-│   ├── url_policy.py
-│   ├── dns.py
-│   └── mime.py
-│
-├── content/
-│   ├── identification/
-│   ├── parsers/
-│   └── storage/
-│
-├── jobs/
-│   └── arq.py
-│
-└── observability/
-    ├── metrics.py
-    └── tracing.py
+transport/rest
+transport/mcp
 ```
 
-Здесь допустимы зависимости от HTTPX, SQLAlchemy, asyncpg, Redis, arq, Trafilatura, pypdf и конкретных provider SDK/API.
+Оба вызывают общий application layer.
+
+Запрещён baseline:
+
+```text
+MCP tool → HTTP request к собственному REST
+REST route → internal MCP call
+```
+
+Transport отвечает за:
+
+- auth/context mapping;
+- transport DTO/validation;
+- application mapper;
+- response/error projection;
+- protocol-specific metadata.
+
+Business logic там не живёт.
 
 ---
 
-## 7. Browser runtime как отдельная runtime-граница
+# 7. Runtime topology
 
-Playwright отличается от обычной infrastructure library: он владеет долгоживущим state.
+В одном репозитории существуют разные runtime classes.
 
-Поэтому browser execution лучше выделить отдельно:
-
-```text
-workers/
-├── jobs/
-│   ├── worker.py
-│   └── tasks.py
-│
-└── browser/
-    ├── worker.py
-    ├── runtime.py
-    ├── sessions.py
-    ├── actions.py
-    ├── snapshots.py
-    ├── downloads.py
-    └── playwright.py
-```
-
-`BrowserApplicationService` не должен напрямую владеть `BrowserContext` или `Page`.
-
-Концептуальный flow:
-
-```text
-BrowserApplicationService
-        ↓
-BrowserWorkerClient port
-        ↓
-worker routing implementation
-        ↓
-BrowserWorker
-        ↓
-Playwright / Chromium
-```
-
-Фактический transport между control plane и browser worker будет выбран отдельным техническим решением.
-
----
-
-## 8. Три основных runtime-а
-
-Один репозиторий предполагает как минимум три независимо запускаемых runtime-а.
-
-### 8.1 Control plane
+## Control Plane
 
 ```text
 web-access-api
@@ -359,406 +186,260 @@ web-access-api
 
 Владеет:
 
-- FastAPI;
-- FastMCP;
-- REST transport;
-- MCP transport;
+- FastAPI/FastMCP;
 - application services;
-- обычными request-bound operations;
-- orchestration к infrastructure adapters и workers.
+- request-bound orchestration;
+- PostgreSQL/Redis/ContentStore adapters;
+- routing к workers.
 
-REST и MCP могут работать в одном process и одном application lifespan.
+Он не владеет authoritative live Browser objects.
 
-### 8.2 Durable job worker
+## Job Worker
 
 ```text
 web-access-worker
 ```
 
-Предназначен для действительно долгих/фоновых операций:
+Исполняет durable registered typed workloads через Job lifecycle.
 
-- crawl;
-- большие batch operations;
-- фоновые Web Access workflows;
-- другие durable jobs.
+Queue message не несёт arbitrary function/code; PostgreSQL остаётся authoritative source of truth.
 
-Его lifecycle основан на PostgreSQL + Redis/arq модели.
-
-### 8.3 Browser worker
+## Browser Worker supervisor
 
 ```text
 web-access-browser-worker
 ```
 
-Имеет другой lifecycle:
+Владеет Browser worker generation/lease/capacity и supervision session subprocesses.
+
+## BrowserSession subprocess
+
+Одна логическая BrowserSession исполняется в отдельном child process:
 
 ```text
-worker startup
-→ Playwright/Chromium startup
-→ BrowserSession ownership
-→ ordered actions
-→ TTL/reaper cleanup
-→ graceful shutdown
+session subprocess
+→ Playwright
+→ dedicated Chromium
+→ non-persistent BrowserContext
+→ bounded Pages
 ```
 
-Его нельзя механически объединять с arq worker, поскольку stateful BrowserSession принадлежит конкретному живому worker-у.
+Это даёт отдельный hard-kill/failure boundary для каждой сессии.
 
 ---
 
-## 9. `transport/`
+# 8. Browser control vs website egress
 
-REST и MCP являются разными фасадами одного application backend.
+Browser control traffic и web egress — разные trust paths.
 
-Предварительно:
-
-```text
-transport/
-├── rest/
-│   ├── app.py
-│   ├── dependencies.py
-│   ├── errors.py
-│   ├── schemas/
-│   ├── mappers/
-│   └── routers/
-│
-└── mcp/
-    ├── server.py
-    ├── errors.py
-    ├── annotations.py
-    ├── schemas/
-    ├── serializers/
-    └── tools/
-```
-
-### Transport schemas не равны application contracts
-
-Нормально иметь:
+Концептуально:
 
 ```text
-REST SearchRequest ─┐
-                    ├→ mapper → application SearchRequest
-MCP WebSearchInput ─┘
-                              ↓
-                    SearchApplicationService
+Control Plane
+→ authenticated internal Browser Worker RPC
+
+BrowserSession/Chromium
+→ controlled public-only egress boundary
+→ Internet
 ```
 
-REST может быть богаче и технически подробнее.
+Browser child не должен получать DB/Redis/provider/auth secrets.
 
-MCP должен оставаться компактным agent-facing интерфейсом с русскоязычными descriptions.
+Подробный transport/lease/egress contract принадлежит Browser ADR.
 
 ---
 
-## 10. Structured hints в result contracts
+# 9. Content architecture
 
-Application result может содержать **структурированные подсказки** о разумных следующих шагах.
-
-Это не orchestration engine и не автоматический fallback.
-
-Подсказки должны строиться на наблюдаемом результате и diagnostics.
-
-Концептуально клиент должен иметь возможность различить:
+`Content` — единая область для:
 
 ```text
-фактический результат
-warnings/diagnostics
-recommendations/hints
+Identification
+L0 Inspection
+L1 Native Parsing
+Representation graph
+Provenance
+Storage/lifecycle
 ```
 
-Пример смыслового результата:
+Standalone generic `Extraction` bounded context не используется.
+
+Пример lineage:
 
 ```text
-Retrieval succeeded
-Content identified as HTML
-Native Parsing produced no useful text
-Hint: browser capability may provide rendered page state
+raw PDF
+├── native text
+└── metadata
+
+raw HTML
+├── native document representation
+└── structured metadata/links
 ```
 
-Другой пример:
+Derived representation не заменяет original.
 
-```text
-Content identified as PDF
-No accessible text layer detected
-Hint: further reading may require OCR/document-processing capability outside native Web Access parsing
-```
-
-### Приоритет рекомендаций
-
-1. Если подходящий следующий шаг является capability самого Web Access — подсказка может быть конкретной.
-2. Если следующий шаг требует внешней системы — подсказка должна описывать требуемый класс capability, а не предполагать конкретный установленный инструмент.
-3. Search не должен рекомендовать смену provider-а только потому, что выдача кажется «маленькой»: это уже предметное решение клиента, если нет объективной provider-level ошибки или ограничения.
-
-Подсказка никогда не должна автоматически запускать рекомендуемую операцию.
+L2 processors остаются внешними по отношению к Web Access core.
 
 ---
 
-## 11. `bootstrap/`
+# 10. Request-bound vs durable execution
 
-Composition root должен быть явным.
-
-Предварительно:
+Request-bound path используется для коротких explicit operations:
 
 ```text
-bootstrap/
-├── container.py
-├── lifespan.py
-└── wiring.py
+Search
+Retrieval
+Content read/native parse
+Browser action через owning worker
 ```
 
-Здесь связываются abstractions и implementations:
+Durable Job — отдельный resource/lifecycle для long-running work:
 
 ```text
-SearchProvider → SearXNGProvider
-SearchCache → Redis cache adapter
-ContentStore → FilesystemContentStore или S3CompatibleContentStore
-BrowserWorkerClient → выбранный worker transport adapter
+create Job durably
+→ queue wake-up
+→ DB claim/attempt/fencing
+→ checkpoints/progress
+→ terminal result
+```
+
+Нельзя автоматически переводить direct call в Job hidden heuristic-ой.
+
+---
+
+# 11. Persistence responsibilities
+
+```text
+PostgreSQL
+→ authoritative durable structured state
+
+Redis
+→ cache / rate / short-lived coordination / routing / queue delivery signal
+
+ContentStore
+→ large immutable blobs/representations
+```
+
+Cross-system crash windows закрываются explicit lifecycle/reconciliation, а не надеждой на последовательность вызовов.
+
+---
+
+# 12. Composition root
+
+Concrete dependencies собираются сверху.
+
+Концептуально:
+
+```text
+SearchProvider port → SearXNG/Yandex adapter
+ContentStore port → filesystem/S3-compatible adapter
+BrowserWorkerClient → internal worker RPC adapter
 Repositories → SQLAlchemy implementations
+Job delivery → Redis/arq infrastructure
 ```
 
-Application service не должен создавать собственный SQLAlchemy engine, Redis pool или HTTPX client.
+Application service не создаёт себе concrete client/repository сам.
 
 ---
 
-## 12. `entrypoints/`
+# 13. Entrypoints
 
-Entrypoints должны быть максимально тонкими:
-
-```text
-entrypoints/
-├── api.py
-├── job_worker.py
-└── browser_worker.py
-```
-
-Их ответственность:
+Entrypoints тонкие:
 
 ```text
-load config
-→ build dependencies
-→ start corresponding runtime
-→ shutdown cleanly
+api
+job_worker
+browser_worker
+parser/session child entrypoints where required by isolation
 ```
 
-Бизнес-логика в entrypoints не размещается.
+Их работа:
+
+```text
+load validated config
+→ build dependencies/runtime
+→ run
+→ graceful bounded shutdown
+```
+
+Не business logic.
 
 ---
 
-## 13. `core/`
+# 14. Масштабирование
 
-`core/` содержит только действительно сквозную техническую основу, например:
-
-```text
-core/
-├── config.py
-├── logging.py
-├── ids.py
-└── time.py
-```
-
-Нельзя превращать `core/` в свалку `utils.py`, `helpers.py`, `misc.py` или предметной логики.
-
----
-
-## 14. Execution paths
-
-### Request-bound
-
-Короткие операции выполняются непосредственно в control plane или через owning browser worker:
+Архитектура допускает независимое масштабирование:
 
 ```text
-search
-retrieval
-content inspection/native parsing
-content read
-browser action
-```
-
-Они могут логироваться и иметь audit metadata, но не обязаны создавать durable job.
-
-### Durable
-
-Длительные операции используют job runtime:
-
-```text
-client
-→ application job creation
-→ PostgreSQL authoritative state
-→ Redis/arq
-→ job worker
-→ persisted events/result
-```
-
-Выбор между request-bound и durable execution должен определяться семантикой операции, а не скрытой эвристикой вроде размера ответа.
-
----
-
-## 15. PostgreSQL и Redis не являются центром domain architecture
-
-PostgreSQL и Redis проходят поперёк системы как infrastructure.
-
-PostgreSQL используется для durable structured state.
-
-Redis — для тех координационных задач, где это оправдано: cache, rate limiting, locks, queues, leases, routing metadata и потенциально event coordination.
-
-Нельзя строить application contracts вокруг Redis keys или SQLAlchemy models.
-
----
-
-## 16. Масштабирование
-
-Архитектура должна позволять независимо масштабировать:
-
-```text
-API/MCP replicas
-job workers
-browser workers
+Control Plane replicas
+Job Workers
+Browser Workers
 SearXNG
 PostgreSQL
 Redis
-ContentStore backend
+ContentStore
+Browser egress gateway
 ```
 
-Stateful BrowserSession маршрутизируется к worker-у, который фактически владеет её живым state.
+API replica restart не должен автоматически уничтожать durable Job/Content или BrowserSession.
 
-Падение API replica не должно автоматически означать потерю BrowserSession.
-
-Падение owning browser worker, напротив, может перевести принадлежащую ему session в `lost`; это должно быть явно представлено в lifecycle, а не скрыто под transport retry.
+Потеря owning Browser Worker/session child может сделать BrowserSession `lost`; это explicit lifecycle, а не скрытый reconnect retry.
 
 ---
 
-## 17. Testing structure
+# 15. Structured hints
 
-Предварительно:
+Application result разделяет:
 
 ```text
-tests/
-├── unit/
-├── contract/
-├── integration/
-├── e2e/
-└── load/
+facts/result
+warnings
+trusted structured hints
+errors
 ```
 
-Особенно важны contract tests для:
+Hint может рекомендовать capability, но не выполняет её автоматически.
 
-- application ports;
-- фактических MCP schemas, которые увидит клиент;
-- REST schemas;
-- content format identification;
-- native parser contracts;
-- browser session lifecycle;
-- worker crash/restart;
-- storage backends;
-- PostgreSQL/Redis failure modes.
+Особенно точными могут быть same-service рекомендации (`web_fetch` result → browser may be useful). External processing recommendations формулируются через capability class, не как hidden dependency на конкретный продукт.
 
 ---
 
-## 18. Полная ориентировочная структура
+# 16. Testing topology
+
+Проект должен иметь разные классы evidence:
 
 ```text
-web-access-mcp-server/
-│
-├── src/
-│   └── web_access/
-│       ├── core/
-│       │   ├── config.py
-│       │   ├── logging.py
-│       │   ├── ids.py
-│       │   └── time.py
-│       │
-│       ├── domain/
-│       │   ├── search/
-│       │   ├── retrieval/
-│       │   ├── content/
-│       │   ├── browser/
-│       │   └── jobs/
-│       │
-│       ├── application/
-│       │   ├── common/
-│       │   ├── search/
-│       │   ├── retrieval/
-│       │   ├── content/
-│       │   ├── browser/
-│       │   └── jobs/
-│       │
-│       ├── transport/
-│       │   ├── rest/
-│       │   │   ├── routers/
-│       │   │   ├── schemas/
-│       │   │   └── mappers/
-│       │   └── mcp/
-│       │       ├── tools/
-│       │       ├── schemas/
-│       │       ├── serializers/
-│       │       └── annotations.py
-│       │
-│       ├── infrastructure/
-│       │   ├── database/
-│       │   │   ├── models/
-│       │   │   └── repositories/
-│       │   ├── redis/
-│       │   ├── search/
-│       │   ├── retrieval/
-│       │   ├── content/
-│       │   │   ├── identification/
-│       │   │   ├── parsers/
-│       │   │   └── storage/
-│       │   ├── jobs/
-│       │   └── observability/
-│       │
-│       ├── workers/
-│       │   ├── jobs/
-│       │   └── browser/
-│       │
-│       ├── bootstrap/
-│       │   ├── container.py
-│       │   ├── lifespan.py
-│       │   └── wiring.py
-│       │
-│       └── entrypoints/
-│           ├── api.py
-│           ├── job_worker.py
-│           └── browser_worker.py
-│
-├── alembic/
-├── tests/
-│   ├── unit/
-│   ├── contract/
-│   ├── integration/
-│   ├── e2e/
-│   └── load/
-│
-├── docs/
-│   ├── project-concept.md
-│   ├── architecture-concept.md
-│   └── design/
-│
-├── deploy/
-├── scripts/
-├── pyproject.toml
-├── docker-compose.yml
-└── README.md
+unit
+contract
+integration
+race/concurrency
+fault/restart
+security
+browser lifecycle
+migration/restore
+soak/leak
+load/backpressure
+REST/OpenAPI
+actual MCP schemas
+e2e
 ```
+
+Runtime/process boundaries считаются архитектурой только после tests, доказывающих crash/recovery semantics.
 
 ---
 
-## 19. Открытые архитектурные вопросы
+# 17. Канонический подробный design
 
-До полноценного design document остаётся отдельно решить как минимум:
+Concept-level структура развёрнута в:
 
-1. Точный backend contract Search.
-2. Точный Retrieval contract и security pipeline.
-3. Каноническую модель `ContentObject` и representation/provenance graph.
-4. Какие форматы относятся к поддерживаемому Native Parsing L1.
-5. Внутренний transport control plane ↔ browser worker.
-6. BrowserSession lifecycle, routing, leases и failure semantics.
-7. Что является обычной Operation, а что Durable Job.
-8. Persistence model PostgreSQL.
-9. Точное назначение Redis по подсистемам.
-10. Полный failure/error contract.
-11. Security model и service authentication.
-12. Observability contracts.
-13. REST facade.
-14. MCP facade и его agent-facing schemas.
-15. Version roadmap и release gates.
+```text
+docs/design/dependency-rules.md
+docs/design/runtime-topology.md
+docs/design/persistence.md
+docs/design/<component>.md
+docs/design/decisions/
+docs/design/contracts/
+docs/design/versions/
+```
 
-Эти вопросы должны прорабатываться последовательно, а не решаться одним большим implementation patch.
+Для реализации использовать именно эти документы и `docs/AGENTS.md`.
