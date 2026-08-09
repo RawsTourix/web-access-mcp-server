@@ -1,6 +1,6 @@
 # ADR-0012 — BrowserSession владеет отдельным Chromium process
 
-**Статус:** superseded in part by [ADR-0015](ADR-0015-browser-session-subprocess-boundary.md)
+**Статус:** superseded in part by [ADR-0013](ADR-0013-browser-session-subprocess.md)
 
 ## Сохраняемое решение
 
@@ -32,7 +32,7 @@ Web Access не использует baseline:
 
 Первоначальная версия ADR предполагала, что один Browser Worker process напрямую владеет несколькими Playwright runtime objects и вызывает отдельный `browser_type.launch()` для каждой BrowserSession.
 
-Эта process-management часть заменена ADR-0015.
+Эта process-management часть заменена ADR-0013.
 
 Новая модель:
 
@@ -55,7 +55,7 @@ Initial configurable default остаётся:
 max_sessions_per_worker = 4
 ```
 
-Это стартовый operational профиль, а не универсальная константа. Capacity slot освобождается только после полного завершения/reap session subprocess согласно ADR-0015.
+Это стартовый operational профиль, а не универсальная константа. Capacity slot освобождается только после полного завершения/reap session subprocess согласно ADR-0013.
 
 ## Security
 
@@ -81,4 +81,4 @@ max_sessions_per_worker = 4
 - worker/container shutdown не оставляет orphan processes;
 - capacity ограничивается и корректно освобождается.
 
-Полный process-management и hard-kill acceptance contract находится в ADR-0015.
+Полный process-management и hard-kill acceptance contract находится в ADR-0013.
