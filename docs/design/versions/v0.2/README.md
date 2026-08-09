@@ -2,330 +2,401 @@
 
 ## Статус
 
-`design in progress`
+`ready for implementation`
 
-Версия реализует первый полноценный Web Access capability — Search — через общий application backend, REST и MCP.
+Версия добавляет первый полноценный web capability — Search — через общий backend, REST и MCP.
+
+Подробный порядок: `implementation-sequence.md`.
 
 ---
 
 # 1. Цель
 
-После v0.2 клиент должен уметь:
+После v0.2 Web Access должен:
 
-```text
-query/queries
-→ Web Access Search
-→ SearXNG или explicit Yandex
-→ normalized ranked results
-```
+- выполнять batch-first web search;
+- поддерживать собственный SearXNG как бесплатный default provider;
+- поддерживать отдельный optional Yandex Search provider;
+- нормализовать provider-specific results в общий application model;
+- иметь explicit/default provider selection без hidden fallback;
+- иметь cache/freshness/rate/capacity policies;
+- иметь provider health/degraded state;
+- предоставлять REST Search API;
+- предоставлять русскоязычный MCP `web_search` с точной schema.
 
-с:
-
-- batch-first semantics;
-- cache/freshness;
-- distributed rate/capacity protection;
-- provider health;
-- billable accounting;
-- REST API;
-- MCP `web_search`.
+Search **не читает содержимое найденных страниц**.
 
 ---
 
-# 2. Prerequisites
+# 2. Canonical design / ADR
 
-- accepted v0.1 Service Foundation;
 - `../../search.md`;
-- `../../rest-api.md`;
-- `../../mcp.md`;
+- `../../application-contracts.md`;
 - `../../security.md`;
 - `../../observability.md`;
-- `../../testing.md`;
-- `../../decisions/ADR-0003-search-language-region-model.md`;
-- `../../decisions/ADR-0004-yandex-search-adapter.md`;
-- `../../decisions/ADR-0005-search-cache-rate-capacity.md`.
+- `../../rest-api.md`;
+- `../../mcp.md`;
+- ADR-0003 language/region model;
+- ADR-0004 Yandex adapter;
+- ADR-0005 Search cache/rate/capacity.
 
 ---
 
-# 3. Scope
+# 3. Non-goals
 
-## Application
-
-- `SearchApplicationService`;
-- Search batch/query/result models;
-- SearchProvider port/registry;
-- provider capabilities;
-- SearchRegionRegistry;
-- default/explicit provider resolution;
-- cache/freshness metadata;
-- provider rate/concurrency ports;
-- usage accounting hooks.
-
-## Infrastructure
-
-- SearXNGProvider;
-- YandexSearchProvider;
-- Redis SearchCache;
-- Redis token bucket;
-- Redis distributed provider concurrency lease;
-- provider HTTP clients;
-- SearXNG Compose service.
-
-## REST
-
-- `POST /api/v1/search`;
-- `GET /api/v1/search/providers`;
-- detailed provider status через existing status/admin boundary настолько, насколько входит v0.2.
-
-## MCP
-
-- `web_search`.
-
----
-
-# 4. Non-goals
-
-- Retrieval/read URL;
+- page Retrieval;
 - Browser;
-- auto provider fallback;
-- search reranking;
-- semantic deduplication;
-- image/video/news search;
-- arbitrary SearXNG engine selection LLM-ом;
-- dynamic geocoding региона;
-- scraping yandex.ru HTML;
-- live billable calls в ordinary CI.
+- automatic provider fallback;
+- provider quality heuristics;
+- image/video search;
+- scraping search engines directly;
+- live billable provider tests in default CI;
+- geocoding/fuzzy region inference inside Search.
 
 ---
 
-# 5. SearXNG role
+# 4. Application structure
 
-SearXNG — configured default free provider.
-
-Web Access обращается к private SearXNG HTTP API и получает JSON result.
-
-Underlying engines/configuration принадлежат SearXNG deployment.
-
-`web_search` не принимает engine names.
-
----
-
-# 6. Yandex role
-
-Yandex — explicit optional billable provider.
-
-Используется официальный Yandex Search API v2-compatible adapter через HTTPX согласно ADR-0004.
-
-Yandex не является hidden fallback SearXNG.
-
----
-
-# 7. Provider config
-
-Configuration должна поддерживать:
+Conceptually:
 
 ```text
-search.default_provider
-search.providers.searxng.*
-search.providers.yandex.*
-search.regions.*
-search.cache.*
-search.rate_limits.*
-search.concurrency.*
+SearchApplicationService
+→ SearchProviderRegistry
+   ├── SearXNGProvider
+   └── YandexSearchProvider
+→ SearchCache
+→ SearchRateLimiter
+→ ProviderConcurrencyLimiter
+→ usage/budget port foundation
 ```
 
-Disabled provider может не иметь credentials.
+Transport calls application service only.
 
-Enabled provider с invalid mandatory config делает соответствующую capability unavailable/fail-fast согласно profile, но не должен случайно раскрывать secret.
-
----
-
-# 8. Search Region registry
-
-По ADR-0003:
-
-- canonical region IDs operator-configured;
-- no free-form place guessing;
-- Yandex raw region ID hidden;
-- missing mapping rejected;
-- region config revision учитывается cache/provenance.
-
-Initial repository должен содержать example region config, а не претендовать на полный мировой справочник.
+Provider adapters do not own cache/rate policy.
 
 ---
 
-# 9. Search language
+# 5. Batch-first Search
 
-Application принимает normalized language tag.
+Одна operation принимает несколько независимых queries с общими options.
 
-Implementation sequence фиксирует validation/mapping rules.
-
-`null` = provider/configured default.
-
----
-
-# 10. Cache
-
-По ADR-0005:
-
-- Redis;
-- normalized typed JSON result;
-- hashed canonical key;
-- principal-scoped default;
-- configurable shared-public mode;
-- provider/config/region/schema revision;
-- freshness observable.
-
-Cache failure не отменяет successful provider result.
-
----
-
-# 11. Rate/capacity
-
-- distributed Redis token bucket;
-- principal + global provider policy;
-- distributed provider concurrency lease + local semaphore;
-- cache hit не потребляет provider rate/concurrency;
-- mandatory limiter Redis outage → fail closed для upstream calls.
-
----
-
-# 12. Usage accounting
-
-Yandex actual upstream attempts записываются/наблюдаются отдельно от cache hits.
-
-Exact durable accounting schema может быть minimal в v0.2, но должна позволять впоследствии считать confirmed attempts/usage без реконструкции из logs.
-
-Pricing не хардкодится.
-
----
-
-# 13. REST contract direction
-
-`POST /api/v1/search` поддерживает batch items с богатой per-query application projection.
-
-REST может иметь:
-
-- разные provider/options per query item;
-- provider/freshness metadata;
-- detailed typed errors.
-
-MCP будет проще.
-
----
-
-# 14. MCP `web_search`
-
-Baseline schema direction:
+No:
 
 ```text
-queries: list[str]
-provider: default | searxng | yandex = default
-page: int = 1
-limit: int = 10
-language: str | null = null
-region: str | null = null
-safe_search: off | moderate | strict | null = null
-time_range: day | month | year | null = null
+search
+search_many
 ```
 
-Все options общие для batch.
+Input order preserved.
 
-Если нужны разные параметры — отдельные tool calls.
-
-Hard bounds фиксируются `implementation-sequence.md` после provider/schema review.
+Partial per-query failure does not automatically fail successful queries.
 
 ---
 
-# 15. MCP description requirement
+# 6. MCP limits
 
-Description обязан явно сообщать:
-
-- tool ищет ссылки/поисковую metadata;
-- snippets не являются содержимым страниц;
-- найденный URL читается будущим `web_fetch`;
-- Yandex может быть billable;
-- отсутствие результатов не запускает другой provider автоматически.
-
----
-
-# 16. Provider errors
-
-Должны быть различимы:
-
-- provider unavailable;
-- provider auth/config failure;
-- rate limited;
-- capacity unavailable;
-- unsupported option/region/language;
-- timeout;
-- upstream protocol error;
-- malformed response.
-
-Один provider outage не выключает другой provider.
-
----
-
-# 17. Health
-
-Capability status:
+Freeze baseline:
 
 ```text
-Search
-├── default provider state
-├── SearXNG state
-└── Yandex state
+queries: 1..8
+results per query: 1..20
 ```
 
-Service может быть Search-ready при недоступном optional Yandex.
+REST/application may support wider configured bounds under hard server ceiling.
+
+These MCP limits protect LLM context and are contract limits, not heuristics about result quality.
 
 ---
 
-# 18. Required gates
+# 7. Query model
 
-- G0–G7;
-- G12 Observability;
-- G13 REST;
-- G14 MCP;
-- G15 Deployment для добавления SearXNG;
-- G17 relevant Redis/provider races;
-- G20 own-agent MCP integration;
-- G21 docs consistency.
+Stable agent/application concepts:
 
----
+```text
+query
+page
+limit
+language | null
+region | null
+time_range | null
+safe_search
+type/category only when common semantic capability is proven
+provider = default | provider_id
+```
 
-# 19. Acceptance criteria
-
-1. `web_search` реально доступен через MCP.
-2. REST Search использует тот же SearchApplicationService.
-3. Один/N queries используют batch-first contract.
-4. SearXNG default search работает через private service.
-5. Yandex explicit search работает через official adapter при configured secret.
-6. Нет hidden fallback между providers.
-7. Provider ranking сохраняется.
-8. Empty result successful.
-9. Unsupported options rejected, не ignored.
-10. Region mapping exact/configured.
-11. Cache hit/freshness visible.
-12. Principal-scoped cache isolation работает.
-13. Redis token bucket/distributed capacity работают multi-replica.
-14. Redis limiter outage не bypass-ит mandatory rate policy.
-15. Yandex cache hit не вызывает billable upstream.
-16. Default CI Yandex live calls = 0.
-17. Actual MCP/OpenAPI schemas contract-tested.
-18. `web_search` descriptions русские и достаточны для agent discovery/schema workflow.
-19. Search не создаёт ContentObject и не читает URL.
+Provider-specific raw parameters do not leak into MCP/common application model.
 
 ---
 
-# 20. Remaining blockers
+# 8. Language
 
-Перед `ready for implementation` требуется создать `implementation-sequence.md` и зафиксировать:
+ADR-0003:
 
-1. exact language validation/mapping;
-2. exact MCP schema hard limits;
-3. exact initial SearXNG HTTP request mapping/profile;
-4. exact current Yandex v2 endpoint/request serializer based on official docs + previous working code;
-5. exact Redis JSON serialization/key namespace;
-6. token-bucket/concurrency Lua/data structures;
-7. minimal durable Yandex usage table/model;
-8. initial example SearchRegion config.
+- common normalized language tag (BCP-47-like canonical input semantics);
+- provider adapter maps to supported upstream values;
+- unsupported provider mapping rejected/normalized explicitly;
+- no language guessing from query text as hidden policy.
+
+---
+
+# 9. Region
+
+`SearchRegionId` is canonical configured Web Access region identifier.
+
+Registry maps stable region to provider-specific value.
+
+No:
+
+- automatic geocoding;
+- fuzzy city inference;
+- provider numeric region exposed directly to LLM.
+
+Unknown region gives repairable validation error and optional supported-values guidance bounded appropriately.
+
+---
+
+# 10. Provider selection
+
+```text
+provider omitted/default
+→ configured default provider
+
+provider explicit
+→ exact provider
+```
+
+No:
+
+```text
+few results → switch provider
+provider error → silently use paid provider
+```
+
+Client/Agent chooses next semantic action.
+
+---
+
+# 11. SearXNG provider
+
+Own SearXNG instance is default free provider baseline.
+
+Adapter uses its HTTP JSON Search API.
+
+Provider-specific mapping may include:
+
+- query;
+- pageno;
+- language;
+- time range;
+- SafeSearch;
+- categories where exposed as stable Web Access concept.
+
+SearXNG runtime is private infrastructure service, not directly exposed public API.
+
+Reference Compose adds version-pinned SearXNG and health/readiness.
+
+---
+
+# 12. Yandex Search provider
+
+ADR-0004:
+
+- direct adapter to official Yandex Search API;
+- HTTPX async suitable because destination/configured provider endpoint is trusted/configured;
+- credentials/folder/account config server-side;
+- no API key in MCP/REST request;
+- separate provider health/error mapping;
+- billable usage metadata/accounting foundation;
+- no hiding Yandex solely as SearXNG engine.
+
+This lets operator disable/account paid provider independently.
+
+---
+
+# 13. SearchResult normalization
+
+Common result contains only stable useful concepts, such as:
+
+```text
+rank
+title
+url
+snippet
+provider_id
+provider-specific engine/source metadata only if normalized and justified
+published/observed metadata where provider reliably gives it
+query/page provenance
+```
+
+Search snippet is explicitly **not** target page content verification.
+
+Raw upstream payload may be retained only bounded diagnosticly, not normal MCP response.
+
+---
+
+# 14. Deduplication
+
+Provider adapter/application may deduplicate obvious duplicate entries **within one provider response/batch** using deterministic normalized URL/result identity rules.
+
+No semantic relevance re-ranking by hidden LLM/heuristic baseline.
+
+Original rank/provenance remains observable where useful.
+
+---
+
+# 15. Cache
+
+ADR-0005:
+
+- Redis-backed;
+- key from normalized Search request + provider/revision;
+- principal-scoped by default to avoid cross-principal side channels;
+- bounded TTL;
+- response indicates cached/fetched timestamp/freshness metadata;
+- cache outage behavior explicit;
+- cache hit never masquerades as fresh upstream call.
+
+No hidden stale-while-forever.
+
+---
+
+# 16. Rate vs concurrency
+
+Separate controls:
+
+```text
+rate limiter → operations/units over time
+concurrency limiter → active upstream calls
+```
+
+Both Redis/distributed where needed.
+
+Provider hard limits and principal policy may be lower.
+
+Failure/retry metadata explicit.
+
+---
+
+# 17. Billable provider foundation
+
+v0.2 records billable usage facts/units but full durable multi-principal budget hardening arrives v0.7.
+
+Cache hit does not count as upstream billable attempt.
+
+Provider cost/accounting is not expressed by hardcoded ruble price in SearchResult.
+
+---
+
+# 18. Failure model
+
+Normalize:
+
+```text
+provider_unavailable
+provider_rate_limited
+provider_timeout
+provider_rejected
+unsupported_language
+unsupported_region
+invalid_query
+capacity_limited
+cache_unavailable (if relevant/degraded)
+```
+
+One query item failure in batch preserves successful item results.
+
+No provider exception/stack trace leaks.
+
+---
+
+# 19. Hints
+
+Allowed examples:
+
+- refine/alternative query may help only when based on explicit structured upstream/result state and phrased cautiously;
+- provider disabled/unavailable may expose that another configured provider exists, but service does not automatically call it;
+- Search result can hint `web_fetch` to read chosen URLs — same-service exact capability recommendation.
+
+No “results look bad” hidden quality score baseline.
+
+---
+
+# 20. REST
+
+At minimum:
+
+```text
+POST /api/v1/search
+```
+
+plus authorized provider/status discovery where useful for programmatic/operator clients.
+
+REST may expose more stable search options than MCP while still using the same application model.
+
+---
+
+# 21. MCP `web_search`
+
+Description in Russian must clearly say:
+
+- searches public web;
+- returns candidate result metadata/snippets;
+- does not read target pages;
+- use `web_fetch` for selected known URLs.
+
+Actual FastMCP schema tests verify descriptions/bounds/enums/defaults.
+
+---
+
+# 22. Observability
+
+Measure:
+
+- provider calls/cache hits;
+- latency;
+- outcome/error class;
+- rate/concurrency rejects;
+- result count bounded aggregate;
+- billable usage units;
+- provider readiness.
+
+No query text as metric label.
+
+Sensitive query logging follows privacy policy and is not required by default.
+
+---
+
+# 23. Testing
+
+Required:
+
+- provider contract adapters against controlled fixtures;
+- SearXNG integration;
+- Yandex mocked/recorded non-secret fixture tests;
+- no live paid call in default CI;
+- batch partial semantics/order;
+- region/language mapping;
+- cache principal isolation/freshness;
+- rate/concurrency races;
+- provider outage/recovery;
+- REST OpenAPI;
+- actual FastMCP `web_search` schema;
+- no automatic provider fallback.
+
+---
+
+# 24. Definition of Done
+
+v0.2 complete only if:
+
+1. Search is a clean provider-backed application capability.
+2. SearXNG works as default free provider.
+3. Yandex is separate optional billable adapter.
+4. Provider selection is explicit/default deterministic.
+5. Language/region mapping is common, not provider-shaped.
+6. Cache/rate/concurrency are separate tested concerns.
+7. Search results preserve provenance and do not claim page contents were read.
+8. REST/MCP use same backend logic.
+9. MCP schema/descriptions are LLM-readable and bounded.
+10. No hidden provider fallback/quality heuristic exists.
+11. Applicable Search release gates are green.
