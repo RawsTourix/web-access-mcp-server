@@ -4,35 +4,24 @@
 
 `ready for implementation`
 
-Версия добавляет устойчивое background execution для **явно выбранных typed long-running workloads**. Она не переводит все Web Access operations в очередь.
+Версия добавляет durable/background execution только для явно зарегистрированных typed workloads. Короткие Search/Retrieval/Content/Browser operations не становятся Jobs автоматически.
 
 ---
 
 # 1. Цель
 
-После v0.6 клиент должен уметь:
+После v0.6 клиент может:
 
 ```text
-создать durable retrieval/content batch
-→ сразу получить JobRef
+создать retrieval/content batch Job
+→ получить JobRef
 → отключиться
-→ позже получить progress/state
-→ отменить job
-→ получить terminal summary/result manifest
+→ читать progress/state
+→ отменить Job
+→ получить terminal manifest
 ```
 
-а система должна переживать:
-
-- Redis outage;
-- duplicate queue delivery;
-- Job Worker crash/restart;
-- outbox publisher crash;
-- attempt lease loss;
-- Control Plane restart;
-- cancellation;
-- partial per-item failures;
-
-без потери Job и без повторной обработки уже успешно checkpointed items.
+Система переживает Redis/publisher/worker/Control Plane failures без потери committed Job и без повторной обработки уже checkpointed successful items.
 
 ---
 
@@ -40,610 +29,384 @@
 
 - v0.1 Foundation;
 - v0.3 Retrieval & Content Core;
-- v0.5 Native Content Expansion для полного parser capability set, если реализуется в roadmap порядке;
+- v0.5 Native Content Expansion при последовательном roadmap;
 - `../../jobs.md`;
-- `../../application-contracts.md`;
-- `../../resource-model.md`;
 - `../../persistence.md`;
-- `../../observability.md`;
-- `../../security.md`;
-- `../../rest-api.md`;
+- `../../resource-model.md`;
 - `../../mcp.md`;
-- `../../deployment.md`;
-- `../../testing.md`;
-- `../../release-gates.md`;
+- `../../rest-api.md`;
 - ADR-0017 outbox/arq delivery;
-- ADR-0018 typed Job/JobItem workloads.
+- ADR-0018 first typed jobs + JobItems;
+- ADR-0021 direct MCP operation vs Job tool boundary.
 
 ---
 
-# 3. Explicit non-goals
+# 3. Non-goals
 
-v0.6 не реализует:
-
-- generic arbitrary task execution;
-- arbitrary Python/code payload;
+- arbitrary task/Python execution;
 - cron/scheduler;
 - crawl;
-- durable Browser click/navigation workflow;
-- distributed sharding одного batch Job по множеству workers;
-- exactly-once execution guarantee;
+- durable Browser workflow;
+- exactly-once guarantee;
 - infinite retry;
-- automatic direct→durable promotion;
-- automatic creation of Job because request «seems large»;
-- generic MCP `job_run(command, args)`.
+- distributed item sharding one Job across many workers;
+- automatic direct→Job promotion;
+- generic public `job_create(command,args)`.
 
 ---
 
 # 4. Runtime topology
 
-Добавляется полноценный Job Worker runtime:
-
 ```text
 Control Plane
   │
   ├── PostgreSQL
-  │     ├── jobs
-  │     ├── job_attempts
-  │     ├── job_items
-  │     ├── job_events
-  │     └── outbox
+  │    ├── jobs
+  │    ├── job_attempts
+  │    ├── job_items
+  │    ├── job_events
+  │    └── outbox
   │
-  └── Redis/arq delivery
-           │
-           ▼
-      Job Worker replica(s)
-           │
-           ├── arq consumer
-           ├── JobRunner
-           ├── outbox publisher/coordinator loop
-           └── reconciler loop
+  └── Redis/arq wake-up
+          │
+          ▼
+      Job Worker(s)
+       ├── arq consumer
+       ├── JobRunner
+       ├── OutboxPublisher loop
+       └── JobReconciler loop
 ```
 
-Publisher/reconciler могут позднее быть выделены в отдельный runtime без изменения application contracts.
+Publisher/reconciler могут позднее быть отдельными runtime без public/application contract change.
 
 ---
 
-# 5. Job tables
+# 5. Persistence model
 
-## `jobs`
-
-Minimum:
+## Job
 
 ```text
-id
 job_id
 owner_principal_id
-job_type
-job_type_revision
-state
-revision
-input_summary/input_manifest_ref
-progress JSONB bounded
-result_summary JSONB bounded
-result_content_id | null
-error JSONB | null
-created_at
-updated_at
-queued_at | null
-started_at | null
-next_attempt_at | null
-cancellation_requested_at | null
-terminal_at | null
-expires_at | null
-overall_deadline_at | null
+job_type + revision
+state + revision
+input summary/ref
+progress
+result summary/result_content_id
+error
+created/queued/started/terminal timestamps
+next_attempt_at
+overall_deadline_at
+retention/expiry
 ```
 
-## `job_attempts`
+## JobAttempt
 
 ```text
-id
 attempt_id
-job_id FK
+job_id
 attempt_number
-worker_id
-worker_generation
+worker_id/generation
 state
-lease_token/revision
-lease_expires_at
-heartbeat_at
-started_at
-completed_at
-error/result summary
+lease/fencing coordinates
+heartbeat/start/completion
+result/error summary
 ```
 
-## `job_items`
+## JobItem
 
 ```text
-id
 job_item_id
-job_id FK
+job_id
 item_index
 item_type
-input JSONB bounded / ContentRef
-state
-revision
+bounded input/ref
+state/revision
 attempt_id | null
 attempt_count
-next_retry_at | null
-result_summary JSONB bounded
-result_refs JSONB bounded
-error JSONB | null
-started_at | null
-completed_at | null
+next_retry_at
+result refs/summary
+error
 ```
 
-Unique:
+`(job_id,item_index)` unique; input order preserved.
 
-```text
-(job_id, item_index)
-```
-
-## `job_events`
+## JobEvent
 
 Bounded durable client-visible lifecycle/progress events.
 
-## `outbox`
+## Outbox
 
-Согласно ADR-0017.
+ADR-0017 model.
 
 ---
 
-# 6. Job lifecycle
+# 6. Lifecycle
 
-Canonical:
-
-```text
-created
-→ queued
-→ running
-→ succeeded
-```
-
-Additional:
+Job:
 
 ```text
-running → retry_wait → queued
-created/queued/running/retry_wait → cancelling → cancelled
-running/retry_wait → failed
+created → queued → running → succeeded
+                    ├→ retry_wait → queued
+                    ├→ cancelling → cancelled
+                    └→ failed
 terminal → expired
 ```
 
-`lost` принадлежит JobAttempt, не Job terminal state.
-
----
-
-# 7. JobAttempt lifecycle
+Attempt:
 
 ```text
-claimed
-→ running
-→ succeeded | failed | cancelled | lost
+claimed → running → succeeded | failed | cancelled | lost
 ```
 
-Every actual execution claim = new Attempt.
-
-Late/stale attempt fenced by `attempt_id` + lease/revision.
-
----
-
-# 8. JobItem lifecycle
+Item:
 
 ```text
-pending
-→ running
-→ succeeded
-       │
-       ├→ failed
-       └→ retry_wait → running
-
+pending → running → succeeded | failed
+                     └→ retry_wait → running
 pending/running/retry_wait → cancelled
 ```
 
-Only current active JobAttempt can transition its running items.
-
-Succeeded items are never restarted within same Job.
+`lost` belongs to Attempt; Job recovery policy decides retry/failure.
 
 ---
 
-# 9. Transactional creation
+# 7. Transactional creation and delivery
 
-Public typed create operation performs one PostgreSQL transaction:
+One DB transaction:
 
 ```text
-INSERT Job(created)
-INSERT JobItems in original order
-INSERT Outbox(enqueue_job)
-INSERT created event
-COMMIT
+Job(created)
++ ordered JobItems
++ enqueue Outbox
++ created event
+→ COMMIT
 ```
 
-После commit JobRef durable even if Redis unavailable.
-
-No direct enqueue before DB commit.
-
----
-
-# 10. Outbox publisher
-
-According ADR-0017:
-
-- bounded DB batch claim;
-- lease/`SKIP LOCKED`-style coordination;
-- no transaction held during Redis call;
-- publish lightweight job ID message;
-- at-least-once;
-- deterministic queue ID optimization;
-- DB mark published/queued after enqueue;
-- retry/backoff on failure;
-- multiple publisher replicas safe.
-
----
-
-# 11. Job Worker/arq
-
-Add `arq` as infrastructure dependency pinned in `uv.lock`.
-
-Queue has fixed internal dispatcher function, conceptually:
+Then:
 
 ```text
-process_job(job_id, dispatch_generation)
+OutboxPublisher
+→ arq lightweight message(job_id, dispatch_generation)
+→ DB mark published/queued
 ```
 
-No public function name/arguments reach arq directly.
+Redis is at-least-once wake-up, not source of truth.
 
-Worker message is wake-up only; DB claim decides execution.
-
----
-
-# 12. Job Worker identity
-
-Worker:
-
-```text
-worker_id
-worker_generation
-supported job types/revisions
-```
-
-Generation changes after process restart.
-
-Attempt row records both.
-
-Worker capability mismatch rejects claim without executing wrong handler revision.
+Worker performs authoritative PostgreSQL claim before body execution.
 
 ---
 
-# 13. Claim and fencing
+# 8. Duplicate delivery / fencing
 
-Claim transaction checks:
-
-- Job current state;
-- no active valid Attempt;
-- cancellation/deadline;
-- dispatch generation;
-- handler support;
-- attempts policy.
-
-Then creates Attempt + Job `running`.
-
-Every later attempt-owned update checks current attempt ID/revision.
-
-Stale worker cannot publish progress/result after lease loss.
+- deterministic arq queue ID is optimization only;
+- duplicate messages allowed;
+- one current DB Attempt claim executes;
+- all Attempt-owned writes include current attempt/revision;
+- stale/lost worker cannot commit over newer Attempt.
 
 ---
 
-# 14. Attempt lease
+# 9. Attempt lease defaults
 
-Initial defaults:
+Initial:
 
 ```text
 heartbeat interval = 10 s
 attempt lease = 45 s
-lost-attempt reconciliation grace = 60 s
+lost reconciliation grace = 60 s
 ```
 
-Config validation keeps heartbeat substantially shorter than lease.
+Config-validated and overridable stricter per Job type.
 
-Long downstream phase must not exceed lease without heartbeat task running independently.
+Expired Attempt → `lost`; retryable Job moves `retry_wait`, otherwise failed.
 
 ---
 
-# 15. Retry defaults
+# 10. Retry/cancellation defaults
 
-Initial public typed jobs:
+Initial public Job profile:
 
 ```text
 max Job attempts = 3
 max item attempts = 3
-overall Job lifetime = 6 h
+overall lifetime = 6 h
 ```
 
-Retry policy always error/job-type specific.
+Retry is error/job-type specific; no retry permanent validation/policy/malformed/unsupported/hard-limit error.
 
-No retry for validation/policy/permanent malformed/unsupported/resource-hard-limit cases.
+Cancellation stores durable intent, stops new items, cooperatively cancels active work, and becomes `cancelled` only when execution has stopped.
 
 ---
 
-# 16. Retry scheduling
+# 11. JobItem checkpoints
 
-Durable:
+One active JobAttempt baseline; it processes items with bounded internal concurrency.
+
+If worker dies:
 
 ```text
-Job/JobItem retry_wait
-next_retry_at
+succeeded items stay succeeded
+running items of lost Attempt → eligible retry/recovery
+pending stay pending
 ```
 
-Reconciler/outbox creates wake-up when due.
-
-Redis deferred scheduling alone is never durable source of retry timing.
-
-Backoff + jitter configurable and bounded.
+No restart of whole batch.
 
 ---
 
-# 17. Cancellation
+# 12. `retrieval_batch`
 
-`cancel(job_id)` stores durable intent.
+Each URL = JobItem.
 
-Rules:
-
-- no new items start after observed cancellation;
-- running handler receives cooperative cancellation context;
-- terminal `cancelled` only after no active execution;
-- terminal job cancel is idempotent;
-- completed ContentObjects remain valid;
-- partial result manifest is created when useful results exist.
-
-Cancellation signal delivery may be optimized through Redis but DB state remains authoritative.
-
----
-
-# 18. Progress
-
-For batch jobs:
-
-```text
-completed = terminal JobItems
-total = JobItems count
-unit = items
-```
-
-Summary includes counts by state/outcome.
-
-Progress writes coalesced/throttled; no DB row per URL chunk/network event.
-
-Event sequence monotonic.
-
----
-
-# 19. First job type: `retrieval_batch`
-
-Input:
-
-```text
-urls[]
-common stable Retrieval options/profile
-```
-
-One URL = one JobItem.
-
-Handler reuses:
+Uses exact same application path as direct `web_fetch`:
 
 ```text
 SafeHttpFetcher
-→ Content ingest
+→ raw ContentObject
 → L0
-→ available direct L1
+→ request-independent direct L1 where applicable
 ```
 
 No Browser/L2.
 
-Succeeded item stores ContentRefs and retrieval metadata.
-
----
-
-# 20. `retrieval_batch` limits
-
-MCP durable:
+MCP Job tool limit:
 
 ```text
-urls: 1..256
+web_fetch_job urls: 1..256
 ```
 
-REST public hard item ceiling baseline:
+REST public batch hard item ceiling baseline:
 
 ```text
-1,000 items/job
+1000 items
 ```
 
 Initial aggregate decoded-byte budget:
 
 ```text
-default = 512 MiB
-hard = 2 GiB
+default 512 MiB
+hard 2 GiB
 ```
 
-Underlying per-item Retrieval limits remain applicable.
-
-Initial per-job item concurrency:
-
-```text
-8
-```
-
-Global/per-host Retrieval limits still dominate where lower.
+Initial per-Job item concurrency: `8`, still bounded by global/per-host Retrieval policies.
 
 ---
 
-# 21. Second job type: `content_parse_batch`
+# 13. `content_parse_batch`
 
-Input:
+Each ContentRef = JobItem.
+
+Uses same ContentApplication/parser registry as direct `content_parse`.
+
+Existing compatible representation can return `reused=true` without new parse.
+
+MCP:
 
 ```text
-content_ids[]
-optional stable requested representation/profile
+content_parse_job content_ids: 1..256
 ```
 
-Each item owner-authorized before/during job creation.
+REST public hard item ceiling baseline: `1000`.
 
-Handler reuses ContentApplication/registry.
+Initial aggregate source bytes:
 
-Existing compatible representation returns `reused=true`.
+```text
+default 512 MiB
+hard 2 GiB
+```
+
+Initial parser item concurrency: `4` or lower global isolated-parser capacity.
 
 No L2.
 
 ---
 
-# 22. `content_parse_batch` limits
-
-MCP durable:
-
-```text
-content_ids: 1..256
-```
-
-REST public hard item ceiling baseline:
-
-```text
-1,000
-```
-
-Initial aggregate source-byte processing budget:
-
-```text
-default = 512 MiB
-hard = 2 GiB
-```
-
-Initial Job-level parser concurrency:
-
-```text
-4 or lower global isolated-parser capacity
-```
-
----
-
-# 23. Partial batch semantics
-
-Permanent item failure does not automatically mean Job runtime failed.
+# 14. Partial batch result
 
 When all items terminal:
 
 ```text
-all success
-→ Job succeeded / aggregate succeeded
+all succeeded
+→ Job succeeded, aggregate succeeded
 
-mix success + expected item failures
-→ Job succeeded / aggregate partial
+expected mix success/item failures
+→ Job succeeded, aggregate partial
 
-framework/invariant/deadline catastrophic failure
+framework/invariant/deadline failure preventing normal completion
 → Job failed
 ```
 
-This distinction must be preserved REST/MCP.
+A bad URL/document is not automatically infrastructure Job failure.
 
 ---
 
-# 24. Result manifest
+# 15. Progress
 
-Terminal batch creates structured immutable ContentObject manifest preserving original item order.
-
-Job row stores small summary + `result_content_id`.
-
-Manifest includes bounded per item:
-
-- index;
-- input summary;
-- outcome;
-- result refs;
-- normalized error;
-- warnings/hints.
-
-Large item payload is never copied into manifest when ContentRef suffices.
-
----
-
-# 25. Manifest finalization
-
-Job does not transition terminal success/partial until required manifest is `available` via normal Content lifecycle.
-
-Crash after items complete but before manifest publish is recoverable finalization work and must not re-run succeeded items.
-
----
-
-# 26. MCP execution mode
-
-To preserve one intent → one canonical tool:
+Measured by real work:
 
 ```text
-web_fetch(..., execution="direct" | "durable")
-content_parse(..., execution="direct" | "durable")
+completed = terminal items
+total = item count
+unit = items
 ```
 
-Default `direct`.
+Plus bounded counts by outcome/state and bytes where meaningful.
 
-No `web_fetch_job`/`content_parse_job` tools.
-
-No automatic promotion.
+Progress writes coalesced; JobItem state remains durable.
 
 ---
 
-# 27. MCP cross-field schemas
+# 16. Result manifest
 
-`web_fetch` actual schema must express:
+Terminal/partial/cancelled batch with results creates immutable structured ContentObject manifest preserving original item order.
+
+Job row stores bounded summary + `result_content_id`.
+
+Job does not claim successful finalization until required manifest is available via Content lifecycle.
+
+Crash during manifest creation retries finalization, not successful JobItems.
+
+---
+
+# 17. MCP direct vs durable boundary
+
+Per ADR-0021:
 
 ```text
-direct  → urls 1..8
-durable → urls 1..256
+web_fetch         → direct request-bound
+web_fetch_job     → create retrieval_batch Job
+
+content_parse     → direct request-bound
+content_parse_job → create content_parse_batch Job
 ```
 
-`content_parse` similarly uses direct version limit vs durable 1..256.
+No `execution=direct|durable` field.
 
-Use actual discriminated/cross-field JSON Schema + runtime validation.
+Reason: direct and Job creation have different resource/retry semantics and need different trusted Agent descriptors.
 
-Tool description on Russian explicitly explains that durable mode returns `JobRef` and survives disconnect.
+Direct tool can return `processing_requires_job` hint with exact same-service Job tool.
 
 ---
 
-# 28. MCP result union
-
-Result remains application envelope, but `data` is discriminated by execution mode:
+# 18. MCP Job lifecycle
 
 ```text
-direct_result
-or
-durable_job_ref
+job_get(job_ids[])
+job_cancel(job_ids[])
 ```
 
-LLM should never infer from missing fields which mode happened; explicit `execution`/result kind present.
+`job_get` read-only: state/progress/retry summary/result manifest/error/hints.
+
+`job_cancel` idempotent cancellation request; response can be `cancelling`.
+
+No generic public Job start tool.
 
 ---
 
-# 29. MCP Job lifecycle tools
+# 19. REST API
 
-```text
-job_get
-job_cancel
-```
-
-`job_get` returns bounded:
-
-- state;
-- job type;
-- progress;
-- attempts/retry summary;
-- aggregate result summary;
-- result manifest ContentRef if available;
-- error/warnings/hints.
-
-`job_cancel` returns current cancellation lifecycle, not fake immediate success.
-
----
-
-# 30. REST API
-
-Typed durable creation endpoints:
+Typed creation/lifecycle:
 
 ```text
 POST /api/v1/jobs/retrieval-batches
@@ -653,161 +416,86 @@ POST /api/v1/jobs/{job_id}/cancel
 GET  /api/v1/jobs/{job_id}/events
 ```
 
-Optional item/result pagination can be added through typed Job REST resources if necessary; result manifest remains canonical bulk result.
-
-No generic public arbitrary job command endpoint.
+REST never exposes arq function/Redis payload.
 
 ---
 
-# 31. Job retention
+# 20. Retention/readiness
 
-Initial defaults:
+Terminal Job/result/event retention policy initially aligned with explicit `job_result` retention class (24h default direction before v0.7 policy hardening).
 
-```text
-terminal Job metadata/events = 24 h minimum baseline
-result ContentObject uses explicit job-result retention class, initial 24 h unless caller saves/extends via future policy
-outbox published rows = shorter operational retention, e.g. hours/day configurable
-```
-
-Exact operator retention configurable.
-
-Cleanup must not delete result ContentObject while retained Job still references it unless lifecycle explicitly marks missing/expired result.
-
----
-
-# 32. Readiness/degraded state
-
-Jobs capability status considers:
+Jobs readiness considers:
 
 - PostgreSQL;
 - Redis/arq;
-- outbox backlog age/size;
-- Job Worker heartbeat/capability;
-- reconciler health;
-- ContentStore for result manifests.
+- outbox backlog age;
+- Job Worker availability;
+- reconciler;
+- ContentStore manifest capability.
 
-Redis outage may leave Job creation durable but execution delayed; response/status must not claim queued execution is progressing.
-
-Admission can reject new Jobs when backlog policy exceeded.
+Redis outage can delay execution of already committed Job but cannot lose it.
 
 ---
 
-# 33. Observability
+# 21. Security
 
-Metrics/traces:
+- Job owner from PrincipalContext;
+- input ContentRefs owner-checked;
+- no arbitrary handler name from client;
+- queue payload small/no secrets/no pickle;
+- Job Worker gets scoped dependencies only;
+- result manifest remains untrusted web-derived data;
+- no maintenance Job publicly exposed by default.
 
-- Jobs by state/type;
-- outbox pending/oldest age/publish attempts;
-- queue publish errors;
-- worker claims/rejections;
-- active attempts/lease renewals/lost attempts;
-- item throughput/outcomes/retries;
-- cancellation latency;
-- job duration;
-- manifest finalize latency;
-- backlog/admission rejects;
+---
+
+# 22. Observability
+
+Required:
+
+- Jobs/Attempts/Items by state/type;
+- outbox backlog/oldest age/publish errors;
+- worker claims/rejections/lease loss;
+- retry/cancel latency;
+- item throughput;
+- manifest finalization;
+- queue/backlog admission;
 - worker utilization.
 
-No raw URLs/content in metric labels.
+No raw URLs/content as metric labels.
 
 ---
 
-# 34. Security
+# 23. Required tests
 
-- Job owner fixed from authenticated PrincipalContext;
-- all ContentRefs owner-validated;
-- raw public job payload never names Python function;
-- no pickle Redis payload;
-- no secrets in queue message;
-- Job Worker gets only credentials needed for its capabilities;
-- maintenance/admin job types not automatically exposed public;
-- result manifests treated as untrusted web-derived content.
-
----
-
-# 35. Required tests
-
-## Outbox/queue
-
-- all ADR-0017 crash windows;
-- duplicate delivery;
+- all ADR-0017 publish crash windows;
+- duplicate delivery one execution;
 - Redis outage/recovery;
-- multi-publisher contention;
-- stale queue message.
-
-## Attempt/lease
-
-- worker crash after claim;
-- lease expiry;
-- stale terminal update fenced;
-- retry_wait concurrent reconcilers;
-- rolling Job Worker restart.
-
-## JobItem
-
-- checkpoint after N successes;
-- lost running reset/retry;
-- succeeded not rerun;
-- per-item permanent failure;
-- item attempt ceiling;
-- original order.
-
-## Cancellation
-
-- created/queued/running/retry_wait;
-- active downstream cancellation;
-- partial manifest.
-
-## Facades
-
-- REST typed routes/OpenAPI;
-- MCP direct/durable schema positive/negative;
-- `job_get`/`job_cancel` ownership;
-- no generic public execution primitive.
-
-## Load/soak
-
-- large backlog;
-- multiple workers;
-- Redis restart;
-- PostgreSQL contention;
-- repeated worker kill/recovery;
-- progress write amplification bounded.
+- worker lost attempt/retry;
+- stale attempt fenced;
+- JobItem checkpoint resume;
+- per-item partial success;
+- cancellation every lifecycle stage;
+- manifest crash/recovery;
+- MCP `*_job` creation + trusted semantics;
+- direct tools contain no durable execution mode;
+- job_get/cancel owner isolation;
+- 256-item MCP / 1000-item REST load profiles;
+- repeated worker kill/soak.
 
 ---
 
-# 36. Release gates
+# 24. Definition of Done
 
-Applicable:
-
-- persistence/migration;
-- outbox consistency;
-- Jobs lifecycle;
-- race/fault;
-- cancellation/retry;
-- owner/security;
-- REST/MCP actual contracts;
-- observability/readiness;
-- load/soak;
-- local Compose reproducibility.
-
----
-
-# 37. Definition of Done
-
-v0.6 завершена только если:
-
-1. committed Job cannot be lost between PostgreSQL and Redis.
-2. Duplicate queue delivery does not duplicate execution.
-3. Worker crash does not leave Job forever running.
-4. Stale attempt cannot commit after retry.
-5. Succeeded JobItems survive attempt restart.
-6. Retrieval/content batch resumes unfinished items only.
-7. Cancellation durable and honest.
-8. Progress reflects actual items.
-9. Partial item failures represented separately from framework failure.
-10. Result manifest survives client disconnect.
-11. MCP uses explicit direct/durable mode without new duplicate-intent tools.
-12. REST exposes typed durable creation/lifecycle.
-13. No crawl/browser-workflow arbitrary creep.
-14. All applicable release gates green.
+1. Committed Job cannot be lost between DB and Redis.
+2. Duplicate delivery cannot duplicate active execution.
+3. Lost worker cannot leave permanent running Job.
+4. Stale Attempt cannot overwrite retry.
+5. Successful items survive attempts.
+6. Cancellation honest/durable.
+7. Partial item failure distinct from framework failure.
+8. Result manifest durable.
+9. MCP uses separate direct and Job tools with stable execution class.
+10. REST uses typed Job endpoints.
+11. No crawl/generic task/browser workflow creep.
+12. Applicable race/fault/load/schema gates green.
