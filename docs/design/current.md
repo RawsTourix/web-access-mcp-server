@@ -2,65 +2,62 @@
 
 ## Назначение
 
-Этот документ является кратким навигационным статусом design-проектирования.
-
-Он не заменяет канонические design-файлы и не переопределяет их contracts. Его задача — показать:
-
-- что уже спроектировано;
-- что проектируется сейчас;
-- какие решения намеренно остаются открытыми;
-- какой следующий документ следует разрабатывать.
+Этот документ является кратким навигационным статусом проекта. Он не переопределяет канонические contracts; его задача — показать, что уже спроектировано, что ещё не реализовано и какой следующий шаг допустим.
 
 ---
 
-## 1. Concept layer
+# 1. Общий статус
 
-Статус: **зафиксирован**.
+**Архитектурный design первой stable line v1.0 спроектирован. Production-код сервиса ещё не реализован.**
 
-Документы:
+Выполнены:
+
+```text
+Concept
+→ architecture foundation
+→ component design
+→ runtime/infrastructure design
+→ REST/MCP facade design
+→ ADR decisions
+→ exact public contracts
+→ version roadmap v0.1..v1.0
+→ implementation sequences
+→ testing/release/operational gates
+```
+
+Следующий канонический этап после финального consistency-аудита документации:
+
+```text
+реализация v0.1 Service Foundation
+```
+
+Нельзя начинать v0.2+ до отдельной задачи и acceptance предыдущей версии.
+
+---
+
+# 2. Concept layer
+
+Зафиксирован:
 
 - `../project-concept.md`;
 - `../architecture-concept.md`.
 
-Зафиксированы:
+Главные границы:
 
-- backend-first подход;
-- единый application backend для REST и MCP;
-- основные ответственности Search / Retrieval / Content / Browser / Jobs;
-- L0 Inspection / L1 Native Parsing / L2 Advanced Processing;
-- отказ от standalone Extraction bounded context;
-- отдельный Browser Worker runtime;
-- PostgreSQL / Redis / ContentStore как разные infrastructure роли;
-- MCP как agent-facing facade;
-- REST как богатый программный facade;
-- structured hints без скрытой orchestration.
+- backend-first;
+- единый application backend для REST/MCP;
+- Search / Retrieval / Content / Browser / Jobs;
+- L0 Inspection / L1 Native Parsing;
+- L2 Advanced Processing вне Web Access;
+- structured hints без hidden orchestration;
+- REST — rich programmatic facade;
+- MCP — compact LLM-facing facade.
 
 ---
 
-## 2. Documentation governance
+# 3. Архитектурный foundation
 
-Статус: **зафиксирован**.
-
-Документы:
-
-- `README.md`;
-- `documentation-plan.md`.
-
-Определены:
-
-- уровни Concept / Design / ADR / Versions;
-- правило одного канонического владельца темы;
-- порядок проектирования;
-- стандарт структуры component design;
-- требования к документации, пригодной для Codex/ChatGPT implementation.
-
----
-
-## 3. Архитектурный фундамент
-
-Статус: **зафиксирован**.
-
-Документы:
+Канонические документы:
 
 - `principles.md`;
 - `glossary.md`;
@@ -72,144 +69,189 @@
 - `persistence.md`;
 - `security.md`.
 
-### Основные принятые решения
-
 Зафиксированы:
 
-- направление зависимостей и ports/adapters;
-- единый application protocol;
-- `OperationId`, outcomes, warnings, hints, batch/partial-success semantics;
+- direction of dependencies / ports-adapters;
+- common `OperationResult`/error/warning/hint/batch semantics;
 - `unknown outcome` и retry classes;
-- opaque Resource handles и ownership;
-- immutable ContentObject payload + provenance graph;
-- BrowserSession и Job как отдельные resources;
-- PostgreSQL как durable structured source of truth;
-- Redis как cache/queue/coordination infrastructure;
-- ContentStore как storage крупных payloads;
-- Transactional Outbox как target consistency model для durable Job publication;
-- обязательный reconciliation для cross-system crash windows;
-- server-side cleanup/retention;
-- security foundation для SSRF, Content, Browser и resource isolation.
+- opaque resources/ownership;
+- immutable Content representations + provenance;
+- PostgreSQL/Redis/ContentStore responsibilities;
+- transactional outbox/reconciliation;
+- SSRF/egress/parser/browser/resource security boundaries.
 
 ---
 
-## 4. Runtime topology
+# 4. Component design
 
-Зафиксированы три основных runtime classes:
+Зафиксированы:
+
+- `search.md`;
+- `retrieval.md`;
+- `content.md`;
+- `browser.md`;
+- `jobs.md`;
+- `observability.md`;
+- `policy-and-operations.md`;
+- `operational-readiness.md`;
+- `limitations.md`.
+
+Крупных component-level архитектурных blockers для текущего roadmap не осталось.
+
+---
+
+# 5. Runtime topology
+
+Основные runtime classes:
 
 ```text
 Control Plane
 Job Worker
-Browser Worker
+Browser Worker supervisor
+BrowserSession subprocess
 ```
 
-Browser Worker владеет live Playwright state.
-
-Control Plane должен масштабироваться горизонтально и не хранить authoritative live browser objects.
-
-Request-bound и durable execution разделены.
-
----
-
-## 5. Закрытые ранее открытые решения
-
-### Durable Job publication
-
-Принято target-направление:
+Внешние dependencies/services:
 
 ```text
-PostgreSQL Job state
-+
-Transactional Outbox
-→ at-least-once publish в Redis/arq
-→ idempotent Job claim
+PostgreSQL
+Redis
+ContentStore
+SearXNG
+optional Yandex Search
+Browser Egress Gateway
 ```
 
-Простой незащищённый dual write `DB commit → redis.enqueue` не является целевым production contract.
-
----
-
-## 6. Намеренно открытые сквозные решения
-
-Пока не зафиксированы:
-
-1. Control Plane ↔ Browser Worker transport.
-2. Browser Worker registry/heartbeat/lease/fencing mechanism.
-3. Точная DB access policy Browser Worker.
-4. Production ContentStore backend.
-5. Exact capability-aware readiness schema.
-6. Browser session placement algorithm.
-7. Нужен ли отдельный isolated executor/runtime для части L1 Native Parsers.
-8. Точная Principal/Owner authentication model.
-
-Эти вопросы должны закрываться соответствующими component design/ADR, а не случайным implementation choice.
-
----
-
-# 7. Текущий следующий этап
-
-Общий foundation завершён.
-
-Начинается подробное проектирование предметных подсистем в порядке:
+BrowserSession:
 
 ```text
-Search
-→ Retrieval
-→ Content
-→ Browser
-→ Jobs
+1 logical BrowserSession
+→ 1 session subprocess
+→ 1 Playwright runtime
+→ 1 dedicated Chromium
+→ N bounded Pages
 ```
 
-Текущий приоритет:
+MCP connection lifetime не владеет BrowserSession/Job/Content lifecycle.
+
+---
+
+# 6. Accepted ADR
+
+Реестр: `decisions/README.md`.
+
+Особенно важные chains:
 
 ```text
-search.md
+Browser:
+ADR-0001, ADR-0009..0014
+
+Content:
+ADR-0007, ADR-0008, ADR-0015, ADR-0016
+
+Jobs:
+ADR-0017, ADR-0018
+
+Policy/usage:
+ADR-0019, ADR-0020
+
+External contract/freeze:
+ADR-0021, ADR-0022
 ```
 
----
-
-## 8. Что должен закрыть `search.md`
-
-Необходимо определить:
-
-- Search responsibilities/non-goals;
-- application inputs/results;
-- batch semantics поверх общего contract;
-- `SearchProvider` port;
-- provider registry/selection;
-- SearXNG adapter;
-- Yandex Search adapter;
-- normalization/provenance;
-- pagination/limits;
-- language/region/time/category semantics;
-- cache/freshness;
-- provider rate limits/quotas/cost accounting;
-- provider availability/degraded behavior;
-- error mapping;
-- structured hints без reasoning fallback;
-- security/privacy;
-- observability;
-- acceptance criteria.
-
-Search не должен читать найденные страницы и не должен автоматически менять provider из-за оценки «качества» выдачи.
+При конфликте старого exploratory текста с accepted ADR приоритет имеет canonical Design + latest non-superseded ADR.
 
 ---
 
-## 9. Последующий порядок
+# 7. Public facades
 
-После `search.md`:
+Канонические semantic docs:
 
-1. `retrieval.md`;
-2. `content.md`;
-3. `browser.md`;
-4. `jobs.md`;
-5. `observability.md`;
-6. `rest-api.md`;
-7. `mcp.md`;
-8. `deployment.md`;
-9. `testing.md`;
-10. `release-gates.md`;
-11. `roadmap.md`;
-12. `versions/`.
+- `rest-api.md`;
+- `mcp.md`;
+- `compatibility.md`;
+- `agent-integration.md`.
 
-Порядок может уточняться только если новый dependency analysis показывает реальную необходимость.
+Exact transport-facing specs:
+
+- `contracts/common-models.md`;
+- `contracts/mcp-tools.md`;
+- `contracts/rest-api-v1.md`.
+
+MCP core freeze candidate содержит 27 tools и не включает raw Playwright/HTTP/L2/generic task primitives.
+
+REST `/api/v1` является более богатым typed facade и включает protected operator/admin surface.
+
+Generated FastMCP/OpenAPI fixtures появляются и freeze-ятся в v0.8 после фактической реализации.
+
+---
+
+# 8. Version design
+
+Roadmap: `roadmap.md`.
+
+Текущие design statuses:
+
+```text
+v0.1 Service Foundation                       ready for implementation
+v0.2 Search Runtime                           ready for implementation
+v0.3 Retrieval & Content Core                 ready for implementation
+v0.4 Managed Browser Runtime                  ready for implementation
+v0.5 Native Content Expansion                 ready for implementation
+v0.6 Durable Jobs Runtime                     ready for implementation
+v0.7 Distributed Operations & Policy          ready for implementation
+v0.8 REST/MCP & Agent Integration Stabilization ready for implementation
+v0.9 Production Hardening                     ready for implementation
+v1.0 Stable Web Access                        release contract defined
+```
+
+`ready for implementation` означает готовность design конкретной версии, **не разрешение перепрыгивать предыдущие milestones**.
+
+---
+
+# 9. Тестирование и release evidence
+
+Канонические документы:
+
+- `testing.md`;
+- `release-gates.md`;
+- `deployment.md`;
+- `operational-readiness.md`.
+
+Roadmap требует не только unit/integration, но также contract, race, fault, restart/recovery, security, soak/leak, load/backpressure, migration/restore и rolling-upgrade evidence в соответствующих версиях.
+
+---
+
+# 10. Что намеренно не входит в v1.0 line
+
+См. `limitations.md`.
+
+В частности baseline не обещает:
+
+- L2 OCR/VLM/LibreOffice/transcription;
+- CAPTCHA bypass/stealth;
+- arbitrary JS/code execution;
+- raw HTTP proxy;
+- generic arbitrary Job runner;
+- persistent browser profiles;
+- live BrowserSession migration между workers;
+- automatic Search→Retrieval→Browser orchestration.
+
+Это designed boundaries, а не defects.
+
+---
+
+# 11. Следующий шаг
+
+После последнего документационного consistency check можно формировать подробный coding prompt для **только v0.1 Service Foundation** на основе:
+
+```text
+docs/AGENTS.md
+→ docs/design/current.md
+→ foundation design/ADR
+→ docs/design/versions/v0.1/README.md
+→ docs/design/versions/v0.1/implementation-sequence.md
+→ testing/release gates
+```
+
+Реализация должна идти version-by-version с factual acceptance evidence перед переходом дальше.
