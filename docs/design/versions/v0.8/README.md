@@ -4,514 +4,317 @@
 
 `ready for implementation`
 
-Версия стабилизирует внешний contract уже реализованной системы перед production hardening/v1.0. Она не должна прятать незавершённый backend за красивыми schemas.
+v0.8 не добавляет новую backend capability. Она превращает фактически реализованные v0.1–v0.7 facades в **явно зафиксированную внешнюю contract line** и проверяет интеграцию с собственным ИИ-агентом.
 
 ---
 
 # 1. Цель
 
-После v0.8:
+После v0.8 должны существовать reviewed/generated/golden executable contracts:
 
-- REST `/api/v1` имеет reviewable freeze-candidate OpenAPI;
-- MCP имеет freeze-candidate semantic catalog ADR-0022;
-- actual runtime schemas сохраняются generated contract fixtures;
-- error/resource/cursor semantics согласованы;
-- own `internet-search-bot` builtin integration проходит cross-repository acceptance;
-- generic MCP client продолжает работать без agent-specific implementation dependency;
-- accidental public contract change становится CI-visible.
+```text
+REST /api/v1
+MCP 28-tool freeze candidate
+common result/error/resource models
+policy/admin models
+own-agent trusted integration metadata
+```
+
+и CI должен отличать compatible change от breaking/semantic drift.
 
 ---
 
 # 2. Prerequisites
 
-- реализованные/accepted v0.1–v0.7;
+- accepted v0.1–v0.7;
+- all current component/ADR decisions implemented;
 - `../../compatibility.md`;
 - `../../agent-integration.md`;
 - `../../rest-api.md`;
 - `../../mcp.md`;
-- `../../application-contracts.md`;
-- `../../resource-model.md`;
-- `../../testing.md`;
-- `../../release-gates.md`;
-- ADR-0021;
-- ADR-0022;
-- current agent-side `builtin-mcp-service-contract.md`.
+- `../../contracts/README.md`;
+- `../../contracts/common-models.md`;
+- `../../contracts/mcp-tools.md`;
+- `../../contracts/rest-api-v1.md`;
+- `../../contracts/browser-api-v1.md`;
+- `../../contracts/policy-models.md`;
+- `../../contracts/admin-api-v1.md`;
+- ADR-0021/0022/0024/0025;
+- agent-side builtin MCP service contract in `internet-search-bot`.
 
 ---
 
-# 3. Explicit non-goals
+# 3. Non-goals
 
-- new Search provider purely for v0.8;
-- new parser family;
-- new Browser feature because Playwright supports it;
-- crawl;
-- persistent Browser profiles;
-- user accounts;
-- public client SDK requirement;
-- v1.0 compatibility promise before v0.9 hardening;
-- copying agent trusted descriptors/presentation into Web Access source.
+- new Search/Browser/Content/Job feature;
+- L2 processing;
+- arbitrary REST/Playwright expansion;
+- auth architecture rewrite;
+- changing accepted lifecycle/security because schema generation is inconvenient;
+- generic operator MCP tools.
+
+If implementation cannot reproduce exact contract, resolve as explicit Design/ADR review, not silent divergence.
 
 ---
 
-# 4. Contract artifact directory
+# 4. Common public models
 
-Repository adds generated/reviewed artifacts:
+Freeze generated equivalents of `contracts/common-models.md`:
+
+- `PublicOperationResult`;
+- `PublicError`;
+- `PublicWarning`;
+- `StructuredHint`;
+- `BatchItemResult`;
+- ResourceRef variants;
+- JobProgress;
+- cursor/page/snapshot public metadata where applicable.
+
+Verify serialization equality/compatibility between REST and MCP projections where concepts are intentionally shared.
+
+---
+
+# 5. MCP freeze
+
+Current target = **28 tools** from `contracts/mcp-tools.md`.
+
+Key stabilized refinements:
+
+- direct vs Job creation separate;
+- one stable execution/lifecycle class per tool;
+- resource/cost-aware retry metadata (ADR-0024);
+- explicit `browser_scroll` (ADR-0025);
+- fail-fast form semantics;
+- structured key+modifiers;
+- multi-file ContentRef upload;
+- no active-tab hidden state;
+- no CSS/XPath/raw JS/admin tools.
+
+Actual FastMCP schema/annotations are authoritative generated artifact after passing target contract tests.
+
+---
+
+# 6. REST freeze
+
+Target exact REST is composite:
 
 ```text
-contracts/
-├── manifest.json
-├── rest/
-│   └── openapi-v1.json
-├── mcp/
-│   └── tools-v1.json
-└── common/
-    ├── error-taxonomy-v1.json
-    └── resource-schemas-v1.json
+contracts/rest-api-v1.md
++ contracts/browser-api-v1.md
++ contracts/policy-models.md
++ contracts/admin-api-v1.md
 ```
 
-They are generated from actual running application/contracts, canonicalized and committed/gated.
+Generated OpenAPI must represent the union without conflicting duplicate definitions.
 
-Human design remains in `docs/design`.
+Specialized contract owns its namespace when more specific than common REST baseline.
 
 ---
 
-# 5. Contract manifest
+# 7. Generated contract artifacts
 
-`contracts/manifest.json` includes bounded metadata:
+Implementation should generate deterministic artifacts, e.g.:
 
 ```text
-manifest schema version
-REST API version
-MCP catalog revision
-application result envelope revision
-error taxonomy revision
-resource schema revision
-canonical SHA-256 fingerprints of generated artifacts
-minimum service compatibility metadata where useful
+contracts/generated/openapi-v1.json
+contracts/generated/mcp-tools-v1.json
+contracts/generated/public-models-v1.json
 ```
 
-Package/build version separate from contract version.
+Exact repository path may follow project convention, but generation source must be deterministic/documented.
+
+Do not hand-maintain golden JSON separately from actual application registration.
 
 ---
 
-# 6. Canonical JSON generation
+# 8. Compatibility CI
 
-Generator:
-
-- stable UTF-8 JSON;
-- recursively deterministic key ordering;
-- stable formatting/newline;
-- removes non-semantic volatile generated fields if necessary through explicit allowlisted normalizer;
-- never hides real schema differences merely to keep fixture green.
-
-CI diff is reviewer-visible.
-
----
-
-# 7. REST freeze candidate
-
-REST remains:
+CI classifies at least:
 
 ```text
-/api/v1
+endpoint/tool removal/rename
+required field added
+field removed
+bound tightened/loosened
+new enum value
+changed default
+changed union/discriminator
+resource/result shape change
+annotation/retry semantic change
+policy schema change
 ```
 
-v0.8 reviews actual implemented routes against `rest-api.md` and normalizes before freeze.
+Generated diff visible in PR; some behavioral changes require human classification even if JSON shape additive.
 
-Required capability groups:
+---
+
+# 9. Own-agent integration
+
+Web Access remains ordinary MCP service transport-wise but is registered as trusted builtin in agent registry.
+
+Agent trusted metadata maps:
 
 ```text
-search
-retrieval
-content
-browser
-jobs
-admin (protected)
+semantic presentation
+retry/resource/cost class
+remote resource creation
+lifecycle cleanup tool
+progress rendering
 ```
 
-Operational liveness/metrics may remain outside `/api/v1`.
+Web Access never imports agent runtime code.
+
+Agent does not bypass MCP to hidden Web Access internals for normal tool execution.
 
 ---
 
-# 8. REST stability requirements
+# 10. BrowserSession lifecycle mapping
 
-Every public operation has:
+Agent recognizes BrowserSession handle as remote resource.
 
-- stable `operationId`;
-- Russian summary/description where project documentation is exposed;
-- exact security scheme;
-- exact required/default/min/max/enum;
-- common error responses;
-- bounded examples for complex models;
-- no infrastructure/internal fields.
-
-FastAPI default validation response is normalized to Web Access error envelope.
-
----
-
-# 9. REST behavior freeze review
-
-Review all existing routes for:
-
-- duplicate intents;
-- inconsistent plurals/naming;
-- mixed resource/action semantics;
-- accidental raw provider fields;
-- arbitrary HTTP/Playwright leakage;
-- response envelope inconsistency;
-- incorrect HTTP status mapping;
-- missing owner/auth docs;
-- giant inline response paths.
-
-Fix before fixture freeze, not after v1.0.
-
----
-
-# 10. MCP freeze candidate
-
-Exact catalog from ADR-0022:
+Cleanup:
 
 ```text
-web_search
-web_fetch
-web_fetch_job
-content_get
-content_parse
-content_parse_job
-browser_create
-browser_get
-browser_close
-browser_navigate
-browser_snapshot
-browser_content
-browser_tabs
-browser_page_create
-browser_page_close
-browser_screenshot
-browser_events
-browser_click
-browser_fill_form
-browser_type
-browser_press
-browser_hover
-browser_drag
-browser_wait
-browser_upload
-job_get
-job_cancel
+owner agent cycle/session terminal
+→ best-effort browser_close
 ```
 
-No legacy/exploratory mixed variants.
+Server TTL/reaper final authority.
+
+MCP disconnect ≠ Browser close.
+
+Job not automatically cancelled at agent cycle end.
+
+Content survives cycle subject to service retention.
 
 ---
 
-# 11. MCP descriptions/schema review
+# 11. Pretty progress mapping
 
-For each tool independently answer:
-
-1. Можно ли по short description понять intent до schema?
-2. Отличается ли он от соседних одним предложением?
-3. Каждое ли поле описано по-русски?
-4. Все ли limits machine-readable?
-5. Есть ли один stable execution/retry class?
-6. Нет ли backend/provider/Playwright leakage?
-7. Можно ли исправить invalid call по structured error?
-8. Bounded ли result?
-
-Tool не freeze-ится, пока ответ не «да».
-
----
-
-# 12. MCP actual fixture
-
-`tools-v1.json` генерируется через реальный MCP client/server discovery и содержит для каждого tool минимум:
+Trusted presentation can distinguish:
 
 ```text
-name
-description
-inputSchema
-relevant annotations
-output/result schema metadata where SDK exposes stable representation
+web_search       → поиск
+web_fetch        → чтение известных сайтов
+browser_navigate → открытие/переход
+browser_snapshot → анализ интерфейса
+browser_scroll   → прокрутка страницы
+browser_click    → взаимодействие
+web_fetch_job    → durable batch
+job_get          → background progress
 ```
 
-Private runtime/context parameters отсутствуют.
+User-facing text belongs to Agent Dispatcher/UI, not arbitrary MCP result text.
+
+Arguments/results provide trusted provider/URL/domain/resource metadata after redaction/policy.
 
 ---
 
-# 13. Tool semantics fixture
+# 12. Retry integration tests
 
-Machine fixture alone не доказывает descriptions/behavior.
+Cross-repo acceptance proves:
 
-Contract test suite дополнительно имеет semantic assertions, например:
+- billable `web_search` lost response does not cause blind second Agent-level paid call;
+- `web_fetch` lost result does not cause blind duplicate Content acquisition;
+- `content_parse` idempotent class enabled only after canonical reuse tests;
+- Job/session/page/artifact creation uncertainty not blindly replayed;
+- Browser click/press/scroll/etc. uses same-action recovery/unknown, not new call retry;
+- cleanup close/cancel idempotent cases remain retryable as designed.
+
+---
+
+# 13. Generic MCP compatibility
+
+Test independent generic MCP client:
 
 ```text
-web_search description says results are search metadata, not read page
-web_fetch says no Browser auto fallback
-web_fetch_job says creates Job/survives disconnect
-browser_snapshot vs browser_content distinction
-browser_tabs read-only
-browser_page_create separate
-browser_fill_form no submit
-browser_click unknown/no blind retry semantics
+initialize
+list tools
+inspect schemas
+call representative tools
+receive structured results
+reconnect
+reuse BrowserSession handle
+close
 ```
 
----
-
-# 14. Error taxonomy freeze
-
-All facade/domain errors mapped to stable external categories/codes.
-
-Required broad categories:
-
-```text
-validation
-authentication
-authorization/policy
-not_found/expired/lost
-conflict/stale
-rate/quota/capacity
-upstream/provider/network
-content/parser
-browser
-jobs
-storage
-internal
-```
-
-Specific codes may grow additively after freeze, but existing meaning/retryability must not silently change.
+Own-agent presentation extensions optional outside transport contract.
 
 ---
 
-# 15. Resource schema freeze
+# 14. REST compatibility consumers
 
-Stable public ResourceRef identities:
+Validate:
 
-```text
-content_id
-browser_session_id
-page_id
-job_id
-snapshot_id / element_ref as ephemeral Browser coordinates
-```
+- raw HTTP/OpenAPI client;
+- generated client feasibility if used;
+- opaque cursors/resources;
+- streaming Content;
+- Browser typed unions;
+- Admin policy typed schemas;
+- normalized errors.
 
-Opaque means client never relies on prefix beyond human diagnostics.
-
-Ownership/routing never encoded client-side.
+SDK generation optional; stable OpenAPI mandatory.
 
 ---
 
-# 16. Cursor versioning
+# 15. Required tests
 
-Existing Content/collection/event cursors gain/confirm explicit internal version parsing.
+## MCP
 
-Old cursor version remains readable for relevant resource retention window or fails explicit version error.
+- exact 28 names;
+- Russian descriptions;
+- all nested field descriptions;
+- bounds/defaults/oneOf;
+- annotations + own-agent retry descriptors;
+- no private fields;
+- scroll/form/key/upload fixtures;
+- structured result/error.
 
-Client always treats cursor opaque.
+## REST
 
----
+- exact normal routes;
+- exact Browser specialized routes;
+- exact Admin routes/policy models;
+- operationId/security;
+- streaming;
+- no infrastructure leakage;
+- admin auth/self-lockout prevention.
 
-# 17. Result envelope freeze
+## Compatibility
 
-REST/MCP mappings consistently preserve canonical:
+- golden diff;
+- intentional additive fixture;
+- intentional breaking fixture;
+- mixed software/policy schema compatibility;
+- old client scenario where supported.
 
-```text
-operation_id
-outcome
-data/error
-warnings
-hints
-```
+## Agent
 
-Batch per-item outcomes preserve input order.
-
-`unknown` remains first-class, especially Browser mutating action.
-
----
-
-# 18. Own Agent integration mapping
-
-Coordinated acceptance with `RawsTourix/internet-search-bot` verifies:
-
-```text
-Web Access actual MCP schemas
-↔ agent builtin trusted descriptors
-```
-
-Agent-side mapping owns:
-
-- presentation profiles;
-- retry/side-effect classes;
-- remote-resource handling;
-- permissions/budgets;
-- BrowserSession cleanup binding.
-
-Web Access does not store agent UI strings.
-
----
-
-# 19. Browser resource mapping
-
-Own agent descriptor maps:
-
-```text
-browser_create
-→ resource_type browser_session
-→ cleanup browser_close
-```
-
-Agent lifecycle hook cleanup is best effort.
-
-Web Access TTL/reaper remains authoritative final cleanup.
-
-MCP reconnect does not close BrowserSession.
-
----
-
-# 20. Job resource mapping
-
-```text
-web_fetch_job/content_parse_job
-→ JobRef
-→ job_get/job_cancel
-```
-
-Job is durable and not automatically bound to one MCP connection/AgentCycle.
-
-Trusted tool creation semantics prevent blind automatic retry if JobRef response lost.
-
----
-
-# 21. Progress/presentation integration
-
-Agent UI can map stable tool identity to phrases/events, but this remains agent-side.
-
-Web Access only returns stable semantic operation/provider/domain/resource/progress metadata.
-
-Cross-repo acceptance checks:
-
-- pretty presentation does not depend on parsing raw tool text;
-- unknown future tool gets generic safe fallback;
-- Web Access result text cannot override trusted presentation.
-
----
-
-# 22. Cross-repository integration test
-
-Release/integration workflow can checkout:
-
-```text
-web-access-mcp-server @ candidate commit
-internet-search-bot @ pinned compatible commit
-```
-
-Run controlled Web Access deployment with fake/local providers and agent MCP integration tests.
-
-This is a **test-time pinned dependency**, not Python runtime package dependency.
-
-Default fast unit CI in either repo need not depend on network checkout of the other; release gate does.
-
----
-
-# 23. Generic MCP client acceptance
-
-Separate from own-agent test:
-
-- standard MCP connect/list/call;
-- no manager-function assumption;
-- explicit Browser lifecycle;
-- Content read;
+- discovery;
+- Search→Fetch;
+- Search→Browser;
+- long/lazy page `snapshot→scroll→snapshot`;
+- Browser cleanup;
 - durable Job lifecycle;
-- reconnect.
-
-This prevents accidental lock-in to own Agent Runtime.
+- response-loss no duplicate side effects/cost.
 
 ---
 
-# 24. Authentication integration
-
-Agent Web Access connection receives service credential through trusted MCP server definition/secret config.
-
-Tool schema never contains bearer/API credential.
-
-Web Access owner remains authenticated principal unless future delegated identity contract is explicitly added.
-
----
-
-# 25. Compatibility review labels
-
-Every public-contract PR/change after v0.8 classifies:
-
-```text
-internal
-additive
-compatible behavior
-breaking candidate
-```
-
-Generated diff attached to review/CI artifact.
-
-Breaking candidate cannot merge unnoticed.
-
----
-
-# 26. Pre-v1 deprecation policy
-
-v0.8–v0.9 are freeze-candidate phases.
-
-If a genuine defect requires breaking change before v1.0:
-
-- explicit ADR/change note;
-- contract fixture diff;
-- own-agent coordinated update;
-- migration/release note;
-- no compatibility fiction.
-
-Better fix defect before v1 than preserve broken design forever.
-
----
-
-# 27. Contract tests
-
-Required:
-
-- deterministic fixture generation twice same code;
-- OpenAPI fixture diff;
-- MCP actual schema fixture diff;
-- schema descriptions/limits/annotations;
-- old representative requests against new service;
-- error code/retryability assertions;
-- cursor old/current version;
-- agent trusted descriptor compatibility;
-- generic MCP client;
-- REST client representative flow;
-- Browser unknown outcome integration;
-- Job resource integration.
-
----
-
-# 28. Documentation synchronization
-
-Before v0.8 release:
-
-- remove exploratory tool/endpoint examples that conflict with freeze;
-- `mcp.md`/`rest-api.md` reflect actual implementation;
-- version docs point to current ADRs;
-- README/catalog generated from contract where practical;
-- examples use exact real schemas.
-
----
-
-# 29. Definition of Done
+# 16. Definition of Done
 
 v0.8 complete only if:
 
-1. REST OpenAPI freeze candidate committed/generated deterministically.
-2. MCP 27-tool freeze candidate actual fixture committed.
-3. No mixed execution-class tool remains.
-4. Error/resource/cursor contracts reviewed.
-5. Own-agent builtin descriptors match actual Web Access schemas/semantics.
-6. Browser cleanup/unknown behavior works end-to-end.
-7. Job lifecycle works end-to-end.
-8. Generic MCP client works without own agent internals.
-9. Contract-changing PR gate active.
-10. Documentation has no contradictory exploratory public contracts.
+1. Generated OpenAPI equals reviewed composite REST target or design changed explicitly.
+2. Actual FastMCP schemas equal reviewed 28-tool target.
+3. Common public model serialization stable.
+4. Compatibility CI reports meaningful diffs.
+5. ADR-0024 retry/cost/resource semantics reflected in own-agent trusted descriptors.
+6. Browser scroll/form/key/upload semantics pass actual schema + e2e tests.
+7. Dynamic policy rejects admin self-lockout model and Admin REST remains recoverable by authorized principal.
+8. Own-agent builtin integration passes lifecycle/progress/retry/resource tests.
+9. Generic MCP client passes representative protocol suite.
+10. No public schema contains secrets/internal routing/storage/Playwright fields.
+11. Full relevant release gates green.
+
+After this point external contract changes require compatibility discipline; v0.9 focuses on hardening, not redesign.
