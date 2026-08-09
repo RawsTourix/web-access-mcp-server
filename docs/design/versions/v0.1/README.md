@@ -2,39 +2,38 @@
 
 ## Статус
 
-`design in progress`
+`ready for implementation`
 
-Версия становится `ready for implementation`, когда закрыты все blockers этого документа и согласован `implementation-sequence.md`.
+Версия создаёт production-oriented фундамент Web Access без преждевременной web capability logic.
+
+Подробный порядок реализации: `implementation-sequence.md`.
 
 ---
 
 # 1. Цель
 
-Создать production-oriented фундамент Web Access MCP, на который Search/Retrieval/Content/Browser/Jobs смогут добавляться без перестройки process/dependency/auth/persistence boundaries.
-
-После v0.1 сервис уже должен:
+После v0.1 сервис должен:
 
 - запускаться локально через Docker Compose;
-- иметь REST + MCP Control Plane;
-- аутентифицировать клиентов;
-- создавать trusted PrincipalContext;
+- иметь общий FastAPI + FastMCP Control Plane;
+- аутентифицировать REST/MCP clients;
+- создавать trusted `PrincipalContext`;
 - иметь PostgreSQL/Redis/ContentStore infrastructure foundation;
 - иметь typed configuration;
-- иметь canonical application result/error contracts;
-- иметь health/readiness/status;
-- иметь structured observability baseline;
-- иметь CI/architecture/contract tests.
+- иметь canonical application result/error/hint contracts;
+- иметь liveness/readiness/status foundation;
+- иметь structured logging/metrics/tracing extension points;
+- иметь migration/test/CI foundation.
 
-При этом v0.1 намеренно **не выполняет web search/fetch/browser работу**.
+v0.1 намеренно **не выполняет Search/Retrieval/Browser/Job business work**.
 
 ---
 
-# 2. Prerequisites
+# 2. Canonical design
 
-Обязательные документы:
+Обязательны:
 
 - `../../principles.md`;
-- `../../glossary.md`;
 - `../../dependency-rules.md`;
 - `../../system-context.md`;
 - `../../runtime-topology.md`;
@@ -45,91 +44,46 @@
 - `../../observability.md`;
 - `../../deployment.md`;
 - `../../testing.md`;
-- `../../release-gates.md`;
-- `../../decisions/ADR-0002-authentication-principal-baseline.md`.
+- ADR-0002 authentication/principal baseline.
 
 ---
 
-# 3. Explicit non-goals
+# 3. Non-goals
 
-v0.1 не реализует:
+Не реализуются:
 
-- SearXNG/Yandex Search;
+- Search providers;
 - `web_search`;
-- external HTTP Retrieval;
+- arbitrary external HTTP Retrieval;
+- ContentObject public application API;
 - Native Parsers;
-- ContentObject application API;
-- Browser Worker;
-- Playwright;
+- Browser Worker/Playwright;
 - Job Worker/arq/outbox runtime;
-- public Job resources;
-- L2 processing;
-- user accounts/OIDC;
-- admin UI;
-- persistent browser state.
+- public Jobs;
+- OCR/L2 processing;
+- end-user account/OIDC product.
 
-Не следует добавлять «временный поиск» или «простую Playwright функцию» ради demo.
+Не добавлять «временную» Search/Playwright функцию ради demo.
 
 ---
 
-# 4. Target repository layout v0.1
+# 4. Repository/package baseline
 
 ```text
-src/
-└── web_access/
-    ├── core/
-    │   ├── config.py
-    │   ├── logging.py
-    │   ├── ids.py
-    │   └── time.py
-    │
-    ├── domain/
-    │   └── common/
-    │       ├── enums.py
-    │       └── refs.py
-    │
-    ├── application/
-    │   └── common/
-    │       ├── context.py
-    │       ├── results.py
-    │       ├── errors.py
-    │       ├── hints.py
-    │       ├── auth.py
-    │       └── ports.py
-    │
-    ├── transport/
-    │   ├── rest/
-    │   │   ├── app.py
-    │   │   ├── dependencies.py
-    │   │   ├── errors.py
-    │   │   ├── schemas.py
-    │   │   └── routers/
-    │   │       └── health.py
-    │   └── mcp/
-    │       ├── server.py
-    │       └── errors.py
-    │
-    ├── infrastructure/
-    │   ├── auth/
-    │   │   └── static_bearer.py
-    │   ├── database/
-    │   │   ├── engine.py
-    │   │   ├── unit_of_work.py
-    │   │   └── base.py
-    │   ├── redis/
-    │   │   └── client.py
-    │   ├── content/
-    │   │   └── filesystem.py
-    │   └── observability/
-    │       └── health.py
-    │
-    ├── bootstrap/
-    │   ├── container.py
-    │   ├── lifespan.py
-    │   └── wiring.py
-    │
-    └── entrypoints/
-        └── api.py
+src/web_access/
+├── core/
+├── domain/common/
+├── application/common/
+├── transport/rest/
+├── transport/mcp/
+├── infrastructure/
+│   ├── auth/
+│   ├── database/
+│   ├── redis/
+│   ├── content/
+│   └── observability/
+├── bootstrap/
+└── entrypoints/api.py
 
 alembic/
 tests/
@@ -137,28 +91,20 @@ docs/
 Dockerfile
 docker-compose.yml
 pyproject.toml
+uv.lock
 ```
-
-Exact split одного файла может уточняться, но layer ownership не меняется.
-
----
-
-# 5. Python/package baseline
 
 - Python `>=3.11`;
 - `src` layout;
-- один installable package `web_access`;
-- dependencies управляются через `pyproject.toml` + reproducible lock mechanism;
-- runtime imports не зависят от project root working directory;
-- package version доступна operational metadata.
-
-Точный lock tool (`uv`, Poetry, pip-tools и т.п.) должен быть выбран implementation plan; предпочтительно использовать уже знакомый проекту `uv`, если нет причины выбрать другое.
+- package `web_access`;
+- `uv` + committed reproducible `uv.lock`;
+- runtime imports independent of repository working directory.
 
 ---
 
-# 6. Initial runtime dependencies
+# 5. Initial dependencies
 
-v0.1 должен включить только foundation dependencies:
+Foundation only:
 
 - FastAPI;
 - Uvicorn;
@@ -168,30 +114,28 @@ v0.1 должен включить только foundation dependencies:
 - SQLAlchemy 2 async;
 - asyncpg;
 - Alembic;
-- redis asyncio client;
-- необходимые observability/testing dependencies.
+- Redis asyncio client;
+- observability/test dependencies.
 
-Не устанавливаются заранее:
+Не устанавливать заранее:
 
 - Playwright;
 - Trafilatura;
 - pypdf;
 - arq;
-- Office parsers.
-
-Они добавляются версиями, которые реально их используют.
+- Office/media parsers.
 
 ---
 
-# 7. Configuration
+# 6. Configuration
 
-Используется единый `Settings` composition root с prefix уровня:
+Единый typed `Settings` composition root с prefix:
 
 ```text
 WEB_ACCESS_
 ```
 
-Configuration groups:
+Группы conceptually:
 
 ```text
 AppSettings
@@ -200,81 +144,69 @@ DatabaseSettings
 RedisSettings
 ContentStoreSettings
 ObservabilitySettings
-SecuritySettings (foundation)
+SecuritySettings
 ```
 
-Nested settings предпочтительнее гигантского flat object.
-
-Secrets используют `SecretStr`/secret abstraction и не отображаются в repr/logs.
-
----
-
-# 8. Configuration validation
-
-Startup fail-fast для обязательной некорректной config.
-
-Примеры:
-
-- отсутствует production bearer token/principal config;
-- malformed PostgreSQL URL;
-- invalid resource limit;
-- filesystem ContentStore root невалиден/недоступен при required profile.
-
-Development defaults не должны становиться insecure production defaults.
+- secrets через secret-aware types/references;
+- production-required config fail-fast;
+- insecure developer defaults не переходят автоматически в production;
+- startup log может показывать безопасный config summary без secret values.
 
 ---
 
-# 9. Application common contracts
+# 7. Common application contracts
 
-Реализуются типы/протоколы из `application-contracts.md`:
+Реализовать фундамент из `application-contracts.md`:
 
-- `OperationId`;
-- `ExecutionContext`;
-- `PrincipalContext`;
-- `OperationOutcome`;
-- `OperationResult[T]`;
-- `OperationError`;
-- `Warning`;
-- `StructuredHint`;
-- common error categories;
-- cancellation/deadline foundation.
+```text
+OperationId
+ExecutionContext
+PrincipalContext
+OperationOutcome
+OperationResult[T]
+OperationError
+Warning
+StructuredHint
+deadline/cancellation foundation
+batch/partial invariants
+```
 
-v0.1 tests фиксируют aggregate/result invariants, даже если batch business capability появится позже.
-
----
-
-# 10. IDs
-
-Server-generated opaque IDs используют единый generator abstraction/helper.
-
-Требования:
-
-- достаточная random/uniqueness entropy;
-- lowercase/type-prefixed representation допустима;
-- client не извлекает meaning из ID;
-- deterministic fake generator для unit tests.
-
-Точный UUID/ULID/random-token choice фиксируется implementation, но ResourceRef API не должен зависеть от сортируемости конкретного формата.
+Даже до business batch capabilities unit tests фиксируют общие semantics.
 
 ---
 
-# 11. Clock/time
+# 8. IDs and time
 
-Application timestamps UTC/timezone-aware.
+Opaque IDs используют один server generator baseline:
 
-Durations/deadlines используют monotonic time там, где возможно.
+```text
+type prefix + UUID4 hex
+```
 
-Для TTL/state tests должен существовать Clock abstraction или injection point, чтобы не использовать real sleep.
+Например будущие:
+
+```text
+cnt_<uuid4hex>
+brs_<uuid4hex>
+job_<uuid4hex>
+```
+
+Client не извлекает authorization/routing semantics из prefix.
+
+Application timestamps UTC/timezone-aware; duration/deadline uses monotonic clock where possible.
+
+Tests use injectable/fake clock/id generator; no real sleep for lifecycle correctness.
 
 ---
 
-# 12. Authentication baseline
+# 9. Authentication
 
-Реализуется ADR-0002:
+ADR-0002 baseline:
 
 ```text
 Authorization: Bearer
-→ StaticBearerAuthProvider
+→ AuthProvider
+→ StaticBearerAuthProvider baseline
 → PrincipalContext
 ```
 
@@ -282,482 +214,209 @@ Requirements:
 
 - multiple configured service principals;
 - scopes;
-- constant-time comparison;
-- rotation overlap;
-- no raw token logs;
+- constant-time token compare;
+- overlap for rotation;
+- no raw token logs/storage;
 - REST/MCP use same provider;
-- `/health/live`/`ready` access policy explicit;
 - detailed status protected.
 
+External bearer credentials are not MCP tool arguments.
+
 ---
 
-# 13. Authorization foundation
+# 10. Authorization foundation
 
-Нужен минимальный reusable application helper/policy port:
+Reusable application policy/helper for:
 
 ```text
-require_scope(...)
-require_owner(...)
+require_scope
+require_owner
 ```
 
-или эквивалентный сервис.
+или эквивалент.
 
-v0.1 пока не имеет business resources, но tests должны доказать:
+Transport authentication и application resource authorization не смешиваются.
 
-- principal A ≠ principal B;
-- scope denial structured;
-- transport auth не смешан с application authorization.
+v0.1 tests prove principal/scope denial semantics.
 
 ---
 
-# 14. PostgreSQL foundation
+# 11. PostgreSQL foundation
 
-Реализуется:
+```text
+PostgreSQL
+SQLAlchemy 2 async
+asyncpg
+Alembic
+```
 
-- async engine;
-- async session factory;
-- SQLAlchemy declarative base/metadata;
-- explicit UnitOfWork;
+Implement:
+
+- async engine/session factory;
+- declarative metadata;
+- explicit `SqlAlchemyUnitOfWork`;
 - Alembic environment;
-- empty/initial baseline migration при необходимости tooling consistency;
 - DB health probe;
-- pool shutdown/lifespan.
+- pool lifecycle.
 
-v0.1 не создаёт искусственные business tables только ради проверки ORM.
+Не создавать искусственные business tables ради демонстрации ORM.
 
----
-
-# 15. UnitOfWork
-
-Target implementation:
-
-```text
-SqlAlchemyUnitOfWork
-```
-
-который:
-
-- владеет `AsyncSession`;
-- открывает явную transaction boundary;
-- предоставляет repositories поздним modules;
-- commit/rollback выполняется только явным application boundary;
-- repositories не выполняют hidden commit.
-
-v0.1 может пока не иметь concrete business repositories.
+Repositories never hidden-commit.
 
 ---
 
-# 16. Alembic
+# 12. Alembic
 
-Requirements:
-
-- config работает внутри package/container;
-- metadata import не запускает application side effects;
-- migration command отдельный от API startup;
-- CI проверяет единственный head;
-- empty DB upgrade succeeds.
+- migration command separate from API startup;
+- metadata import no application side effects;
+- CI verifies one head;
+- empty DB upgrade succeeds;
+- production does not use `create_all()` as migration system.
 
 ---
 
-# 17. Redis foundation
+# 13. Redis foundation
 
-Реализуется async Redis client factory/lifecycle.
+Создать async client lifecycle/health foundation.
 
-v0.1 использует Redis только для:
+v0.1 не создаёт premature generic cache/lock/queue abstractions без consumer module.
 
-- connectivity/health foundation;
-- future adapter wiring tests.
+Redis outage:
 
-Не нужно создавать premature cache/lock/queue abstractions без consumer module.
-
-Redis outage может делать status degraded, но не должен ломать `/health/live`.
+- liveness remains alive;
+- detailed readiness/capabilities may be degraded;
+- behavior explicit.
 
 ---
 
-# 18. ContentStore port foundation
+# 14. ContentStore port foundation
 
-Реализуется минимальный `ContentStore` storage port и filesystem adapter, достаточный для contract tests streaming bytes.
-
-Минимальные operations conceptually:
+Минимальный async-friendly storage port + filesystem adapter:
 
 ```text
 stage/write stream
 finalize
 open/read stream
-exists/stat
+stat/exists
 remove
 ```
 
-Application `ContentObject` lifecycle появляется в v0.3; v0.1 не публикует Content API.
+Public `ContentObject` lifecycle появляется v0.3.
+
+Filesystem adapter:
+
+- configurable root;
+- generated storage keys;
+- no user filename as path;
+- no traversal;
+- staging/finalization-friendly layout;
+- bounded streaming, no giant RAM buffer.
 
 ---
 
-# 19. Filesystem ContentStore
+# 15. FastAPI + FastMCP bootstrap
+
+Использовать проверенный KudaGo-style pattern:
+
+```text
+create FastMCP separately
+→ mcp.http_app(path="/")
+→ combine FastAPI/MCP lifespans
+→ mount at /mcp
+```
+
+REST `/api/v1` и MCP используют общий application/bootstrap container.
+
+Не копировать KudaGo queued business execution в v0.1.
+
+---
+
+# 16. Health/readiness
+
+Минимально:
+
+```text
+/health/live
+/health/ready
+protected detailed status
+```
+
+Liveness = process/event loop alive.
+
+Readiness учитывает required foundation dependencies according deployment profile.
+
+No secrets/DSN in health response.
+
+---
+
+# 17. Observability foundation
+
+- structured JSON production logging;
+- human-readable dev mode допустим;
+- operation/request/trace correlation;
+- redaction;
+- Prometheus-compatible metrics foundation;
+- OpenTelemetry tracing extension points;
+- no raw web/business content in logs by default.
+
+Concrete adapters remain replaceable infrastructure.
+
+---
+
+# 18. Docker Compose
+
+Reference local stack:
+
+```text
+Control Plane
+PostgreSQL
+Redis
+```
+
+plus filesystem ContentStore volume.
+
+No SearXNG/Browser Worker/Job Worker until their versions.
 
 Requirements:
 
-- root configurable;
-- root создаётся/валидируется startup;
-- generated storage keys;
-- no client filename as path;
-- temp/staging inside same storage filesystem where atomic finalize is needed;
-- atomic rename/replace finalization where platform/filesystem semantics allow;
-- hash/size contract-testable;
-- no path traversal;
-- async-friendly streaming via bounded thread/file strategy, без giant RAM buffering.
-
-Exact fsync durability policy фиксируется implementation/production profile позже.
+- one-command startup;
+- health checks;
+- non-secret example env;
+- migration command documented;
+- persistent DB volume;
+- clean shutdown.
 
 ---
 
-# 20. Structured logging
+# 19. Testing
 
-v0.1 вводит structured logging:
+Required v0.1 layers:
 
-- JSON/machine-readable production format;
-- human-readable developer option допустим;
-- operation/request/trace context;
-- redaction;
-- startup configuration summary без secrets.
-
-No business web content в logs.
-
----
-
-# 21. Metrics/tracing foundation
-
-v0.1 должен иметь extension points и minimal operational metrics.
-
-Минимум:
-
-- process/startup;
-- HTTP request duration/outcome;
-- DB/Redis health;
-- auth rejects;
-- operation common counters.
-
-Full component metrics добавляются соответствующими версиями.
-
-OpenTelemetry/metrics concrete libraries выбираются implementation plan без изменения application interfaces.
+- unit common contracts;
+- config validation;
+- auth positive/negative;
+- owner/scope foundation;
+- DB UoW/migration;
+- Redis health;
+- ContentStore adapter contract;
+- actual mounted FastAPI/MCP smoke;
+- architecture/dependency import tests;
+- local Compose smoke.
 
 ---
 
-# 22. Health endpoints
-
-Реализуются:
-
-```text
-GET /health/live
-GET /health/ready
-GET /health/status
-```
-
-Semantics из `observability.md`.
-
-### live
-
-Не проверяет external dependencies как restart condition.
-
-### ready
-
-Проверяет runtime bootstrap/mandatory foundation.
-
-### status
-
-Возвращает detailed dependency/capability summary и требует appropriate auth/admin scope, кроме явно redacted local profile.
-
----
-
-# 23. FastAPI + FastMCP application composition
-
-Control Plane создаёт один FastAPI root app и монтирует/подключает FastMCP Streamable HTTP sub-application.
-
-Lifespan должен единообразно управлять:
-
-- settings;
-- auth provider;
-- DB engine;
-- Redis client;
-- ContentStore;
-- metrics/tracing;
-- FastMCP lifespan.
-
-Используется проверенный общий application-layer pattern, а не отдельный MCP process.
-
----
-
-# 24. MCP v0.1
-
-MCP endpoint должен:
-
-- запускаться по Streamable HTTP;
-- требовать Bearer auth;
-- корректно отвечать standard client initialization/list tools;
-- не публиковать placeholder business tools.
-
-Первые реальные tools появляются v0.2.
-
-Tests могут регистрировать synthetic test-only tool fixture для проверки PrincipalContext/schema integration, но production catalog остаётся пустым до Search.
-
----
-
-# 25. REST v0.1
-
-Application REST пока содержит только operational/foundation routes.
-
-`/api/v1` может возвращать service/version metadata в authorized status endpoint, но не нужно создавать fake business CRUD.
-
----
-
-# 26. Error mapping foundation
-
-FastAPI transport-level validation/auth/internal errors должны иметь согласованный safe envelope.
-
-Expected structure следует `rest-api.md`.
-
-Stack traces/internal URLs/secrets не возвращаются.
-
----
-
-# 27. Bootstrap/container
-
-`bootstrap/container.py` или эквивалент строит dependency graph.
-
-Никаких global clients, созданных import-time.
-
-Tests могут заменить:
-
-- AuthProvider;
-- Clock;
-- ID generator;
-- DB/Redis/ContentStore ports.
-
----
-
-# 28. Lifespan
-
-Startup order conceptually:
-
-```text
-load/validate settings
-→ configure logging/telemetry
-→ build auth
-→ create DB/Redis/storage clients
-→ verify mandatory local prerequisites
-→ build application container
-→ start transport apps
-```
-
-Shutdown reverse/bounded.
-
-Optional dependency failure отражается degraded status согласно configuration, а не всегда process crash.
-
----
-
-# 29. Entry point
-
-Canonical Uvicorn target должен быть стабильным, например:
-
-```text
-web_access.entrypoints.api:app
-```
-
-или app factory equivalent.
-
-Exact target фиксируется README/Compose/scripts и не зависит от repository cwd hacks.
-
----
-
-# 30. Docker image
-
-v0.1 application image:
-
-- Python 3.11+ compatible;
-- non-root runtime user;
-- pinned/install-locked dependencies;
-- source package installed;
-- health-compatible;
-- no compilers/build secrets в runtime layer, где возможно;
-- no Playwright/browser dependencies.
-
----
-
-# 31. Docker Compose v0.1
-
-Services:
-
-```text
-postgres
-redis
-migration
-api
-```
-
-SearXNG добавляется v0.2.
-
-Browser/Job workers добавляются их версиями.
-
-Volumes:
-
-- PostgreSQL data;
-- Redis dev persistence optional;
-- filesystem ContentStore.
-
-Наружу по умолчанию публикуется только API port.
-
----
-
-# 32. `.env.example`
-
-Repository содержит безопасный example с placeholders.
-
-Не содержит рабочий token/password.
-
-Документация даёт command/script для генерации random bearer secret.
-
----
-
-# 33. Test foundation
-
-v0.1 создаёт:
-
-```text
-tests/unit
-tests/contract
-tests/integration
-```
-
-и support fixtures для:
-
-- Settings;
-- fake Clock/IDs/Auth;
-- PostgreSQL;
-- Redis;
-- filesystem ContentStore;
-- ASGI app;
-- FastMCP client.
-
----
-
-# 34. Architecture tests
-
-Автоматически enforce dependency rules.
-
-Любой import FastAPI/SQLAlchemy/Redis из `domain`/application core должен ломать CI.
-
----
-
-# 35. Auth tests
-
-Обязательны:
-
-- missing bearer;
-- invalid bearer;
-- two principals;
-- scope denial;
-- rotation overlap;
-- no token in repr/log;
-- REST auth;
-- MCP auth;
-- live/ready access policy;
-- detailed status protection.
-
----
-
-# 36. Persistence foundation tests
-
-- PostgreSQL connection/reconnect;
-- UoW commit/rollback;
-- repository hidden commit absent (через synthetic test repository допускается);
-- Alembic empty DB→head;
-- Redis connectivity/restart behavior;
-- ContentStore stream/finalize/read/remove/path traversal.
-
----
-
-# 37. Health/degraded tests
-
-Scenarios:
-
-- all ready;
-- Redis down;
-- PostgreSQL down;
-- ContentStore unavailable;
-- optional dependency down;
-- app draining/shutdown.
-
-Liveness не должна создавать restart storm из-за Redis/PostgreSQL outage.
-
-Exact readiness response следует design.
-
----
-
-# 38. MCP schema foundation test
-
-Даже с пустым business catalog test должен подтвердить:
-
-- server initializes;
-- unauthorized client rejected;
-- authorized standard client connects;
-- list_tools succeeds;
-- no unexpected placeholder tools.
-
----
-
-# 39. Required gates
-
-Обязательны:
-
-- G0 Design completeness;
-- G1 Build/static;
-- G2 Unit/application contracts;
-- G3 MCP/REST foundation schema where applicable;
-- G4 Persistence/migrations;
-- G6 Security baseline;
-- G12 Observability/health foundation;
-- G15 reference deployment foundation;
-- G21 Documentation consistency.
-
-G5 cross-system Job/ContentObject consistency полноценно применяется позднее, когда соответствующие resources появятся.
-
----
-
-# 40. Acceptance criteria v0.1
-
-Версия принимается, если:
-
-1. Repository имеет принятый src-layout/layer boundaries.
-2. Project устанавливается reproducibly и imports работают вне repo cwd.
-3. Typed Settings загружаются/валидируются.
-4. REST + Streamable HTTP MCP запускаются в одном Control Plane.
-5. Bearer AuthProvider создаёт PrincipalContext для REST/MCP.
-6. Cross-principal/scope tests foundation green.
-7. OperationResult/Error/Hint/Warning contracts реализованы/tested.
-8. PostgreSQL async engine + UoW + Alembic работают.
-9. Redis lifecycle/health работает.
-10. Filesystem ContentStore contract roundtrip/atomic finalization работает.
-11. Structured logs/redaction/operation IDs работают.
-12. `/health/live`, `/health/ready`, `/health/status` соответствуют design.
-13. Docker Compose поднимается с пустого окружения одной командой.
-14. Только API port exposed по умолчанию.
-15. Migration выполняется отдельным one-shot step.
-16. Architecture dependency tests green.
-17. Actual FastMCP authorized/unauthorized initialization tests green.
-18. Required gates имеют 0 failures/flaky defects.
-19. Search/Retrieval/Browser/Jobs dependencies не добавлены преждевременно.
-
----
-
-# 41. Blockers before `ready for implementation`
-
-Остаётся определить в `implementation-sequence.md`/tooling choice:
-
-1. exact dependency/lock tool;
-2. exact structured logging implementation;
-3. exact metrics/OpenTelemetry libraries;
-4. exact static bearer config schema;
-5. exact opaque ID format;
-6. exact filesystem ContentStore key/finalization implementation details;
-7. exact FastMCP mount/auth propagation APIs для выбранной pinned FastMCP version.
-
-Это implementation choices, которые должны быть зафиксированы в sequence до coding handoff, но не требуют смены архитектуры.
+# 20. Definition of Done
+
+v0.1 complete only if:
+
+1. Repository/package layout enforces dependency rules.
+2. REST + MCP mount successfully through shared application bootstrap.
+3. External auth creates trusted PrincipalContext.
+4. PostgreSQL/Alembic/UoW foundation is explicit and testable.
+5. Redis lifecycle/readiness is explicit.
+6. Filesystem ContentStore passes storage contract tests.
+7. Common OperationResult/Error/Hint contracts are implemented/tested.
+8. Structured observability foundation works without secret leakage.
+9. Docker Compose starts reproducibly.
+10. No premature Search/Browser/Job implementation exists.
+11. Applicable foundation release gates are green.
