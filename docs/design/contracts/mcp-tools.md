@@ -4,48 +4,56 @@
 
 Каноническая freeze-candidate спецификация public MCP tools Web Access.
 
-Семантика tools принадлежит `../mcp.md` и ADR-0022. Общие result/resource модели принадлежат `common-models.md`. Этот документ фиксирует **точные input DTO, defaults, bounds, cross-field invariants, result data shapes и execution metadata**, которые должны быть воспроизведены фактической FastMCP JSON Schema.
+Semantic owner: `../mcp.md`.
 
-До v0.8 generated actual MCP schemas могут уточняться только через явное изменение Design/ADR/этого contract. Coding agent не должен самостоятельно расширять public surface.
+Relevant ADR:
+
+- ADR-0021 — direct/durable split;
+- ADR-0022 — semantic catalog invariant;
+- ADR-0024 — resource/cost-aware retry classification;
+- ADR-0025 — explicit browser scroll.
+
+Common public models: `common-models.md`.
+
+Этот документ фиксирует **точные input DTO, defaults, bounds, cross-field invariants, result data shapes и execution metadata**, которые должны быть воспроизведены actual FastMCP JSON Schema/runtime validation.
 
 ---
 
-# 1. Общие правила schema
+# 1. Общие schema rules
 
 Для каждого tool:
 
 - top-level input — JSON object;
 - `additionalProperties=false`;
-- все nested objects также запрещают неизвестные поля, если явно не сказано обратное;
-- descriptions tool/fields — на русском;
-- technical field names/codes — на английском;
-- URL input в MCP ограничен `4096` Unicode characters и runtime обязан принимать только `http`/`https` там, где это web URL;
-- opaque resource IDs — string `1..128`; client не должен разбирать prefix;
-- `null` допускается только там, где имеет отдельную описанную semantics;
-- omission и default не смешиваются;
-- каждый list имеет `minItems/maxItems`;
-- каждый integer имеет `minimum/maximum`, если диапазон является частью contract;
-- server runtime validation повторяет все ограничения независимо от JSON Schema.
-
-Expected application failures возвращаются через `PublicOperationResult`, а не protocol exception.
+- nested objects также reject unknown fields, если прямо не сказано иное;
+- descriptions tools/fields — русские;
+- identifiers/error codes — английские;
+- MCP web URL max `4096` chars;
+- opaque resource IDs `1..128` chars;
+- cursor `1..2048` chars;
+- every array has `minItems/maxItems`;
+- numeric bounds machine-readable;
+- discriminated union генерирует `oneOf`/equivalent actual JSON Schema;
+- omission/default/null semantics explicit;
+- runtime Pydantic/application validation повторяет/усиливает schema constraints;
+- expected failures return `PublicOperationResult`, not raw protocol exception.
 
 ---
 
-# 2. Общие reusable input types
+# 2. Reusable input types
 
 ## 2.1 `HttpUrlInput`
 
 ```text
 string
-minLength = 1
-maxLength = 4096
+1..4096 chars
 ```
 
 Description:
 
 > Полный HTTP(S)-URL. Сервис повторно проверяет scheme, hostname, port, DNS/IP и redirects по security policy; URL не является разрешением на доступ к private/internal сети.
 
-JSON Schema `format=uri` может использоваться как ранняя проверка, но runtime URL parser/security policy остаются authoritative.
+`format=uri` may be emitted, but runtime safe URL parser is authoritative.
 
 ## 2.2 Opaque IDs
 
@@ -55,41 +63,23 @@ BrowserSessionId
 BrowserPageId
 ElementRef
 JobId
-Cursor
 ```
-
-Базовый string range:
 
 ```text
-IDs: 1..128 chars
-Cursor: 1..2048 chars
+string 1..128
 ```
 
-Prefixes могут использоваться server-side для удобства, но client contract не зависит от UUID/layout внутри handle.
+Client не разбирает внутренний prefix/UUID layout.
 
-## 2.3 `DialogPolicyInput`
+## 2.3 Cursor
 
-Discriminated union:
-
-```json
-{"behavior":"dismiss"}
+```text
+string 1..2048
 ```
 
-или
+Opaque and resource-scoped.
 
-```json
-{"behavior":"accept","prompt_text":"optional text"}
-```
-
-Rules:
-
-- discriminator: `behavior`;
-- enum: `dismiss | accept`;
-- `prompt_text`: only `accept`, `0..2048` chars;
-- `prompt_text` forbidden for `dismiss`;
-- omission всей policy → server default `dismiss_and_report` из ADR-0011.
-
-## 2.4 `ModifierKey`
+## 2.4 ModifierKey
 
 Enum:
 
@@ -100,37 +90,104 @@ Meta
 Shift
 ```
 
-Array modifiers:
+Modifier arrays:
 
 ```text
+0..4
 uniqueItems=true
-maxItems=4
 ```
+
+## 2.5 `DialogPolicyInput`
+
+Union:
+
+```json
+{"behavior":"dismiss"}
+```
+
+or
+
+```json
+{"behavior":"accept","prompt_text":"optional text"}
+```
+
+Rules:
+
+- `behavior`: `dismiss | accept`;
+- `prompt_text`: 0..2048 chars, allowed only for `accept`;
+- policy object omitted → server default `dismiss_and_report` ADR-0011.
+
+## 2.6 `KeyInput`
+
+Structured key union.
+
+Named key:
+
+```json
+{"type":"named","key":"Enter"}
+```
+
+Named enum:
+
+```text
+Enter
+Tab
+Escape
+Backspace
+Delete
+ArrowUp
+ArrowDown
+ArrowLeft
+ArrowRight
+Home
+End
+PageUp
+PageDown
+Insert
+Space
+F1 F2 F3 F4 F5 F6 F7 F8 F9 F10 F11 F12
+```
+
+Character:
+
+```json
+{"type":"character","value":"a"}
+```
+
+`value`: 1..8 chars in JSON schema; runtime validates exactly one Unicode grapheme/character key representation supported by browser runtime.
+
+Shortcut uses separate modifiers:
+
+```text
+Control + character a
+```
+
+No free-form Playwright chord/JavaScript expression.
 
 ---
 
-# 3. Tool execution metadata
+# 3. Execution/annotation table
 
-Canonical metadata table:
+Trusted Agent retry class follows ADR-0024 and may be stricter than basic MCP annotation.
 
-| Tool | readOnlyHint | destructiveHint | idempotentHint | openWorldHint | Agent retry class |
+| Tool | readOnlyHint | destructiveHint | idempotentHint | openWorldHint | Own-agent retry class |
 |---|---:|---:|---:|---:|---|
-| `web_search` | true | false | true | true | safe |
-| `web_fetch` | true | false | true | true | safe |
-| `web_fetch_job` | false | false | false | true | never automatic after uncertain creation |
+| `web_search` | true | false | true | true | conservative: no blind retry after possible provider dispatch/cost |
+| `web_fetch` | false | false | false | true | no blind retry after uncertain network/resource creation |
+| `web_fetch_job` | false | false | false | true | no blind retry after uncertain Job creation |
 | `content_get` | true | false | true | false | safe |
-| `content_parse` | false | false | true | false | idempotent |
-| `content_parse_job` | false | false | false | false | never automatic after uncertain creation |
-| `browser_create` | false | false | false | true | never automatic after uncertain creation |
+| `content_parse` | false | false | true | false | idempotent only with canonical representation reuse |
+| `content_parse_job` | false | false | false | false | no blind retry after uncertain Job creation |
+| `browser_create` | false | false | false | true | no blind retry after uncertain session creation |
 | `browser_get` | true | false | true | true | safe |
 | `browser_close` | false | true | true | true | idempotent cleanup |
 | `browser_navigate` | false | false | false | true | never automatic after dispatch uncertainty |
 | `browser_snapshot` | true | false | true | true | safe |
-| `browser_content` | false | false | false | true | never automatic after uncertain artifact creation |
+| `browser_content` | false | false | false | true | no blind retry after uncertain Content creation |
 | `browser_tabs` | true | false | true | true | safe |
-| `browser_page_create` | false | false | false | true | never automatic after uncertain creation |
-| `browser_page_close` | false | true | true | true | idempotent cleanup |
-| `browser_screenshot` | false | false | false | true | never automatic after uncertain artifact creation |
+| `browser_page_create` | false | false | false | true | no blind retry after uncertain page creation |
+| `browser_page_close` | false | true | true | true | idempotent page cleanup |
+| `browser_screenshot` | false | false | false | true | no blind retry after uncertain Content creation |
 | `browser_events` | true | false | true | true | safe |
 | `browser_click` | false | true | false | true | never automatic |
 | `browser_fill_form` | false | true | false | true | never automatic |
@@ -138,12 +195,13 @@ Canonical metadata table:
 | `browser_press` | false | true | false | true | never automatic |
 | `browser_hover` | false | false | false | true | never automatic |
 | `browser_drag` | false | true | false | true | never automatic |
+| `browser_scroll` | false | false | false | true | never automatic |
 | `browser_wait` | true | false | true | true | safe |
 | `browser_upload` | false | true | false | true | never automatic |
 | `job_get` | true | false | true | false | safe |
 | `job_cancel` | false | true | true | false | idempotent cancellation |
 
-`retryable=true` в `PublicError` не отменяет более строгую tool execution semantics.
+`retryable=true` in application error never overrides stronger tool/phase semantics.
 
 ---
 
@@ -151,32 +209,33 @@ Canonical metadata table:
 
 ## Description
 
-> Ищет страницы и источники в интернете по одному или нескольким независимым поисковым запросам. Возвращает поисковую выдачу: URL, заголовки, snippets и metadata поискового backend-а. Не читает содержимое найденных страниц; для известных URL используйте `web_fetch`.
+> Ищет страницы и источники в интернете по одному или нескольким независимым поисковым запросам. Возвращает поисковую выдачу: URL, заголовки, snippets и metadata поискового backend-а. Не читает содержимое найденных страниц; для известных URL используйте `web_fetch`. Некоторые providers (например Yandex) могут расходовать платный provider budget, поэтому потерянный результат не означает разрешение автоматически повторить платный запрос.
 
 ## Input
 
 ```text
-queries: array[string]              required, 1..8
-  item: trim-non-empty, 1..2048 chars
-provider: enum                      default "default"
-  default | searxng | yandex
-page: integer                       default 1, 1..100
-limit: integer                      default 10, 1..20
-language: string | omitted          1..64 chars, normalized language tag
-region: string | omitted            1..64 chars
-safe_search: enum | omitted         off | moderate | strict
-time_range: enum | omitted          day | month | year
+queries: array[string] required, 1..8
+  item: trim-non-empty, 1..2048
+provider: enum default|searxng|yandex, default "default"
+page: integer 1..100, default 1
+limit: integer 1..20, default 10
+language: string omitted | 1..64
+region: string omitted | 1..64
+safe_search: off|moderate|strict omitted
+time_range: day|month|year omitted
 ```
 
-Shared options apply to every query in the batch. Queries requiring different providers/options use separate tool calls.
+Common options apply to all queries. Different provider/options → separate call.
 
-`region` follows canonical configured SearchRegion ID rules; unsupported provider/region combination returns repairable per-item rejection.
+Provider description:
 
-## Result data
+> `default` использует настроенный default provider. `searxng` — бесплатный configured SearXNG backend. `yandex` может быть billable и доступен только при provider policy/budget. Сервис не переключает provider скрыто из-за размера/качества выдачи.
+
+## Result
 
 ```text
 SearchBatchData
-└── items[] in original query order
+└── items[] in input order
     └── BatchItemResult<SearchQueryData>
 ```
 
@@ -208,7 +267,7 @@ host: string | null <=1024
 published_at: timestamp | null
 ```
 
-No cross-provider score field.
+No cross-provider score.
 
 ---
 
@@ -216,7 +275,7 @@ No cross-provider score field.
 
 ## Description
 
-> Немедленно получает один или несколько известных HTTP(S)-ресурсов через безопасный HTTP Retrieval. Для каждого ресурса сохраняет raw ContentObject, выполняет L0 Inspection и доступный request-bound L1 Native Parsing. Не запускает Browser, OCR/L2 или durable Job автоматически.
+> Немедленно получает один или несколько известных HTTP(S)-ресурсов через безопасный HTTP Retrieval. Для каждого ресурса сохраняет raw ContentObject, выполняет L0 Inspection и доступный request-bound L1 Native Parsing. Не запускает Browser, OCR/L2 или durable Job автоматически. Вызов создаёт Content resources, поэтому потерянный result нельзя слепо повторять как безусловно безопасное чтение.
 
 ## Input
 
@@ -224,17 +283,9 @@ No cross-provider score field.
 urls: array[HttpUrlInput] required, 1..8
 ```
 
-Duplicate URLs are allowed only if caller intentionally requested duplicate independent items; response preserves positions.
+Response preserves input order. Duplicate positions permitted deliberately.
 
-## Result data
-
-```text
-FetchBatchData
-└── items[] in original URL order
-    └── BatchItemResult<FetchItemData>
-```
-
-`FetchItemData`:
+## Result item
 
 ```text
 requested_url
@@ -248,10 +299,10 @@ raw_content: ContentRef
 inspection: bounded object
 native_content: ContentRef | null
 available_representations: ContentRef[]
-preview: string | null <=8000 chars
+preview: string | null <=12000
 ```
 
-No raw giant HTML/base64 payload.
+No giant raw HTML/base64.
 
 ---
 
@@ -267,17 +318,13 @@ No raw giant HTML/base64 payload.
 urls: array[HttpUrlInput] required, 1..256
 ```
 
-No generic timeout/provider/browser options.
-
-## Result data
+## Result
 
 ```text
 job: JobRef
 ```
 
-Job type fixed to `retrieval_batch`.
-
-Creation response uncertainty must not cause blind repeated creation.
+Fixed type `retrieval_batch`.
 
 ---
 
@@ -285,32 +332,23 @@ Creation response uncertainty must not cause blind repeated creation.
 
 ## Description
 
-> Читает уже существующие ContentObjects без повторного HTTP-запроса или браузинга. Для текстовых представлений возвращает ограниченный UTF-8 chunk и opaque cursor. Для бинарного объекта возвращает metadata и доступные производные representations, не выполняя скрытую конвертацию.
+> Читает уже существующие ContentObjects без повторного HTTP-запроса или браузинга. Для текстовых представлений возвращает ограниченный UTF-8 chunk и opaque cursor. Для бинарного объекта возвращает metadata и доступные производные representations без скрытой конвертации.
 
 ## Input
 
 ```text
 items: array[ContentReadItem] required, 1..8
-max_chars: integer default 12000, 1..30000
+max_chars: integer 1..30000, default 12000
 ```
 
 `ContentReadItem`:
 
 ```text
-content_id: ContentId required
-cursor: Cursor | omitted
+content_id: ContentId
+cursor: Cursor omitted
 ```
 
-Cursor belongs to exact content object; mismatch/stale/unknown version is rejected per item.
-
-## Result data
-
-```text
-items[]
-└── BatchItemResult<ContentReadData>
-```
-
-`ContentReadData`:
+## Result item
 
 ```text
 content: ContentRef
@@ -329,22 +367,15 @@ Binary content may have `text=null`.
 
 ## Description
 
-> Немедленно запускает зарегистрированный L1 Native Parser для одного или нескольких существующих ContentObjects. Использует detected format и canonical parser registry; не принимает имя внутренней библиотеки, не запускает OCR/L2 и не создаёт durable Job.
+> Немедленно запускает зарегистрированный L1 Native Parser для одного или нескольких существующих ContentObjects. Использует detected format и canonical parser registry; не принимает имя внутренней библиотеки, не запускает OCR/L2 и не создаёт durable Job. Совместимое уже существующее representation переиспользуется.
 
 ## Input
 
 ```text
-content_ids: array[ContentId] required, 1..8, uniqueItems=true
+content_ids: array[ContentId] required, 1..8, unique
 ```
 
-## Result data
-
-```text
-items[]
-└── BatchItemResult<NativeParseData>
-```
-
-`NativeParseData`:
+## Result item
 
 ```text
 source: ContentRef
@@ -353,7 +384,7 @@ reused: bool
 parser_capability: stable public capability code | null
 ```
 
-Internal parser/library IDs are not returned as public control fields.
+Implementation acceptance must prove canonical duplicate/concurrent reuse before idempotent Agent classification is enabled.
 
 ---
 
@@ -366,16 +397,16 @@ Internal parser/library IDs are not returned as public control fields.
 ## Input
 
 ```text
-content_ids: array[ContentId] required, 1..256, uniqueItems=true
+content_ids: array[ContentId] required, 1..256, unique
 ```
 
-## Result data
+## Result
 
 ```text
 job: JobRef
 ```
 
-Job type fixed to `content_parse_batch`.
+Fixed type `content_parse_batch`.
 
 ---
 
@@ -383,7 +414,7 @@ Job type fixed to `content_parse_batch`.
 
 ## Description
 
-> Создаёт одну новую изолированную ephemeral BrowserSession с начальной пустой страницей. Не открывает URL автоматически; после создания используйте `browser_navigate`. Сессия имеет собственный server-side TTL и не зависит от жизненного цикла MCP-соединения.
+> Создаёт одну новую изолированную ephemeral BrowserSession с начальной пустой страницей. Не открывает URL автоматически; после создания используйте `browser_navigate`. Сессия имеет server-side TTL и не зависит от lifecycle MCP-соединения.
 
 ## Input
 
@@ -391,16 +422,14 @@ Job type fixed to `content_parse_batch`.
 {}
 ```
 
-No public Playwright launch/context options in core MCP.
-
-## Result data
+## Result
 
 ```text
 session: BrowserSessionRef
 page: PageRef
 ```
 
-Creation is not automatically retryable after uncertain response because a session may already exist.
+No core MCP launch/context knobs.
 
 ---
 
@@ -408,22 +437,22 @@ Creation is not automatically retryable after uncertain response because a sessi
 
 ## Description
 
-> Возвращает текущее состояние и lifecycle metadata существующей BrowserSession. Не создаёт snapshot и не читает содержимое страницы.
+> Возвращает текущее lifecycle-состояние существующей BrowserSession. Не создаёт snapshot и не читает page content.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
+session_id: BrowserSessionId
 ```
 
-## Result data
+## Result
 
 ```text
 session: BrowserSessionRef
 pages_count: integer >=0
 ```
 
-No worker routing metadata.
+No worker/routing metadata.
 
 ---
 
@@ -431,24 +460,20 @@ No worker routing metadata.
 
 ## Description
 
-> Идемпотентно закрывает одну или несколько BrowserSessions и освобождает принадлежащие им browser resources. Используется также lifecycle cleanup-логикой агента. Закрытие session не удаляет уже сохранённые ContentObjects.
+> Идемпотентно закрывает одну или несколько BrowserSessions и освобождает browser resources. Используется lifecycle cleanup-логикой агента. Закрытие session не удаляет уже финализированные ContentObjects.
 
 ## Input
 
 ```text
-session_ids: array[BrowserSessionId] required, 1..8, uniqueItems=true
+session_ids: array[BrowserSessionId] required, 1..8, unique
 ```
 
-## Result data
-
-Per item:
+## Result item
 
 ```text
 session_id
 state: closed | expired | lost | already_terminal
 ```
-
-Expected terminal/already-terminal state is not protocol error.
 
 ---
 
@@ -456,18 +481,18 @@ Expected terminal/already-terminal state is not protocol error.
 
 ## Description
 
-> Выполняет одну явную навигационную операцию в конкретной странице существующей BrowserSession: открыть URL, вернуться назад, перейти вперёд или перезагрузить страницу. Операция меняет browser state; при неопределённом результате после dispatch её нельзя слепо повторять.
+> Выполняет одну явную навигационную операцию в конкретной странице существующей BrowserSession: открыть URL, назад, вперёд или reload. Операция меняет browser state; после неопределённого результата её нельзя повторять автоматически.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
-destination: discriminated union required
-dialog_policy: DialogPolicyInput | omitted
+session_id
+page_id
+destination: discriminated union
+dialog_policy: DialogPolicyInput omitted
 ```
 
-Destination variants:
+Variants:
 
 ```json
 {"type":"url","url":"https://example.com"}
@@ -476,20 +501,22 @@ Destination variants:
 {"type":"reload"}
 ```
 
-No wait-until/browser launch options exposed in core MCP.
-
-## Result data
+## Result
 
 ```text
+action_id
 page: PageRef
-page_generation: integer >=0
+page_generation
 navigation:
   requested_kind
   final_url
   http_status | null
-  download_refs: ContentRef[]
-  popup_pages: PageRef[]
+popup_pages: PageRef[]
+download_refs: ContentRef[]
+dialogs: bounded summaries[]
 ```
+
+No hidden create/wait heuristic.
 
 ---
 
@@ -497,27 +524,27 @@ navigation:
 
 ## Description
 
-> Получает структурированный semantic snapshot текущей страницы для взаимодействия LLM с интерфейсом. Возвращает snapshot-scoped `element_ref` для действий. Не делает screenshot и не превращает страницу в document content автоматически.
+> Получает структурированный semantic snapshot текущей страницы для взаимодействия LLM с интерфейсом. Возвращает snapshot-scoped `element_ref`s. Не делает screenshot, scroll или document extraction автоматически.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
+session_id
+page_id
 ```
 
-## Result data
+## Result
 
 ```text
 snapshot: SnapshotRef
 page: PageRef
-semantic_view: string <=30000 chars
-elements: array[SemanticElement] <=300
+semantic_view: string <=30000
+elements: SemanticElement[] <=300
 full_content: ContentRef | null
 truncated: bool
 ```
 
-`SemanticElement` bounded fields:
+`SemanticElement`:
 
 ```text
 element_ref
@@ -535,22 +562,22 @@ No CSS/XPath/internal locator recipe.
 
 ## Description
 
-> Получает rendered содержимое текущей browser page как document-like Content и пропускает его через обычный L0/L1 Content pipeline. Используйте `browser_snapshot` для кликов и формы, а `browser_content` — когда страницу нужно читать и анализировать как документ.
+> Получает rendered содержимое текущей browser page как document-like Content и пропускает его через обычный L0/L1 Content pipeline. Используйте `browser_snapshot` для взаимодействия, а `browser_content` — когда страницу нужно читать как документ. Операция создаёт Content resources.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
+session_id
+page_id
 ```
 
-## Result data
+## Result
 
 ```text
 raw_rendered_content: ContentRef
 native_content: ContentRef | null
 available_representations: ContentRef[]
-preview: string | null <=8000 chars
+preview: string | null <=12000
 ```
 
 No hidden navigation.
@@ -561,21 +588,19 @@ No hidden navigation.
 
 ## Description
 
-> Возвращает read-only список открытых страниц/вкладок BrowserSession. Для действий всегда используйте явный `page_id`; MCP не поддерживает скрытое глобальное состояние «активной вкладки» как prerequisite действий.
+> Возвращает read-only список открытых страниц BrowserSession. Для действий всегда используется explicit `page_id`; скрытое состояние «активной вкладки» не требуется.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
+session_id
 ```
 
-## Result data
+## Result
 
 ```text
 pages: PageRef[] <=8
 ```
-
-`pages` order is stable for current server snapshot but not a durable identity; use page IDs.
 
 ---
 
@@ -583,21 +608,19 @@ pages: PageRef[] <=8
 
 ## Description
 
-> Создаёт одну новую пустую страницу в существующей BrowserSession. URL не открывается автоматически; навигация выполняется отдельным `browser_navigate`.
+> Создаёт одну новую пустую страницу в существующей BrowserSession. URL не открывается автоматически.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
+session_id
 ```
 
-## Result data
+## Result
 
 ```text
 page: PageRef
 ```
-
-Uncertain response is not blindly retried because duplicate page can exist.
 
 ---
 
@@ -610,11 +633,11 @@ Uncertain response is not blindly retried because duplicate page can exist.
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
+session_id
+page_id
 ```
 
-## Result data
+## Result
 
 ```text
 page_id
@@ -622,7 +645,7 @@ state: closed | already_closed
 remaining_pages: integer >=1
 ```
 
-Closing the last live page returns structured `last_page_close_rejected`.
+Last page → structured `last_page_close_rejected`.
 
 ---
 
@@ -630,19 +653,19 @@ Closing the last live page returns structured `last_page_close_rejected`.
 
 ## Description
 
-> Создаёт явный screenshot страницы или конкретного элемента и сохраняет изображение как ContentObject. Не возвращает base64-изображение в MCP result.
+> Создаёт screenshot страницы или конкретного элемента и сохраняет изображение как ContentObject. Не возвращает base64 image inline.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
-target: discriminated union default {"type":"page","full_page":false}
-format: enum png | jpeg default png
-quality: integer | omitted
+session_id
+page_id
+target: union, default page/full_page=false
+format: png | jpeg, default png
+quality: integer omitted
 ```
 
-Target variants:
+Target:
 
 ```json
 {"type":"page","full_page":false}
@@ -654,21 +677,23 @@ or
 {"type":"element","element_ref":"el_..."}
 ```
 
-Cross-field rules:
+Cross-field:
 
-- `quality` allowed only for `jpeg`;
-- JPEG quality `1..100`, default `85` when format=`jpeg` and omitted;
-- `quality` forbidden for `png`;
-- element target has no `full_page` field.
+- `quality` only JPEG;
+- JPEG quality 1..100, default 85;
+- quality forbidden PNG;
+- element target has no `full_page`.
 
-## Result data
+## Result
 
 ```text
 image: ContentRef
-page_generation: integer >=0
-width: integer >0
-height: integer >0
+page_generation
+width >0
+height >0
 ```
+
+Screenshot resource/byte limits enforced server-side.
 
 ---
 
@@ -676,19 +701,19 @@ height: integer >0
 
 ## Description
 
-> Читает ограниченный диагностический event log BrowserSession: page lifecycle, dialogs, downloads, console, network failures, security blocks и browser lifecycle. Это read-only diagnostics, а не authoritative business history.
+> Читает ограниченный диагностический event log BrowserSession: page lifecycle, dialogs, downloads, console, network failures, security blocks и browser lifecycle. Это diagnostics, не authoritative business history.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId | omitted
-types: array[enum] omitted => all supported safe event groups
-after_sequence: integer | omitted, >=0
-limit: integer default 50, 1..100
+session_id
+page_id omitted
+types omitted | unique array 1..7
+after_sequence integer omitted >=0
+limit integer 1..100, default 50
 ```
 
-Event group enum:
+Event groups:
 
 ```text
 page
@@ -700,9 +725,7 @@ security
 browser
 ```
 
-`types`: 1..7 unique when provided.
-
-## Result data
+## Result
 
 ```text
 events[] <= limit
@@ -710,7 +733,7 @@ next_sequence: integer | null
 gap_detected: bool
 ```
 
-Event common fields:
+Event common:
 
 ```text
 sequence
@@ -719,10 +742,10 @@ type
 page_id | null
 trusted_code | null
 message | null <=4096
-metadata: bounded object
+metadata bounded
 ```
 
-Page/provider event text remains untrusted.
+Site text remains untrusted.
 
 ---
 
@@ -730,32 +753,32 @@ Page/provider event text remains untrusted.
 
 ## Description
 
-> Выполняет один click по `element_ref` из актуального `browser_snapshot`. Действие может вызвать навигацию, submit, download или другой внешний side effect. После неопределённого результата не повторяйте click автоматически; сначала проверьте состояние страницы.
+> Выполняет один click по `element_ref` из актуального snapshot. Действие может вызвать navigation, submit, download или внешний side effect. После неопределённого результата сначала проверьте page state, не повторяйте click автоматически.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
-element_ref: ElementRef required
-button: enum left | middle | right default left
-click_count: integer default 1, 1..2
-modifiers: array[ModifierKey] omitted
-dialog_policy: DialogPolicyInput | omitted
+session_id
+page_id
+element_ref
+button: left | middle | right, default left
+click_count: integer 1..2, default 1
+modifiers: unique ModifierKey[] 0..4 omitted
+dialog_policy omitted
 ```
 
-## Result data
+## Result
 
 ```text
 action_id
 page: PageRef
 page_generation
-popup_pages: PageRef[]
-download_refs: ContentRef[]
-dialogs: bounded summaries[]
+popup_pages[]
+download_refs[]
+dialogs[] bounded
 ```
 
-No coordinates/selectors/`force`.
+No coordinates/selectors/force.
 
 ---
 
@@ -763,52 +786,51 @@ No coordinates/selectors/`force`.
 
 ## Description
 
-> Устанавливает значения нескольких form controls одной страницы в заданном порядке. Не отправляет форму автоматически. Для каждого поля возвращает отдельный результат; при ошибке поздние поля не скрываются и могут быть помечены `not_attempted`.
+> Последовательно устанавливает значения нескольких form controls одной страницы. Не submit форму автоматически. Выполнение fail-fast: после первой ошибки дальнейшие поля не изменяются и возвращаются как `not_attempted`.
 
 ## Input
 
 ```text
-session_id: BrowserSessionId required
-page_id: BrowserPageId required
-fields: array[FormFieldInput] required, 1..32
-dialog_policy: DialogPolicyInput | omitted
+session_id
+page_id
+fields: FormFieldInput[] 1..32
+dialog_policy omitted
 ```
 
 `FormFieldInput`:
 
 ```text
-element_ref: ElementRef
+element_ref
 value: discriminated union
 ```
 
-Value variants:
+Value:
 
 ```json
-{"type":"text","text":"..."}
-{"type":"select","values":["..."]}
+{"type":"text","text":""}
+{"type":"select","values":["value"]}
 {"type":"checked","checked":true}
 ```
 
 Bounds:
 
-- text: `0..10000` chars;
-- select values: `1..20`, each `0..2048` chars;
-- checked: boolean;
-- `fields` order is execution order;
-- server validates value kind against actual control semantics from snapshot/current DOM.
+- text 0..10000 chars;
+- select values 1..20, each 0..2048;
+- fields executed in order;
+- value kind validated against actual control semantics.
 
-## Result data
+## Result
 
 ```text
 action_id
-fields[] in original order:
+fields[] in input order:
   element_ref
-  outcome
+  outcome: succeeded | failed | not_attempted
   error | null
 page_generation
 ```
 
-No submit.
+Earlier successes remain observable after later failure.
 
 ---
 
@@ -816,7 +838,7 @@ No submit.
 
 ## Description
 
-> Вводит текст в указанный элемент как последовательность keyboard/input events. Используйте `browser_fill_form` для обычной установки значения; `browser_type` нужен, когда странице важны реальные события ввода, autocomplete или последовательный набор.
+> Вводит текст в элемент как последовательность keyboard/input events. Используйте `browser_fill_form` для обычной установки значения; `browser_type` нужен для autocomplete/event-sensitive UI.
 
 ## Input
 
@@ -825,18 +847,18 @@ session_id
 page_id
 element_ref
 text: string 1..10000
-delay_ms: integer default 0, 0..1000
-dialog_policy: DialogPolicyInput | omitted
+delay_ms: integer 0..1000, default 0
+dialog_policy omitted
 ```
 
-## Result data
+No implicit clear.
+
+## Result
 
 ```text
 action_id
 page_generation
 ```
-
-No hidden clearing of existing value unless browser semantics explicitly imply it; caller uses form fill when replacement is desired.
 
 ---
 
@@ -844,23 +866,32 @@ No hidden clearing of existing value unless browser semantics explicitly imply i
 
 ## Description
 
-> Нажимает одну клавишу или поддерживаемое сочетание клавиш в странице. `Enter` и некоторые shortcuts могут вызвать submit или другой side effect, поэтому неопределённый результат нельзя слепо повторять.
+> Нажимает одну структурированно заданную клавишу с optional modifiers. `Enter`/shortcuts могут вызвать submit/navigation, поэтому lost result нельзя повторять автоматически.
 
 ## Input
 
 ```text
 session_id
 page_id
-key: string 1..64
-element_ref: ElementRef | omitted
-dialog_policy: DialogPolicyInput | omitted
+key: KeyInput
+modifiers: unique ModifierKey[] 0..4 omitted
+element_ref: ElementRef omitted
+dialog_policy omitted
 ```
 
-`key` runtime валидируется по поддерживаемой keyboard key/chord grammar; arbitrary JavaScript is not allowed.
+If `element_ref` omitted → page-level keyboard context.
 
-If `element_ref` omitted, action uses page-level keyboard context.
+Examples:
 
-## Result data
+```json
+{"key":{"type":"named","key":"Enter"}}
+```
+
+```json
+{"key":{"type":"character","value":"a"},"modifiers":["Control"]}
+```
+
+## Result
 
 ```text
 action_id
@@ -875,7 +906,7 @@ download_refs[]
 
 ## Description
 
-> Наводит указатель на `element_ref`, например для hover-menu, tooltip или lazy interaction state. Не принимает координаты.
+> Наводит указатель на `element_ref`, например для hover menu, tooltip или lazy UI state. Не принимает координаты.
 
 ## Input
 
@@ -885,7 +916,7 @@ page_id
 element_ref
 ```
 
-## Result data
+## Result
 
 ```text
 action_id
@@ -898,7 +929,7 @@ page_generation
 
 ## Description
 
-> Выполняет одну drag-and-drop операцию от исходного `element_ref` к целевому `element_ref`. Не принимает screen coordinates и arbitrary mouse script.
+> Выполняет одну drag-and-drop операцию от исходного `element_ref` к целевому `element_ref`. Не принимает screen coordinates или script.
 
 ## Input
 
@@ -907,12 +938,12 @@ session_id
 page_id
 source_element_ref
 target_element_ref
-dialog_policy: DialogPolicyInput | omitted
+dialog_policy omitted
 ```
 
-Source and target must belong to current compatible page generation.
+Both refs current/compatible page generation.
 
-## Result data
+## Result
 
 ```text
 action_id
@@ -921,78 +952,124 @@ page_generation
 
 ---
 
-# 27. `browser_wait`
+# 27. `browser_scroll`
 
 ## Description
 
-> Ожидает одно явно заданное ограниченное условие в существующей странице. Не является гарантией «полной готовности сайта» и не выполняет JavaScript predicate.
+> Явно прокручивает page viewport или указанный scrollable container относительно текущего viewport. Используйте после bounded snapshot, чтобы добраться до элементов ниже/выше или активировать lazy-loaded UI; затем получите новый `browser_snapshot`. Scroll не выполняет snapshot автоматически.
 
 ## Input
 
 ```text
 session_id
 page_id
-condition: discriminated union required
+direction: up | down | left | right
+viewport_units: number 0.1..3.0, default 0.8
+element_ref: ElementRef omitted
 ```
 
-Variants:
+Without element_ref → page/document scroll context.
 
-### Duration
+With element_ref → exact/stale validation + target must be scrollable on requested axis. No silent fallback to page.
+
+No coordinates/JS.
+
+## Result
+
+```text
+action_id
+page_generation
+scroll_state:
+  x: number
+  y: number
+  viewport_width: number >0
+  viewport_height: number >0
+  at_start_x: bool
+  at_end_x: bool
+  at_start_y: bool
+  at_end_y: bool
+```
+
+Repeating after uncertain result may double-scroll; no automatic retry.
+
+---
+
+# 28. `browser_wait`
+
+## Description
+
+> Ожидает одно явно заданное ограниченное условие. Не является гарантией «полной готовности сайта» и не выполняет JavaScript predicate.
+
+## Input
+
+```text
+session_id
+page_id
+condition: discriminated union
+```
+
+Duration:
 
 ```json
 {"type":"duration","milliseconds":1000}
 ```
 
-`milliseconds`: `0..10000`.
+`milliseconds`: 0..10000.
 
-### URL
+URL:
 
 ```json
 {"type":"url","match":"contains","value":"/result","timeout_ms":10000}
 ```
 
-- `match`: `exact | contains`;
-- `value`: `1..4096` chars;
-- `timeout_ms`: default `10000`, `100..30000`.
+- match exact|contains;
+- value 1..4096;
+- timeout 100..30000 default10000.
 
-### Element state
+Element state:
 
 ```json
 {"type":"element_state","element_ref":"el_...","state":"visible","timeout_ms":10000}
 ```
 
-- state enum: `attached | visible | hidden | enabled | disabled`;
-- timeout `100..30000`, default `10000`.
+state:
 
-### Page load state
+```text
+attached | visible | hidden | enabled | disabled
+```
+
+Load:
 
 ```json
 {"type":"load_state","state":"domcontentloaded","timeout_ms":10000}
 ```
 
-- state enum: `domcontentloaded | load`;
-- timeout `100..30000`, default `10000`.
+state:
 
-No `networkidle` core contract and no free-form regex/JS predicate.
+```text
+domcontentloaded | load
+```
 
-## Result data
+No `networkidle`, regex, free-form text condition or JS predicate core baseline.
+
+## Result
 
 ```text
 condition_type
-satisfied: bool
+satisfied: true on successful outcome
 elapsed_ms
 page_generation
 ```
 
-Timeout returns structured non-success/timeout according application contract, not fake `satisfied=false` success if caller requested successful wait.
+Timeout is structured non-success, not fake successful `satisfied=false`.
 
 ---
 
-# 28. `browser_upload`
+# 29. `browser_upload`
 
 ## Description
 
-> Прикрепляет уже существующий owner-authorized ContentObject к file-input `element_ref` текущей страницы. Не принимает локальный filesystem path. Действие может немедленно вызвать page-side upload/event, поэтому неопределённый результат нельзя повторять автоматически.
+> Прикрепляет один или несколько owner-authorized ContentObjects к file-input `element_ref`. Не принимает local filesystem path. Если передано несколько файлов, target control должен поддерживать multi-file input; иначе вызов rejected без silent truncation.
 
 ## Input
 
@@ -1000,22 +1077,24 @@ Timeout returns structured non-success/timeout according application contract, n
 session_id
 page_id
 element_ref
-content_id
+content_ids: array[ContentId] required, 1..16, unique
 ```
 
-Only available ContentObject owned/authorized for current principal can be materialized.
+All ContentObjects owner-authorized and `available`.
 
-## Result data
+Server materializes only bounded temporary files inside session-private temp root.
+
+## Result
 
 ```text
 action_id
-content: ContentRef
+contents: ContentRef[] in input order
 page_generation
 ```
 
 ---
 
-# 29. `job_get`
+# 30. `job_get`
 
 ## Description
 
@@ -1024,12 +1103,10 @@ page_generation
 ## Input
 
 ```text
-job_ids: array[JobId] required, 1..8, uniqueItems=true
+job_ids: array[JobId] required, 1..8, unique
 ```
 
-## Result data
-
-Per item:
+## Result item
 
 ```text
 job: JobRef
@@ -1043,11 +1120,11 @@ aggregate_outcome | null
 error | null
 ```
 
-No raw queue/worker IDs.
+No raw queue/worker ID.
 
 ---
 
-# 30. `job_cancel`
+# 31. `job_cancel`
 
 ## Description
 
@@ -1056,25 +1133,23 @@ No raw queue/worker IDs.
 ## Input
 
 ```text
-job_ids: array[JobId] required, 1..8, uniqueItems=true
+job_ids: array[JobId] required, 1..8, unique
 ```
 
-## Result data
-
-Per item:
+## Result item
 
 ```text
 job_id
 state: cancelling | cancelled | already_terminal
 ```
 
-Completed ContentObjects/results are not deleted by cancellation.
+Completed ContentObjects/results are not deleted.
 
 ---
 
-# 31. Exact catalog invariant
+# 32. Exact catalog invariant
 
-Core catalog consists exactly of:
+Core freeze candidate contains exactly **28 tools**:
 
 ```text
 web_search
@@ -1100,13 +1175,14 @@ browser_type
 browser_press
 browser_hover
 browser_drag
+browser_scroll
 browser_wait
 browser_upload
 job_get
 job_cancel
 ```
 
-No core aliases:
+No aliases/core tools:
 
 ```text
 web_read
@@ -1119,27 +1195,29 @@ browser_run_code
 job_create
 ```
 
-Any additive tool requires explicit facade review, unique semantic intent and compatibility update.
+Any additive tool requires semantic intent + execution-class + compatibility review.
 
 ---
 
-# 32. FastMCP schema acceptance
+# 33. Actual FastMCP schema acceptance
 
-Automated tests must connect using a real MCP client and retrieve actual registered tool schemas.
+Tests connect with real MCP client and retrieve actual registered schemas.
 
 For every tool verify:
 
-1. exact tool name;
+1. exact name;
 2. Russian tool description;
-3. every public/nested property has description;
-4. required fields exact;
-5. defaults exact;
-6. enums/bounds/list constraints exact;
+3. every nested property description;
+4. required fields;
+5. defaults;
+6. enums/numeric/list/string bounds;
 7. unknown fields rejected;
-8. discriminated unions generate valid `oneOf`/equivalent JSON Schema;
-9. positive and negative fixtures pass `Draft202012Validator`/actual MCP validation;
-10. no hidden `Context`, provider secrets, worker IDs, CSS/XPath, storage keys or framework fields;
-11. annotations match §3;
-12. runtime Pydantic validation agrees with generated schema.
+8. discriminated unions valid Draft 2020-12 JSON Schema/equivalent;
+9. positive/negative fixtures pass generated schema + runtime validation;
+10. no hidden Context/provider secret/worker ID/CSS/XPath/storage key/framework field;
+11. MCP annotations match §3;
+12. own-agent trusted retry metadata follows ADR-0024 where stricter than annotation;
+13. result remains bounded;
+14. form fail-fast, structured key, multi-upload and scroll semantics have dedicated contract tests.
 
-v0.8 freezes generated fixture only after this contract suite is green.
+v0.8 freezes generated fixture only after this suite is green.
