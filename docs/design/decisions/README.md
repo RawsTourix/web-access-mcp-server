@@ -49,10 +49,10 @@ ADR должен содержать:
 | [ADR-0018](ADR-0018-v0.6-durable-job-types-and-items.md) | Первые durable workloads — retrieval/content parse batches с persistent `JobItem` checkpoints; crawl/browser workflow отложены | accepted |
 | [ADR-0019](ADR-0019-dynamic-policy-registry.md) | Dynamic non-secret policy хранится как revisioned PostgreSQL snapshots; replicas используют bounded-staleness immutable PolicySnapshot | accepted |
 | [ADR-0020](ADR-0020-durable-quota-and-usage-accounting.md) | Durable resource quotas/billable budgets учитываются transactionally в PostgreSQL; Redis остаётся flow limiter, не accounting source | accepted |
+| [ADR-0021](ADR-0021-mcp-durable-job-tool-boundary.md) | Request-bound Retrieval/Content и durable Job creation — разные MCP tools из-за разных lifecycle/retry semantics | accepted |
+| [ADR-0022](ADR-0022-v0.8-mcp-tool-catalog.md) | v0.8 MCP freeze candidate: explicit 27-tool semantic catalog; one stable execution class per tool | accepted |
 
-## Приоритет при чтении Browser ADR
-
-Для актуальной Browser process model читать совместно:
+## Browser ADR progression
 
 ```text
 ADR-0001  direct worker RPC
@@ -75,16 +75,17 @@ ADR-0015  v0.5 direct native format expansion
 ADR-0016  S3-compatible shared ContentStore
 ```
 
-Ни ADR-0015, ни ADR-0016 не расширяют Web Access до L2 document/media processing.
+L2 processing остаётся вне Web Access.
 
 ## Jobs ADR progression
 
 ```text
 ADR-0017  durable outbox/arq delivery + DB claim/fencing
-ADR-0018  first typed batch Job workloads + JobItem checkpoints
+ADR-0018  typed batch Job workloads + JobItem checkpoints
+ADR-0021  explicit MCP Job-creation tool boundary
 ```
 
-Queue/runtime остаётся generic внутри backend, но public Job creation — typed; arbitrary task execution не вводится.
+Queue/runtime generic внутри backend; public creation typed.
 
 ## Policy/operations ADR progression
 
@@ -93,4 +94,13 @@ ADR-0019  revisioned dynamic non-secret policy registry
 ADR-0020  durable principal quota/billable usage accounting
 ```
 
-Secrets остаются deployment configuration; dynamic policy не может расширять отсутствующие auth scopes или обходить software hard ceilings.
+Secrets остаются deployment configuration; policy не расширяет auth scopes/hard ceilings.
+
+## MCP stabilization
+
+```text
+ADR-0021  direct vs Job resource creation split
+ADR-0022  semantic freeze candidate catalog
+```
+
+При противоречии exploratory MCP examples ранних version docs с ADR-0021/0022 приоритет имеют ADR-0021/0022 и актуальный `mcp.md`; такие хвосты должны быть удалены consistency pass до implementation соответствующей версии.
