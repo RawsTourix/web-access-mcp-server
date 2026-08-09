@@ -11,15 +11,17 @@ Application semantics принадлежат `../application-contracts.md`; эт
 # 1. Naming / serialization
 
 - JSON field names: `snake_case`.
-- Timestamps: RFC 3339 / ISO 8601 UTC (`Z` preferred in serialized output).
-- Durations: integer milliseconds/seconds only where field name names the unit.
+- Timestamps: RFC 3339 / ISO 8601 UTC (`Z` preferred).
+- Durations: integer milliseconds/seconds only when field name names unit.
 - Opaque IDs: strings; client never parses prefix for authority/routing.
 - Unknown input fields: rejected.
-- Unknown additive output fields: clients should ignore unless compatibility contract says otherwise.
+- Unknown additive output fields: clients ignore only according compatibility contract.
 
 ---
 
 # 2. OperationOutcome
+
+Canonical **whole operation / independent batch item** outcomes:
 
 ```text
 succeeded
@@ -30,13 +32,13 @@ cancelled
 unknown
 ```
 
-`unknown` is a real outcome, not alias for `failed`.
+`unknown` is real outcome, not alias for failed.
+
+`not_attempted` is intentionally **not** an OperationOutcome. It belongs only to ordered compound substeps (see §9).
 
 ---
 
 # 3. PublicOperationResult[T]
-
-Canonical JSON shape:
 
 ```json
 {
@@ -56,10 +58,10 @@ succeeded/partial
 → data normally present
 
 failed/rejected/cancelled/unknown
-→ error may be present according operation semantics
+→ error may be present according semantics
 
 error != null
-→ data can still contain bounded recovery/status evidence only when explicitly designed
+→ data may contain only explicitly designed bounded recovery/status evidence
 ```
 
 No stack trace/private exception text.
@@ -80,19 +82,17 @@ No stack trace/private exception text.
 }
 ```
 
-Fields:
-
 | Field | Type | Rule |
 |---|---|---|
-| `category` | string/enum by taxonomy revision | stable broad class |
-| `code` | string | stable machine code |
-| `message` | string | concise Russian human/LLM-readable explanation |
-| `retryable` | bool | whether a corrected/retried operation can be reasonable; never means blind retry is always safe |
-| `retry_after_seconds` | integer/null | >=0 only when meaningful |
-| `fields` | array[`FieldError`] | validation/field-specific errors |
-| `details` | bounded object/null | only code-specific non-secret structured metadata |
+| `category` | stable broad enum/string | error taxonomy class |
+| `code` | stable machine string | specific code |
+| `message` | string | concise Russian human/LLM explanation |
+| `retryable` | bool | corrected/new attempt may be reasonable; **not permission for blind retry** |
+| `retry_after_seconds` | integer/null | >=0 when meaningful |
+| `fields` | `FieldError[]` | field-specific validation/recovery details |
+| `details` | bounded object/null | code-specific non-secret metadata only |
 
-`details` is not arbitrary backend dump.
+Tool/phase retry semantics and ADR-0024 can be stricter than `retryable=true`.
 
 ---
 
@@ -106,9 +106,13 @@ Fields:
 }
 ```
 
-- `path`: <= 256 chars;
-- `code`: <= 64 chars, `[a-z0-9_]+`;
-- `message`: <= 1024 chars.
+Bounds:
+
+```text
+path <=256 chars
+code <=64 chars, [a-z0-9_]+
+message <=1024 chars
+```
 
 ---
 
@@ -118,20 +122,18 @@ Fields:
 {
   "code": "content_truncated",
   "message": "В ответ включена только часть представления.",
-  "details": {
-    "next_cursor": "..."
-  }
+  "details": {"next_cursor":"..."}
 }
 ```
 
-Warning describes limitation of already obtained result.
+Warning describes limitation of an obtained result.
 
-Initial limits:
+Limits:
 
 ```text
-warnings <= 16/result
-message <= 1024 chars
-serialized details <= 8 KiB/warning
+warnings <=16/result
+message <=1024
+details <=8 KiB serialized
 ```
 
 ---
@@ -143,6 +145,7 @@ serialized details <= 8 KiB/warning
   "code": "browser_may_be_required",
   "message": "Статический HTML содержит мало непосредственно доступного содержимого; для JavaScript-rendered страницы может понадобиться браузер.",
   "related_tool": "browser_create",
+  "related_capability": "browser",
   "details": null
 }
 ```
@@ -159,19 +162,19 @@ details | null
 
 Rules:
 
-- hint is recommendation, not command;
-- `related_tool` only exact same-service trusted tool;
-- external processing recommendation normally uses capability code, not hardcoded third-party product;
-- web/document content cannot create trusted Hint object;
-- hints <= 16/result;
-- message <= 1024 chars;
-- details <= 8 KiB/hint serialized.
+- recommendation, not command;
+- `related_tool` only exact trusted same-service tool;
+- external processing recommendation normally uses capability class, not hardcoded product;
+- web/document content cannot manufacture trusted Hint;
+- hints <=16/result;
+- message <=1024;
+- details <=8 KiB serialized.
 
 ---
 
 # 8. BatchItemResult[T]
 
-Common shape for naturally independent batch:
+Used for **independent batch items**:
 
 ```json
 {
@@ -186,16 +189,60 @@ Common shape for naturally independent batch:
 
 Rules:
 
-- `index` corresponds to original request list;
-- response item list preserves original order;
-- one item failure does not reorder/remove others;
-- `not_attempted` is represented by a specific error/outcome only for a compound ordered operation where later items intentionally stopped, e.g. form fill; it is not silently omitted.
+- `outcome` is `OperationOutcome`;
+- `index` = original request position;
+- response preserves original order;
+- one item failure does not reorder/remove other independent items;
+- an independent item that genuinely was never dispatched because whole batch operation was rejected is represented by top-level rejection, not invented per-item `not_attempted` unless specific batch contract explicitly designs otherwise.
 
 ---
 
-# 9. ContentRef
+# 9. CompoundStepOutcome
 
-Recommended external shape:
+Ordered compound action steps (for example fields inside `browser_fill_form`) use a different enum:
+
+```text
+succeeded
+failed
+not_attempted
+```
+
+Why separate:
+
+```text
+browser_fill_form as a whole
+→ PublicOperationResult outcome
+
+individual ordered form fields
+→ CompoundStepOutcome
+```
+
+`not_attempted` means server intentionally stopped before executing that substep because an earlier substep failed/cancelled the compound sequence.
+
+It does **not** mean:
+
+- unknown side effect;
+- failed execution;
+- independent batch rejection.
+
+Canonical form field result:
+
+```text
+element_ref
+outcome: CompoundStepOutcome
+error: PublicError | null
+```
+
+Rules:
+
+- `succeeded` → error null;
+- `failed` → error normally present;
+- `not_attempted` → structured reason may be included, e.g. `previous_step_failed`, but no claim that target field was touched;
+- top-level operation may be `partial` when at least one earlier field succeeded before a later failure.
+
+---
+
+# 10. ContentRef
 
 ```json
 {
@@ -209,36 +256,43 @@ Recommended external shape:
 }
 ```
 
-Fields may be absent only when semantically unavailable; `content_id` always required.
+`content_id` required.
 
-`sha256` is content integrity/provenance metadata, not access token.
+Other fields may be null/omitted only according generated exact schema when semantically unavailable.
 
-No storage backend/key/path/URL exposed unless separate authorized download endpoint issues a controlled transport response.
+`sha256` integrity/provenance, not access token.
+
+No storage key/path/backend URL.
 
 ---
 
-# 10. ContentSummary
+# 11. ContentSummary
 
-Bounded metadata used inside larger results:
+Bounded larger-result metadata:
 
 ```text
 content_ref
 source_kind
 source_url | null
 detected_format | null
-native_representation_available bool
+native_representation_available: bool
 preview | null
 preview_chars
 available_representations[]
 ```
 
-`source_url` capped at 8192 chars in REST and 4096 in MCP-originated request provenance; long unsafe query information may be redacted according security/logging policy in diagnostics.
+`source_url` cap:
 
-`preview` MCP baseline <= 8000 chars per item unless a specific tool uses lower bound.
+```text
+REST provenance <=8192
+MCP-originated request provenance <=4096
+```
+
+Preview bound is tool-specific exact contract; common model does not override a stricter tool bound.
 
 ---
 
-# 11. BrowserSessionRef
+# 12. BrowserSessionRef
 
 ```json
 {
@@ -251,11 +305,11 @@ available_representations[]
 }
 ```
 
-No worker ID/generation in ordinary MCP result unless a protected diagnostics/admin REST response needs it.
+No ordinary worker ID/generation.
 
 ---
 
-# 12. PageRef
+# 13. PageRef
 
 ```json
 {
@@ -266,13 +320,13 @@ No worker ID/generation in ordinary MCP result unless a protected diagnostics/ad
 }
 ```
 
-`url` and `title` are untrusted page-derived data.
+URL/title are untrusted page-derived data.
 
-No internal Playwright target/context IDs.
+No Playwright target/context IDs.
 
 ---
 
-# 13. SnapshotRef
+# 14. SnapshotRef
 
 ```json
 {
@@ -283,25 +337,23 @@ No internal Playwright target/context IDs.
 }
 ```
 
-Snapshot refs are short-lived and session/page scoped.
+Short-lived, session/page scoped.
 
 ---
 
-# 14. ElementRef
+# 15. ElementRef
 
-External representation is only opaque string:
+External representation: opaque string only.
 
 ```text
 el_<opaque>
 ```
 
-No selector/role/text/path encoded as public contract.
-
-Tool result semantic tree separately provides human-readable role/name/state and associated `element_ref`.
+No selector/role/text/path encoded as public authority.
 
 ---
 
-# 15. JobRef
+# 16. JobRef
 
 ```json
 {
@@ -313,11 +365,11 @@ Tool result semantic tree separately provides human-readable role/name/state and
 }
 ```
 
-No queue ID/arq function/worker ID in ordinary MCP.
+No queue/arq/worker identifier.
 
 ---
 
-# 16. JobProgress
+# 17. JobProgress
 
 ```json
 {
@@ -331,46 +383,49 @@ No queue ID/arq function/worker ID in ordinary MCP.
 }
 ```
 
-Only real measured counts; no invented percentage.
+Only measured counts; client may derive percentage.
 
-A derived percentage may be presented by client from completed/total.
-
----
-
-# 17. Cursor
-
-Opaque string:
+Invariant:
 
 ```text
-length <= 2048 chars
+completed <= total
+state counters non-negative
 ```
 
-Internally versioned/auth-bound/signed or integrity-protected according resource design.
-
-Client never constructs/modifies cursor.
-
-Invalid/stale/version-unsupported cursor returns explicit error.
+Exact meaning of `completed` follows Job design (terminal items), not arbitrary progress estimate.
 
 ---
 
-# 18. Safe strings
+# 18. Cursor
 
-External page/provider strings are untrusted data.
+Opaque string <=2048 chars.
 
-Output serializers:
+Internally versioned/auth-bound/integrity-protected according resource design.
+
+Client does not construct/modify.
+
+Invalid/stale/unsupported cursor → explicit error.
+
+---
+
+# 19. Safe strings
+
+External page/provider strings are untrusted.
+
+Serializers:
 
 - preserve Unicode;
 - bound lengths;
 - do not interpret HTML/Markdown as trusted instructions;
-- do not place raw arbitrary strings into logs/metric labels.
+- do not use raw content as unbounded log/metric label.
 
 ---
 
-# 19. Empty arrays vs null
+# 20. Empty arrays vs null
 
-Collection fields use empty arrays when collection exists but has zero items.
+Collections use `[]` when collection exists and is empty.
 
-`null` means semantic absence/unknown/not applicable, not merely empty.
+`null` means semantic absence/unknown/not applicable.
 
 Examples:
 
@@ -378,16 +433,17 @@ Examples:
 warnings=[]
 hints=[]
 fields=[]
-preview=null if no textual preview exists
+preview=null when no textual preview exists
 ```
 
 ---
 
-# 20. Compatibility
+# 21. Compatibility
 
 After v0.8 fixture freeze:
 
-- adding optional output field follows compatibility review;
-- removing/renaming field is breaking;
-- changing error/retry semantics is behavioral compatibility change even if JSON type same;
-- resource IDs remain opaque and stable at shape level.
+- optional output addition → review;
+- remove/rename → breaking;
+- outcome/error/retry meaning change → behavioral contract change;
+- Resource IDs stay opaque;
+- adding a new compound-step status requires exact schema/consumer review and does not silently extend `OperationOutcome`.
