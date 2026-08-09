@@ -2,17 +2,28 @@
 
 ## Статус документа
 
-Канонический владелец agent-facing MCP facade Web Access.
+Канонический владелец **семантики agent-facing MCP facade** Web Access.
 
-Exact freeze candidate tool catalog зафиксирован ADR-0022.
+Exact public DTO/catalog:
 
-REST/backend capabilities описываются отдельно; MCP не является копией REST.
+```text
+contracts/mcp-tools.md
+```
+
+Ключевые ADR:
+
+- ADR-0021 — direct vs durable Job boundary;
+- ADR-0022 — one semantic intent / stable execution class;
+- ADR-0024 — cost/resource effects influence retry semantics;
+- ADR-0025 — explicit Browser scroll capability.
+
+Generated actual FastMCP schemas freeze-ятся в v0.8.
 
 ---
 
 # 1. Purpose
 
-MCP предоставляет LLM компактный, однозначный и практически мощный interface к Web Access:
+MCP предоставляет LLM компактный, понятный и практически мощный interface к:
 
 ```text
 Search
@@ -22,150 +33,132 @@ Browser
 Durable Jobs
 ```
 
-Facade должен позволять агенту выполнить почти любой типичный web workflow, не раскрывая:
+Он не является копией REST и не раскрывает:
 
-- internal provider API;
 - SQL/Redis;
-- Playwright implementation;
-- filesystem/S3 keys;
+- raw provider protocols;
+- Playwright/CDP internals;
+- storage paths;
 - worker topology;
-- admin controls.
+- operator/admin controls;
+- arbitrary code execution.
 
 ---
 
 # 2. Language
 
-Agent-facing тексты по умолчанию на русском:
+Agent-facing тексты проекта преимущественно русские:
 
 - tool descriptions;
 - field descriptions;
 - validation explanations;
-- trusted service error/hint messages.
+- trusted error/hint messages.
 
-Technical identifiers остаются английскими:
+Technical names/codes остаются английскими.
 
-```text
-web_fetch
-content_id
-browser_session_id
-error.code
-```
+Это улучшает сопровождение без ухудшения понимания современными LLM.
 
 ---
 
-# 3. JSON Schema = agent UX
+# 3. Schema = agent UX
 
-Schema проектируется намеренно для LLM, а не автоматически принимается как случайный результат Python signature.
+JSON Schema проектируется вручную как часть интерфейса LLM.
 
-LLM должна понять:
+До вызова tool модель должна по `description` понять intent.
 
-- что делает tool;
-- когда его использовать;
-- чем он отличается от соседних;
-- что означает каждое поле;
-- какие ограничения действуют;
-- какой result/lifecycle ожидать.
+После получения full schema она должна без догадок понимать:
 
-Runtime server-side validation остаётся обязательной.
+- поля;
+- defaults;
+- bounds;
+- omission/null semantics;
+- unions/cross-field rules;
+- result/lifecycle;
+- соседние tools.
+
+Runtime validation обязательна даже после schema discovery.
 
 ---
 
-# 4. Discovery-first descriptions
+# 4. Discovery descriptions
 
-Tool description сначала отвечает на вопрос:
+Description structure:
 
-> Для чего нужен этот инструмент?
+1. что делает tool;
+2. когда его использовать / отличие от соседнего;
+3. критичное lifecycle/side-effect ограничение, если есть.
 
-Затем, где важно:
-
-> Когда использовать его вместо соседнего?
-
-Например:
+Пример conceptual distinction:
 
 ```text
 web_search
 → найти URL/источники
 
 web_fetch
-→ немедленно получить известные URL по HTTP
+→ немедленно получить известные URL
 
 web_fetch_job
-→ создать durable batch Job для большого набора URL
+→ создать durable retrieval batch
 
-browser_*
-→ работать с реальным stateful browser runtime
+browser_snapshot
+→ получить interactive refs
+
+browser_content
+→ прочитать rendered page как document
 ```
 
-Search snippet не описывается как прочитанная страница.
+Search snippet не считается прочитанным target page.
 
 ---
 
-# 5. Field descriptions
+# 5. One intent / one execution class
 
-Каждое public input property и nested property имеет русскоязычное описание:
-
-- смысл;
-- формат/единицы;
-- omission/default;
-- ограничения;
-- связь с другими полями.
-
-Unknown fields запрещены.
-
----
-
-# 6. Machine-readable constraints
-
-Где возможно использовать actual JSON Schema:
+Canonical invariant:
 
 ```text
-minItems/maxItems
-minLength/maxLength
-minimum/maximum
-enum
-format
-discriminator/oneOf
-required
+one tool
+→ one primary semantic intent
+→ one stable lifecycle/retry/resource class
 ```
 
-Prose не заменяет machine-readable invariant.
-
-Cross-field runtime validation и actual generated schema должны согласовываться.
-
----
-
-# 7. Null / omitted / default
-
-Optional field не создаётся без ясной semantics.
-
-Если omission означает configured default — это прямо написано.
-
-`null` не используется как случайное третье состояние.
-
----
-
-# 8. Agent-facing enums
-
-Enum представляет stable Web Access concept, не provider/library implementation.
-
-Пример:
+Поэтому разделены:
 
 ```text
-safe_search = off | moderate | strict
+web_fetch / web_fetch_job
+content_parse / content_parse_job
+browser_tabs / browser_page_create / browser_page_close
 ```
 
-Не выдавать:
-
-- Yandex raw `lr`;
-- Playwright locator strategy;
-- internal parser IDs;
-- worker IDs как schema enum.
+Недопустим mixed discriminator, который превращает read/request-bound operation в Job/resource creation.
 
 ---
 
-# 9. Result envelope
+# 6. Batch rule
 
-Expected application outcomes возвращаются structured result:
+Batch-first применяется к независимым экземплярам одной операции:
+
+```text
+web_search queries[]
+web_fetch urls[]
+content_get items[]
+content_parse content_ids[]
+browser_close session_ids[]
+job_get/job_cancel job_ids[]
+```
+
+Один элемент — список из одного элемента.
+
+No `*_many` aliases.
+
+Stateful sequential Browser transitions выполняются отдельными calls.
+
+`browser_fill_form fields[]` — допустимый semantic compound action: несколько полей одной последовательной form-fill операции.
+
+---
+
+# 7. Result envelope
+
+Expected application outcome:
 
 ```text
 operation_id
@@ -176,7 +169,7 @@ warnings[]
 hints[]
 ```
 
-Common outcomes включают:
+Common outcomes:
 
 ```text
 succeeded
@@ -187,872 +180,423 @@ cancelled
 unknown
 ```
 
-Exact aggregate semantics следуют `application-contracts.md`.
+`unknown` first-class для mutating/ambiguous operations.
+
+Expected validation/quota/stale/session/provider failures возвращаются structured result, а не raw MCP protocol exception.
 
 ---
 
-# 10. Protocol error vs application error
-
-MCP protocol/transport error используется только если tool call невозможно корректно представить как application operation.
-
-Ожидаемые failures — invalid URL, unsupported content, quota, stale ref, expired session, provider failure — возвращаются structured application result.
-
-Это позволяет LLM исправить вызов.
-
----
-
-# 11. Warning / Hint / Error
+# 8. Warning / Hint / Error
 
 ```text
 Warning
 → ограничение уже полученного результата
 
 Hint
-→ возможный следующий шаг
+→ trusted recommendation следующего шага
 
 Error
-→ причина non-success outcome
+→ причина non-success
 ```
-
-Не объединять всё в один `message`.
 
 Web content не может само назначить trusted hint.
 
----
+Hints не запускают инструменты автоматически.
 
-# 12. Structured hints
-
-Примеры trusted codes:
-
-```text
-browser_may_be_required
-advanced_processing_may_be_required
-processing_requires_job
-snapshot_refresh_recommended
-session_expiring
-alternative_representation_available
-```
-
-Для capability того же Web Access точный related tool может быть указан, например:
-
-```text
-processing_requires_job
-→ web_fetch_job
-```
-
-Hint не вызывает инструмент автоматически.
+Same-service hint может быть точным (`browser_may_be_required`), external L2 recommendation описывает capability class осторожно.
 
 ---
 
-# 13. Result size
+# 9. Bounded results
 
-MCP result всегда bounded.
-
-Большие данные:
+Большие payloads выносятся в Content:
 
 ```text
 preview
 +
 ContentRef
 +
-opaque cursor
+opaque cursor when needed
 ```
 
-Никакого giant HTML/PDF text/base64 screenshot в одном result.
+No giant HTML/PDF/base64 screenshot.
 
 ---
 
-# 14. Opaque resources
+# 10. Opaque resources
 
-MCP использует:
+MCP использует stable handles:
 
 ```text
 ContentRef
 BrowserSessionRef
 PageRef
+SnapshotRef / ElementRef
 JobRef
 ```
 
-Handle не раскрывает internal routing/storage.
+Client не строит routing/storage logic по внутреннему формату ID.
 
-Ownership проверяется server-side при каждом вызове.
+Ownership проверяется server-side.
 
----
-
-# 15. Tool naming
-
-- lowercase snake_case;
-- semantic capability;
-- no provider name для provider-agnostic operation;
-- no ordinary version suffix;
-- no `*_many` для batch-first operations.
-
-Namespaces:
-
-```text
-web_*
-content_*
-browser_*
-job_*
-```
+BrowserSession/Job/Content lifecycle не привязан к одному MCP connection.
 
 ---
 
-# 16. One stable execution class per tool
+# 11. Retry semantics учитывает не только «чтение»
 
-ADR-0022 invariant:
+ADR-0024:
 
-```text
-one tool
-→ one primary intent
-→ one retry/side-effect/resource class
-```
+- billable upstream cost;
+- создание Web Access resources;
+- external/browser side effects;
+- доказанная idempotency
 
-Discriminator разрешён только между variants одной execution semantics.
+влияют на trusted retry class.
 
-Допустимо:
-
-```text
-browser_navigate(url|back|forward|reload)
-```
-
-Недопустимо:
+Примеры:
 
 ```text
-web_fetch(direct|create Job)
-browser_tabs(list|create|close)
+web_search
+→ read-oriented, но provider может быть billable
+→ no blind Agent retry after possible provider dispatch
+
+web_fetch
+→ создаёт ContentObjects
+→ no blind retry after uncertain response
+
+content_parse
+→ idempotent только при доказанном canonical representation reuse
+
+browser click/type/press/scroll/etc.
+→ no blind retry after dispatch uncertainty
 ```
 
-Это особенно важно для trusted Agent Dispatcher metadata.
+MCP annotations и own-agent retry metadata могут иметь разную детализацию; agent policy выбирает более консервативный доказуемый класс.
 
 ---
 
-# 17. Batch rule
+# 12. Current freeze-candidate catalog
 
-Batch используется для независимых экземпляров одной операции:
+**28 tools:**
 
-```text
-web_search queries[]
-web_fetch urls[]
-content_get items[]
-browser_close session_ids[]
-job_get/job_cancel job_ids[]
-```
-
-Или как одна semantic compound action:
+## Web
 
 ```text
-browser_fill_form fields[]
+web_search
+web_fetch
+web_fetch_job
 ```
 
-Sequential browser state transitions остаются отдельными calls.
+## Content
+
+```text
+content_get
+content_parse
+content_parse_job
+```
+
+## Browser lifecycle / observation / page state
+
+```text
+browser_create
+browser_get
+browser_close
+browser_navigate
+browser_snapshot
+browser_content
+browser_tabs
+browser_page_create
+browser_page_close
+browser_screenshot
+browser_events
+```
+
+## Browser interaction
+
+```text
+browser_click
+browser_fill_form
+browser_type
+browser_press
+browser_hover
+browser_drag
+browser_scroll
+browser_wait
+browser_upload
+```
+
+## Jobs
+
+```text
+job_get
+job_cancel
+```
+
+Exact fields/bounds/results: `contracts/mcp-tools.md`.
 
 ---
 
-# 18. Freeze candidate catalog
+# 13. Web Search
 
-```text
-Web
-  web_search
-  web_fetch
-  web_fetch_job
+`web_search`:
 
-Content
-  content_get
-  content_parse
-  content_parse_job
+- queries 1..N batch;
+- stable provider selection/default;
+- common language/region/page/limit/safe-search/time profile;
+- normalized search metadata;
+- no page acquisition;
+- no hidden provider fallback based on result «quality».
 
-Browser lifecycle/observation
-  browser_create
-  browser_get
-  browser_close
-  browser_navigate
-  browser_snapshot
-  browser_content
-  browser_tabs
-  browser_page_create
-  browser_page_close
-  browser_screenshot
-  browser_events
+Provider field description must disclose that some providers may consume billable budget.
 
-Browser interaction
-  browser_click
-  browser_fill_form
-  browser_type
-  browser_press
-  browser_hover
-  browser_drag
-  browser_wait
-  browser_upload
-
-Jobs
-  job_get
-  job_cancel
-```
-
-Catalog version/freeze rules — `compatibility.md` и ADR-0022.
+Service can retry internally only when provider/send evidence proves it safe under budget semantics.
 
 ---
 
-# 19. `web_search`
+# 14. Web Fetch
 
-Intent:
-
-> Найти релевантные страницы/источники по одному или нескольким независимым запросам.
-
-Baseline v0.2:
+`web_fetch`:
 
 ```text
-queries: 1..8
-provider: default | supported stable provider IDs
-a shared page/language/region/safe-search/time options profile
-limit <= 20/query MCP baseline
-```
-
-Common options применяются ко всему batch.
-
-Разные provider/options → отдельные calls.
-
-Result:
-
-- title;
-- URL;
-- snippet;
-- provider/provenance;
-- optional metadata;
-- warnings/hints.
-
-No target page acquisition.
-
----
-
-# 20. `web_fetch`
-
-Intent:
-
-> Немедленно получить один или несколько известных HTTP(S)-URL через safe Retrieval и доступный L0/L1 Content pipeline.
-
-Baseline:
-
-```text
-urls: 1..8
-```
-
-Pipeline fixed:
-
-```text
-safe Retrieval
+known HTTP(S) URLs
+→ Safe Retrieval
 → raw ContentObject
-→ L0 Inspection
-→ registered direct L1 Native Parsing when request-bound applicable
+→ L0
+→ available request-bound L1
 ```
 
-No Browser, L2 or Job.
+No Browser, no L2, no durable Job.
 
-If direct contract insufficient, result/error can hint `web_fetch_job`.
+Because Content resources are created, a lost result is not treated as unconditional safe replay.
+
+Large batch with durable lifecycle uses `web_fetch_job` explicitly.
 
 ---
 
-# 21. `web_fetch_job`
+# 15. Content
 
-Intent:
+`content_get` reads an existing chosen Content representation using bounded chunks/cursors.
 
-> Создать durable Job для большого batch известных URL.
+`content_parse` runs canonical L1 parser registry for existing immutable content.
 
-Baseline:
+No parser library ID in schema.
+
+No OCR/VLM/LibreOffice.
+
+Large durable parse uses `content_parse_job`.
+
+---
+
+# 16. Browser create/lifecycle
+
+`browser_create` creates exactly one isolated BrowserSession + initial blank Page.
+
+No URL input: navigation is explicit next operation.
+
+`browser_get` reads lifecycle metadata.
+
+`browser_close` idempotently cleans one/many independent sessions and is the own-agent lifecycle cleanup tool.
+
+Server TTL/reaper remains final cleanup authority.
+
+---
+
+# 17. Browser page model
+
+No hidden active-tab prerequisite.
+
+Every page action uses explicit `page_id`.
 
 ```text
-urls: 1..256
+browser_tabs
+→ read list
+
+browser_page_create
+→ create blank Page
+
+browser_page_close
+→ close explicit Page
 ```
 
-Result:
+Closing last remaining Page is rejected; close whole session with `browser_close`.
+
+---
+
+# 18. Snapshot and ElementRef
+
+`browser_snapshot` returns bounded semantic/ARIA-oriented view and snapshot-scoped `element_ref`s.
+
+Core MCP does not expose CSS/XPath.
+
+Element action uses exact stale/identity validation from Browser design/ADR-0010.
+
+No fuzzy retargeting to «похожий» DOM node.
+
+---
+
+# 19. Browser content vs snapshot
 
 ```text
-JobRef
+browser_snapshot
+→ interaction targeting
+
+browser_content
+→ rendered page as document-like Content
 ```
 
-Job survives MCP disconnect.
-
-Use `job_get` / `job_cancel`.
-
-No blind automatic retry after uncertain Job creation response.
+`browser_content` produces Content resources and therefore is not pure safe replay despite being non-mutating toward target website.
 
 ---
 
-# 22. `content_get`
+# 20. Browser scroll
 
-Intent:
-
-> Прочитать уже существующий ContentObject без повторного HTTP/Browser acquisition.
-
-Input batch:
+ADR-0025 adds explicit:
 
 ```text
-items: 1..8
-  content_id
-  cursor | null
-max_chars: bounded common value
+browser_scroll
 ```
 
-Server returns complete UTF-8 chunk boundaries, metadata, derived refs and next cursor.
+Reason: bounded snapshot alone cannot reliably expose elements on long/lazy pages.
 
-Binary object without readable representation does not get fake text conversion.
+Scroll:
 
----
+- explicit state transition;
+- viewport-relative, not arbitrary coordinates;
+- optional scrollable `element_ref` target;
+- no auto-snapshot;
+- may trigger lazy-loading/network;
+- no blind retry after uncertain result.
 
-# 23. `content_parse`
-
-Intent:
-
-> Немедленно выполнить доступный L1 Native Parsing существующих ContentObjects.
-
-Freeze baseline:
+Typical workflow:
 
 ```text
-content_ids: 1..8
+snapshot
+→ scroll
+→ snapshot
 ```
-
-Registry chooses canonical parser by detected format.
-
-No parser library ID.
-
-No OCR/L2/Job.
-
-Existing compatible representation may be reused.
 
 ---
 
-# 24. `content_parse_job`
+# 21. Browser form/keyboard actions
 
-Intent:
+`browser_fill_form` sets typed values sequentially and **does not submit**.
 
-> Создать durable Native Parsing batch Job.
-
-Baseline:
+First field failure stops further field execution in baseline:
 
 ```text
-content_ids: 1..256
+earlier fields → actual results
+failed field → error
+later fields → not_attempted
 ```
 
-Returns JobRef.
+This makes partial mutation deterministic.
 
-No L2.
+`browser_type` is eventful incremental text entry.
+
+`browser_press` uses a structured key model rather than raw JavaScript shortcut expression.
 
 ---
 
-# 25. `browser_create`
+# 22. Browser upload/download
 
-Creates exactly one ephemeral BrowserSession + initial blank page.
+Upload targets file input by ElementRef and uses owner-authorized ContentRefs, never server-local path.
 
-Baseline input empty (или только stable options added by explicit design).
+Multiple files can be attached when the target control supports `multiple`; exact bound belongs to `contracts/mcp-tools.md`.
 
-No URL input.
+Downloads are artifacts caused by explicit browser actions/navigation and persisted as ContentRefs.
 
-Result:
+No standalone `browser_download` baseline.
+
+Known direct file URL should use `web_fetch` where possible.
+
+---
+
+# 23. Browser events
+
+`browser_events` is one bounded read log for:
 
 ```text
-browser_session_id
-initial page_id
-state/lifetime metadata
+page lifecycle
+dialogs
+downloads
+console
+network failures
+security blocks
+browser lifecycle
 ```
 
----
-
-# 26. `browser_get`
-
-Read BrowserSession state/lifetime/owner-safe metadata.
-
-No page snapshot.
-
-Useful for lifecycle/status recovery.
+Untrusted site text stays untrusted; event log is diagnostics, not durable business history.
 
 ---
 
-# 27. `browser_close`
+# 24. Jobs
 
-Idempotent cleanup batch:
+MCP creates only typed durable Jobs:
 
 ```text
-session_ids[]
+web_fetch_job
+content_parse_job
 ```
 
-Per item:
+Generic:
 
 ```text
-closed
-already_terminal
-lost/error
+job_get
+job_cancel
 ```
 
-This is the trusted cleanup operation for agent BrowserSession lifecycle.
+No public arbitrary `job_create(task,args)`.
+
+Job survives disconnect and is not automatically cancelled at ordinary agent cycle end.
 
 ---
 
-# 28. `browser_navigate`
+# 25. Admin/operator boundary
 
-Input:
+No normal MCP tools for:
 
-```text
-session_id
-page_id
-destination discriminator:
-  url
-  back
-  forward
-  reload
-optional explicit dialog policy where operation supports it
-```
+- dynamic policy;
+- provider/operator controls;
+- quotas registry;
+- worker drain;
+- audit browsing;
+- maintenance;
+- raw parser registry.
 
-All variants mutate browser/page state and share conservative retry semantics.
-
-No hidden page/session creation.
+REST/admin surface owns these capabilities.
 
 ---
 
-# 29. `browser_snapshot`
-
-Read semantic interactive state:
-
-```text
-session_id
-page_id
-```
-
-Returns:
-
-- snapshot_id;
-- page generation/revision;
-- semantic tree/preview;
-- actionable `element_ref`s;
-- optional full ContentRef if externalized.
-
-No screenshot automatically.
-
----
-
-# 30. `browser_content`
-
-Intent:
-
-> Получить rendered current page как document-like Content и применить обычный Content pipeline.
-
-Distinct from snapshot:
-
-```text
-snapshot → interaction
-content → reading/analysis
-```
-
-Returns ContentRefs/preview.
-
----
-
-# 31. `browser_tabs`
-
-Read-only page/tab listing.
-
-Returns pages with:
-
-```text
-page_id
-URL
-title
-state/basic metadata
-```
-
-There is no required MCP active-tab state; all page actions accept explicit page_id.
-
----
-
-# 32. `browser_page_create`
-
-Creates one new blank Page in existing BrowserSession.
-
-Returns page_id.
-
-Navigation remains explicit next action.
-
-Uncertain response must not be blindly retried because duplicate page may exist.
-
----
-
-# 33. `browser_page_close`
-
-Close explicit page.
-
-Freeze baseline preserves at least one live page:
-
-```text
-closing final remaining page
-→ rejected last_page_close_rejected
-```
-
-Use `browser_close` to close whole session.
-
-No silent replacement blank page.
-
----
-
-# 34. `browser_screenshot`
-
-Explicit screenshot artifact:
-
-```text
-session_id
-page_id
-optional element_ref
-bounded approved capture options
-```
-
-Returns image ContentRef + metadata.
-
-No base64 giant result.
-
----
-
-# 35. `browser_events`
-
-Read bounded browser diagnostic event log.
-
-Input:
-
-```text
-session_id
-page_id | null
-types[]
-after_sequence | null
-limit
-```
-
-Combines console/network/page/dialog/download/security event reading under one read-only intent.
-
-Untrusted event text separated from trusted metadata.
-
----
-
-# 36. `browser_click`
-
-Explicit click on current snapshot `element_ref`.
-
-No selector.
-
-Potential external side effect; never blind retry after uncertain dispatch.
-
----
-
-# 37. `browser_fill_form`
-
-Set several form controls in one semantic operation:
-
-```text
-fields[]:
-  element_ref
-  typed value
-```
-
-Supports text/select/check/radio classes where snapshot identifies control.
-
-No automatic submit.
-
-Per-field result preserves partial mutation.
-
-Separate `browser_select`/`browser_check` baseline tools are unnecessary.
-
----
-
-# 38. `browser_type`
-
-Eventful/incremental keyboard-style text input to target element.
-
-Used when `fill` semantics are insufficient (autocomplete/input event behavior).
-
-Potentially side-effecting.
-
----
-
-# 39. `browser_press`
-
-Keyboard key/shortcut action.
-
-Target may be explicit element_ref or page-level only if schema makes semantics unambiguous.
-
-Enter can submit; conservative retry semantics.
-
----
-
-# 40. `browser_hover`
-
-Hover target `element_ref` for menus/tooltips/lazy UI.
-
-No coordinates baseline.
-
----
-
-# 41. `browser_drag`
-
-Drag source `element_ref` to target `element_ref`.
-
-No arbitrary screen-coordinate scripting baseline.
-
----
-
-# 42. `browser_wait`
-
-Wait for one typed bounded condition, such as:
-
-```text
-duration
-URL condition
-element state
-page load state
-```
-
-No free-form JS predicate.
-
-Wait never claims semantic completion of arbitrary site.
-
----
-
-# 43. `browser_upload`
-
-Attach owner-authorized ContentObject to explicit file-input `element_ref`.
-
-No local filesystem path.
-
-Potential external/page side effect; never blind retry.
-
----
-
-# 44. Downloads
-
-No separate `browser_download` baseline.
-
-Download is artifact/event caused by explicit browser action/navigation and persisted to ContentRef.
-
-Known direct file URL should use `web_fetch` when possible.
-
----
-
-# 45. `job_get`
-
-Batch read:
-
-```text
-job_ids[]
-```
-
-Returns bounded:
-
-- state/type;
-- progress;
-- retry/attempt summary;
-- aggregate result;
-- manifest ContentRef;
-- errors/warnings/hints.
-
----
-
-# 46. `job_cancel`
-
-Batch idempotent cancellation request:
-
-```text
-job_ids[]
-```
-
-Response may be `cancelling`; tool does not lie that execution stopped instantly.
-
----
-
-# 47. Tools intentionally absent
-
-```text
-job_create arbitrary
-web_read/web_read_many
-browser_download
-browser_select
-browser_check
-browser_evaluate
-browser_run_code
-CSS/XPath locator tools
-provider admin
-policy admin
-worker drain
-parser registry admin
-raw HTTP arbitrary method
-```
-
-These are redundant, unsafe, implementation-facing or REST/operator concerns.
-
----
-
-# 48. Tool annotations / trusted semantics
-
-MCP annotations and own-agent trusted descriptors must agree with actual behavior.
-
-Broad mapping:
-
-```text
-safe/read:
-  web_search, web_fetch, content_get,
-  browser_get, browser_snapshot, browser_tabs, browser_events,
-  job_get
-
-safe/idempotent representation-producing:
-  content_parse, browser_content, browser_screenshot
-
-resource-creating / never blind retry:
-  web_fetch_job, content_parse_job,
-  browser_create, browser_page_create
-
-idempotent cleanup/cancel:
-  browser_close, browser_page_close, job_cancel
-
-state/external-side-effect / never blind retry:
-  browser_navigate, browser_click, browser_fill_form,
-  browser_type, browser_press, browser_hover,
-  browser_drag, browser_upload
-```
-
-`browser_wait` separately classified safe observation/open-world wait in trusted metadata.
-
----
-
-# 49. Own-agent builtin integration
-
-Web Access is builtin MCP service but not in-process.
-
-Agent-side trusted metadata owns:
-
-- presentation;
-- permissions;
-- budget;
-- retry profile;
-- lifecycle cleanup mapping.
-
-Web Access schemas/results provide stable semantics; they do not grant themselves trust.
-
-See `agent-integration.md`.
-
----
-
-# 50. BrowserSession cleanup integration
-
-Agent trusted mapping:
-
-```text
-browser_create result
-→ remote resource browser_session
-→ cleanup tool browser_close
-```
-
-Web Access still has server TTL/reaper.
-
-MCP disconnect does not equal close.
-
----
-
-# 51. Job lifecycle integration
-
-`*_job` returns JobRef.
-
-Jobs are not automatically tied to one AgentCycle baseline.
-
-Agent polls `job_get`; explicit cancel with `job_cancel` only when task semantics require.
-
----
-
-# 52. `unknown`
-
-Mutating Browser action can return `unknown` if outcome cannot be proven.
-
-Tool result/agent must preserve it.
-
-Recommended next action is safe observation/status, not automatic duplicate mutation.
-
----
-
-# 53. Technical MCP progress
-
-Allowed only as bounded technical progress where useful.
-
-Canonical user-facing progress remains Agent Runtime responsibility.
-
-No page text promoted to trusted progress phrase.
-
----
-
-# 54. Authentication
-
-Authentication is transport/service configuration.
-
-No tool accepts:
-
-```text
-api_key
-bearer_token
-user_id as untrusted identity
-```
-
-Principal/owner derived from authenticated connection/context.
-
----
-
-# 55. Validation errors
-
-Structured repairable example shape:
-
-```text
-category=validation
-code=invalid_arguments
-fields[]:
-  path
-  code
-  message
-retryable=true after correction
-```
-
-LLM should be able to repair without reading server stack trace.
-
----
-
-# 56. Actual schema tests
-
-CI starts actual FastMCP server/client and verifies:
-
-- exact tool names;
-- every public/nested field description;
-- required/defaults;
-- `additionalProperties=false` where appropriate;
-- bounds;
-- enums/discriminators;
+# 26. Actual schema tests
+
+For every tool actual FastMCP client discovery must verify:
+
+- exact tool name;
+- Russian tool description;
+- every nested field description;
+- required/default/null semantics;
+- min/max/list bounds;
+- discriminator/`oneOf`;
+- unknown input fields rejected;
+- no Context/private/provider/worker/storage fields;
 - annotations;
-- hidden Context absent;
-- no internal fields;
-- descriptions preserve neighboring-tool distinction.
+- runtime validation agrees with generated schema.
 
-Generated fixture participates in `compatibility.md` contract gate.
+Positive/negative fixtures validate actual emitted schema, not only Pydantic source model.
 
 ---
 
-# 57. Generic MCP compatibility
+# 27. Compatibility
 
-No own-agent-specific manager call required by service tools.
+Before v0.8 freeze this catalog remains reviewed freeze candidate.
 
-Generic MCP client can explicitly manage:
+After freeze:
 
-- BrowserSession;
-- Job;
-- Content.
+- removal/rename/semantic change → breaking candidate;
+- additive tool → new unique semantic intent + execution-class review;
+- bounds/default/required change → compatibility-sensitive;
+- generated schema diff → CI visible;
+- own-agent trusted descriptors updated alongside semantic changes.
 
-Pretty progress/automatic cleanup are optional agent integration features, not protocol prerequisites.
-
----
-
-# 58. Compatibility
-
-v0.8 establishes freeze candidate.
-
-Any later rename/remove/semantic change follows `compatibility.md`.
-
-New tool only for real new intent; convenience aliases forbidden.
+Exact policy: `compatibility.md`.
