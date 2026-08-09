@@ -2,115 +2,135 @@
 
 ## Статус документа
 
-Канонический владелец cross-cutting **runtime policy, quotas/budgets, operator/admin controls, durable security audit и operational configuration revision** Web Access MCP.
+Канонический владелец cross-cutting **dynamic task policy, quotas/budgets, operator controls, durable admin audit и operational policy revisions** Web Access.
 
-Документ дополняет:
+Точные models/endpoints:
 
-- `security.md` — trust/security boundaries;
-- `deployment.md` — process/infrastructure topology;
-- `observability.md` — telemetry/health;
-- component docs — domain-specific limits.
+- `contracts/policy-models.md`;
+- `contracts/admin-api-v1.md`.
+
+Связанные решения:
+
+- ADR-0019 — revisioned policy registry;
+- ADR-0020 — durable quota/billable accounting;
+- ADR-0023 — admin control plane authority outside mutable task policy.
 
 ---
 
 # 1. Purpose
 
-Web Access должен быть управляемым как production multi-principal service без изменения кода для каждого operational лимита.
+Production Web Access должен позволять оператору без redeploy:
 
-Нужно централизованно ответить:
+- ограничивать task capabilities;
+- задавать per-principal quotas;
+- управлять provider admission/billable budgets;
+- управлять Content retention defaults;
+- наблюдать provider/worker/job/storage state;
+- draining workers;
+- запускать только typed bounded maintenance;
+- сохранять durable security/operator audit.
 
-- какие capabilities разрешены principal-у;
-- сколько ресурсов он может занимать;
-- какие provider/billable budgets действуют;
-- какие retention policies используются;
-- как operator безопасно меняет эти policies;
-- как replicas видят одну revision;
-- какие security-sensitive changes сохраняются durable audit trail.
+При этом policy и accounting должны оставаться согласованными между replicas и переживать Redis loss/restarts.
 
 ---
 
 # 2. Static configuration vs dynamic policy
 
-Разделение обязательно.
-
 ## Static/deployment configuration
 
-Через env/secrets/files/orchestrator:
+Содержит:
 
-- PostgreSQL/Redis endpoints;
-- service credentials/secrets;
-- S3 credentials/endpoints;
-- Yandex API secret;
+- PostgreSQL/Redis/S3/provider endpoints;
+- secrets/credentials;
 - TLS/service identity;
-- hard safety ceilings;
-- feature build/runtime availability;
 - internal network addresses;
-- parser/browser binary paths.
+- software hard ceilings;
+- binary/image/runtime paths;
+- admin control-plane enable/network boundary;
+- break-glass credential/recovery configuration.
 
-Обычно требует restart/rollout.
+Обычно требует rollout/restart.
 
-## Dynamic non-secret policy
+## Dynamic non-secret task policy
 
-Может храниться durable и изменяться operator-ом:
+Содержит typed:
 
-- capability allow/deny;
-- per-principal rate/concurrency quotas;
-- BrowserSession/resource quotas;
-- Job admission/active limits;
-- Search provider allowance/default/billable units budget;
-- Content retention class/default;
-- soft operational limits внутри hard ceiling;
-- worker/provider enable/drain policy;
-- maintenance/cleanup policy;
-- shared cache policy;
-- audit verbosity class.
+- enabled task capabilities;
+- Search provider/default/cache/budget policy;
+- Search/Retrieval rate/concurrency defaults/maxima;
+- Content logical quotas/retention defaults;
+- Browser quotas/TTL defaults;
+- Job quotas/fairness/backlog limits;
+- per-principal overrides;
+- Browser mutation audit mode.
 
-Dynamic policy никогда не содержит raw secrets.
+Dynamic policy никогда не содержит secrets и не управляет собственным admin authorization.
 
 ---
 
-# 3. Hard ceiling vs policy limit
+# 3. Hard ceilings
 
-Каждая configurable safety-sensitive величина имеет два уровня:
+Каждый safety-sensitive limit имеет hierarchy:
 
 ```text
-hard server ceiling
-≥
-operator policy limit
-≥
-per-principal effective limit
+software/deployment hard ceiling
+≥ global dynamic maximum
+≥ principal effective override/default
 ```
 
-Admin API не может поднять значение выше hard ceiling текущей software revision.
-
-Hard ceilings изменяются code/config release review, а не runtime user request.
+Admin mutation не может поднять значение выше hard ceiling текущей software/runtime revision.
 
 ---
 
-# 4. PolicySnapshot
+# 4. Revisioned PolicySnapshot
 
-Application operations получают immutable effective `PolicySnapshot`/context.
+PostgreSQL — authoritative source.
 
-Conceptually:
+Любая policy mutation:
 
 ```text
-policy_revision
-global policy
-principal policy
-capability-specific limits
-provider/retention settings
-loaded_at
+expected current revision
+→ validate typed change
+→ materialize complete immutable logical state
+→ insert revision N+1
+→ CAS current pointer
+→ required AuditEvent
+→ commit
 ```
 
-Одна Operation использует согласованный snapshot; policy не меняется посередине execution произвольно.
+Rollback создаёт новую monotonic revision; старый revision number не становится current повторно.
 
-Long-running Job сохраняет relevant policy/revision at creation/attempt, но security revocation/cancellation may still override according explicit rule.
+Control Plane caches immutable snapshot and periodically checks current revision.
+
+Redis invalidation может ускорять refresh, но не является correctness source.
 
 ---
 
-# 5. Capability policy
+# 5. Global policy + exact-principal overrides
 
-Baseline capability classes:
+Logical policy состоит из:
+
+```text
+GlobalPolicyDocument
++
+0..N exact PrincipalPolicyOverride
+```
+
+No regex/expression/group policy language v1.
+
+Public Admin REST не пересылает все overrides при каждом update:
+
+- global defaults/maxima update отдельно;
+- exact principal override CRUD отдельно;
+- каждая mutation всё равно bumps top-level policy revision.
+
+Baseline explicit override ceiling — 10,000 exceptions per logical policy state; principals without override use global defaults and не входят в этот count.
+
+---
+
+# 6. Task capability policy
+
+Dynamic task capabilities v1:
 
 ```text
 search
@@ -121,522 +141,359 @@ browser.read
 browser.interact
 jobs.read
 jobs.create
-admin
 ```
 
-Auth scope является верхней границей.
-
-Dynamic policy может дополнительно запретить capability, но не выдать scope, которого нет у authenticated PrincipalContext.
-
-Effective permission:
+Effective task permission:
 
 ```text
-authenticated scopes
-∩
-operator policy
-∩
-resource ownership/policy
+AuthProvider task scope
+∩ global enabled task capabilities
+∩ principal override restrictions
+∩ resource ownership/policy
 ```
 
----
-
-# 6. Quota categories
-
-Quotas разделяются по semantics.
-
-## Rate
-
-Operations/time window or token-bucket units.
-
-## Concurrent
-
-Одновременно выполняемые operations/resources.
-
-## Durable resource count
-
-- active BrowserSessions;
-- pending/non-terminal Jobs;
-- retained ContentObjects where policy tracks count.
-
-## Byte/storage
-
-- Content bytes retained;
-- per Job aggregate bytes;
-- Browser temp/artifact bytes.
-
-## Billable/provider units
-
-- upstream billable calls/units;
-- daily/monthly/custom period budgets.
-
-Не сводить всё к одному `requests_per_minute`.
+Policy restricts; it cannot mint missing scope.
 
 ---
 
-# 7. Rate/concurrency enforcement
+# 7. Admin control plane
 
-Ephemeral distributed rate/concurrency limits используют Redis-backed primitives where already established.
+Согласно ADR-0023, `admin` **не** является dynamic task capability.
 
-Examples:
-
-- Search provider token bucket;
-- per-principal Retrieval rate;
-- Browser create rate;
-- concurrent request-bound operations.
-
-Failure mode `fail_open/fail_closed` задаётся capability policy. Cost/security critical enforcement baseline fail-closed.
-
----
-
-# 8. Durable resource quota
-
-Для durable resources correctness не должна зависеть только от Redis counter.
-
-PostgreSQL authoritative resource rows + transactional usage/reservation mechanism используются для:
-
-- active BrowserSession count;
-- non-terminal Job count;
-- retained storage accounting where enforced.
-
-Derived usage counters may accelerate admission but имеют reconciliation against source resources.
-
----
-
-# 9. PrincipalUsage
-
-v0.7 может использовать durable aggregate rows:
+Admin REST требует:
 
 ```text
-principal_id
-usage_revision
+trusted AuthProvider admin:read/admin:write
++
+deployment/network policy
+```
+
+Dynamic task policy не может отключить policy read/update/rollback для уже authorized admin principal.
+
+Если deployment хочет выключить admin HTTP surface целиком, это static deployment/network configuration с отдельным recovery path.
+
+Так исключается self-lockout.
+
+---
+
+# 8. Policy staleness
+
+Initial target:
+
+```text
+normal revision refresh <= 5 seconds
+high-risk stale grace <= 30 seconds
+```
+
+Если replica не может обновить явно более новый current policy:
+
+- сохраняет last-known-good кратковременно;
+- health becomes degraded;
+- после grace high-risk **task admissions** fail closed по class.
+
+Admin control-plane recovery/read path не должен зависеть от dynamic task capability flag; DB/auth/network failures остаются реальными blockers.
+
+---
+
+# 9. Quota classes
+
+Разные quota semantics не объединяются одним счетчиком:
+
+```text
+rate
+concurrent request-bound execution
+durable resource count
+logical retained bytes/objects
+billable provider units
+Job global backlog/fairness
+```
+
+Redis flow limiters подходят rate/concurrency.
+
+Durable resources/budgets учитываются в PostgreSQL transactionally.
+
+---
+
+# 10. Durable principal usage
+
+Materialized `PrincipalUsage` может содержать:
+
+```text
 active_browser_sessions
 nonterminal_jobs
+active_job_attempts
 retained_content_bytes
-billable_units_by_period or separate ledger summary
-updated_at
+retained_content_objects
+usage_revision
 ```
 
-Counters являются operational materialization, а не единственным source of truth.
+Counters — acceleration/materialization, не единственный source of truth.
 
-Reconciler периодически сверяет их с authoritative resource/usage records.
+UsageReconciler сверяет их с authoritative resources.
 
-Admission updates counter/resource in one transaction where possible.
+Admission + resource state update/counter reservation выполняются transactionally enough to prevent oversubscription across replicas.
 
 ---
 
-# 10. Billable usage ledger
+# 11. Browser quotas
 
-Для billable providers не хардкодить валютную цену в Search adapter.
-
-Durable event/ledger records:
+Browser create requires одновременно:
 
 ```text
-principal_id
-provider_id
-provider/account revision
-operation_id
-usage_unit_type
-units
-attempt/retry metadata
-timestamp
+auth/task policy
+→ principal durable session quota
+→ Browser create rate
+→ global/worker physical capacity
 ```
 
-Policies могут ограничивать:
+Principal slot reserved durably before/with logical resource admission and released exactly once on terminal lifecycle (`failed/closed/lost/expired`).
 
-- calls/day;
-- billable units/period;
-- custom provider units.
-
-Конвертация units → money может быть operator/reporting concern с отдельной pricing configuration, не correctness search path.
+Worker capacity is a separate physical limit.
 
 ---
 
-# 11. Budget reservation
+# 12. Job quotas/fairness
 
-Если provider billing unit начисляется при фактическом upstream attempt, budget must be checked/reserved immediately before upstream admission.
+Enforce:
 
-Flow:
+- non-terminal Jobs/principal;
+- active JobAttempts/principal;
+- registered job-type/global attempt caps;
+- create rate;
+- global backlog admission.
+
+Queue order alone cannot let one principal monopolize worker execution indefinitely.
+
+If active-attempt quota unavailable, DB claim defers execution through durable retry/wake-up semantics rather than busy-looping.
+
+---
+
+# 13. Content logical quota
+
+Quota charges logical owner-visible available ContentObjects, not physical deduplicated blob bytes.
+
+Before final `creating → available` where quota applies:
+
+```text
+lock/check PrincipalUsage
+→ Content availability transition
+→ usage increment
+→ same transaction where feasible
+```
+
+Expiry/delete releases exactly once.
+
+Different owners referencing same physical hash still have independent logical quota.
+
+---
+
+# 14. Billable provider accounting
+
+Billable Search providers use durable provider units, not hardcoded currency.
+
+Flow around actual paid upstream attempt:
 
 ```text
 cache miss
-→ rate/capacity
-→ billable budget reservation
-→ upstream attempt
-→ usage finalize/account
+→ task policy/rate/capacity
+→ durable budget reservation by usage_attempt_id
+→ upstream send
+→ finalize consumed/released according send evidence
 ```
 
-Exact provider semantics may change order with rate reservation, but double-spend across replicas must be prevented by atomic DB/Redis policy appropriate to durable budget.
+If request may have been sent/billed but outcome is unknown, baseline is conservative consumption, not automatic refund.
 
-Budget reservation has idempotent operation/attempt identity.
+Retry gets separate reservation.
 
----
-
-# 12. Browser quota
-
-At BrowserSession create:
-
-- auth scope/policy;
-- principal active-session quota;
-- global deployment/worker capacity;
-- Browser create rate.
-
-Successful durable create reserves principal active resource slot transactionally enough to avoid oversubscription under concurrent API replicas.
-
-Terminal/failed/expired/closed releases slot through lifecycle transaction/reconciler.
-
-Worker capacity remains independent second limit.
+Period boundaries UTC.
 
 ---
 
-# 13. Job quota/fairness
+# 15. Retention policy
 
-Job admission limits:
-
-- pending/non-terminal Jobs/principal;
-- items/job;
-- bytes/job;
-- global backlog;
-- job type allowance.
-
-Job execution fairness baseline:
-
-- max active JobAttempts/principal;
-- max active JobAttempts/job type;
-- worker global capacity.
-
-Queue order alone must not allow one principal to occupy all execution indefinitely.
-
-If arq message arrives for principal over active execution quota, DB claim is deferred/rejected-to-retry without executing body; durable Job state remains queued/retry eligible.
-
-Load tests verify no pathological hot-principal starvation.
-
----
-
-# 14. Content retention classes
-
-Retention becomes explicit policy concept.
-
-Example semantic classes:
+v1 dynamic Content policy includes bounded defaults for at least:
 
 ```text
 transient
 job_result
-saved
-system/audit (only where applicable)
 ```
 
-Exact defaults operator-configurable inside hard ceilings/minimum obligations.
+No per-principal arbitrary infinite TTL.
 
-A client cannot arbitrarily request infinite retention without permission/policy.
+Principal overrides adjust logical storage quota but not introduce arbitrary retention classes in baseline.
 
-Content representation children do not automatically outlive owner/source policy without explicit relation rule.
+Physical storage lifecycle remains Content design responsibility.
 
 ---
 
-# 15. Operator/Admin REST
+# 16. Admin REST responsibilities
 
-Admin surface is REST-only baseline.
-
-MCP does not expose operator tools to ordinary LLM.
-
-Protected by `admin` scope + deployment/network policy.
+Exact surface: `contracts/admin-api-v1.md`.
 
 Categories:
 
 ```text
-status/health detail
-policy inspect/update
-provider enable/status/budget
-worker status/drain
-Job/outbox/reconciler status
-retention/cleanup status
-usage/accounting reports
-safe maintenance actions
+current global policy
+principal overrides
+policy revision history/rollback
+provider status/budget summary
+principal usage
+Browser/Job worker status + generation-safe drain
+Job/outbox backlog
+AuditEvent read
+bounded typed maintenance
+protected status
 ```
 
-No generic SQL/Redis/shell endpoint.
+No admin MCP tools.
+
+No SQL/Redis/shell/raw provider secret console.
 
 ---
 
-# 16. Dynamic policy update
+# 17. Typed maintenance
 
-Operator update uses typed validated request.
+Only explicit actions are allowed, e.g.:
 
-Canonical transaction:
+- Content reconciliation/GC bounded pass;
+- Job/outbox reconciliation;
+- Usage reconciliation;
+- provider status refresh;
+- eligible Job recovery through state machine;
+- worker drain.
 
-```text
-load current revision
-→ validate against software hard ceilings/schema
-→ optimistic expected revision check
-→ write new policy revision/snapshot
-→ append durable audit event
-→ commit
-```
+Every mutation has exact input bounds, admin auth and required audit where specified.
 
-Response returns new revision.
-
-No last-write-wins blind overwrite without revision conflict handling.
+No generic command string.
 
 ---
 
-# 17. Policy distribution
+# 18. Durable AuditEvent
 
-PostgreSQL is authoritative for dynamic policy.
-
-Control Plane replicas maintain immutable cached latest snapshots.
-
-Refresh strategy:
+Minimum trusted metadata:
 
 ```text
-bounded periodic revision check
-+
-optional Redis Pub/Sub/invalidation acceleration
+audit_id
+timestamp
+actor_principal_id
+delegated_subject | null
+action_code
+resource refs / policy revision
+outcome
+operation/request correlation
+bounded redacted metadata
 ```
 
-Redis invalidation is optimization, not correctness source.
+Never persist:
 
-Replica eventually detects revision even if Pub/Sub message lost.
+- bearer/API secrets;
+- full page/document content;
+- password/form values;
+- arbitrary giant request bodies.
 
----
+Application audit semantics are append-only.
 
-# 18. Policy staleness bound
-
-Security/limit policy has explicit max staleness target.
-
-Initial design target:
-
-```text
-normal replica refresh <= 5 seconds
-```
-
-Sensitive operator action can force direct revision check/refresh path where necessary.
-
-Readiness/degraded state exposes replicas that cannot refresh policy beyond configured grace.
-
-Last-known-good may continue only according policy class; revoked/high-risk capabilities can fail closed after staleness grace.
+Required admin mutation + audit append commit atomically; audit failure aborts mutation.
 
 ---
 
 # 19. Policy compatibility
 
-Policy row/snapshot includes:
+Policy snapshot includes `schema_version`.
 
-```text
-schema_version
-minimum/compatible software revision where needed
-revision
-```
+Software declares readable range.
 
-Software that cannot understand current policy revision/schema fails capability/readiness safely rather than ignoring unknown security fields.
+New policy schema cannot become current before active deployment compatibility allows it.
 
-Rolling deploy design must support overlap compatible revisions.
+Incompatible replica degrades/fails relevant capabilities rather than ignoring unknown security fields.
+
+Exact v1 models: `contracts/policy-models.md`.
 
 ---
 
-# 20. Provider operation policy
+# 20. Worker policy propagation
 
-Operator can:
+Browser/Job Workers do not need independent arbitrary policy DB reads.
 
-- enable/disable provider;
-- set default provider;
-- set non-secret rate/capacity/budget limits;
-- choose shared/principal cache policy;
-- inspect health/usage.
+Control Plane sends bounded approved execution profile/limits with internal request/job creation.
 
-Credentials/endpoints remain secret/deployment config unless separately designed secure secret manager integration.
+Worker also enforces its own static hard safety ceilings and rejects impossible values.
 
-Disabling provider does not automatically switch requests to another provider unless caller/default policy explicitly selects it in a future operation.
+This prevents dynamic policy from disabling worker safety boundary.
 
 ---
 
-# 21. Worker drain operator action
-
-Admin may request Browser/Job Worker drain by stable worker identity/generation.
-
-Action:
-
-- authenticated admin;
-- generation checked;
-- durable/ephemeral operator intent according runtime;
-- worker advertises/enters draining;
-- no new work;
-- existing work follows component drain contract.
-
-No kill arbitrary PID endpoint.
-
----
-
-# 22. Maintenance actions
-
-Allowed typed examples:
-
-- trigger bounded reconciliation pass;
-- trigger content GC dry-run/controlled batch;
-- requeue eligible stuck Job through durable state transition;
-- refresh provider capabilities;
-- drain worker.
-
-Each has explicit scope, limits, audit.
-
-No generic `execute maintenance command` string.
-
----
-
-# 23. Durable audit
-
-Security/operator audit differs from telemetry/logs.
-
-Audit event minimum:
-
-```text
-audit_id
-timestamp
-actor principal
-optional delegated subject
-action code
-resource refs / policy revision
-outcome
-request/operation correlation
-bounded structured metadata
-```
-
-Audit records never contain:
-
-- raw bearer/API secrets;
-- full page/document content;
-- form password values;
-- arbitrary giant request bodies.
-
----
-
-# 24. What is audited
-
-Baseline durable audit:
-
-- admin policy changes;
-- provider enable/disable/budget changes;
-- worker drain/maintenance actions;
-- security-sensitive retention/delete/save operations when added;
-- repeated auth/authorization security events only if policy requires durable record (high-volume failures may remain telemetry/security pipeline rather than DB flood);
-- potentially external-side-effect Browser actions at **metadata code/outcome level** when policy enables audit, without page text/target secrets.
-
-Not every read-only Search/Content read becomes durable audit row.
-
----
-
-# 25. Audit immutability/retention
-
-Application has append-only semantics: ordinary API cannot update/delete individual audit event.
-
-Database administrator still has infrastructure authority; append-only is application contract, not cryptographic WORM guarantee.
-
-Audit retention/operator export policy explicit and may differ from normal Content/Job retention.
-
----
-
-# 26. Quota errors/hints
-
-Normalized errors distinguish:
-
-```text
-rate_limited
-concurrency_limit
-resource_quota_exceeded
-storage_quota_exceeded
-billable_budget_exceeded
-job_backlog_limit
-capability_disabled_by_policy
-```
-
-Retry-after only when system can calculate meaningful value.
-
-No hidden fallback.
-
----
-
-# 27. Observability
-
-Metrics:
-
-- policy revision age/refresh failures;
-- quota rejects by bounded capability/code;
-- usage counts;
-- provider billable units;
-- active Browser/Job quota utilization;
-- admin action outcomes;
-- reconciler drift corrections;
-- audit append failures.
-
-Principal IDs not unbounded metric labels.
-
----
-
-# 28. Failure semantics
+# 21. Failure semantics
 
 PostgreSQL unavailable:
 
-- dynamic policy/owner/durable quota operations fail according component dependency;
-- do not use stale mutable counters to create durable resource.
+- no new durable policy revision/resource quota reservation/billable reservation;
+- do not trust stale Redis counters as replacement.
 
 Redis unavailable:
 
-- durable policy registry still exists;
-- ephemeral rate/concurrency policies fail according explicit class;
-- invalidation message loss handled by polling.
+- policy source remains PostgreSQL;
+- invalidation recovered by polling;
+- rate/concurrency class follows explicit fail-open/fail-closed setting in implementation, with security/cost critical paths conservative.
 
-Audit append failure during required admin mutation:
+Audit append failure on required mutation:
 
 ```text
-admin mutation transaction fails/rolls back
+rollback mutation
 ```
 
-for actions where audit is transactional requirement.
+---
+
+# 22. Observability
+
+Track bounded:
+
+- policy current revision/age/refresh failures;
+- task capability/quota rejects by code;
+- usage drift reconciliation;
+- provider billable units/reservations;
+- Browser/Job quota utilization;
+- admin mutation outcomes;
+- audit append failures;
+- worker drain duration;
+- retention/GC maintenance.
+
+No principal IDs as unbounded metric labels.
 
 ---
 
-# 29. MCP relationship
+# 23. Testing requirements
 
-Ordinary MCP facade can return quota/policy errors and hints.
+At minimum:
 
-MCP does not get:
-
-- admin policy update tools;
-- provider credential controls;
-- worker drain;
-- audit browsing;
-- raw quota registry.
-
-This avoids mixing operator control with LLM task execution.
-
----
-
-# 30. Testing requirements
-
-- concurrent resource quota admission across API replicas;
-- counter drift/reconciliation;
-- rate/concurrency Redis failures;
-- billable budget race/double reservation;
-- policy optimistic conflict;
-- lost Redis invalidation + polling refresh;
-- rolling mixed software/policy revisions;
-- admin authorization;
-- audit transactional coupling;
-- hot principal Job fairness;
-- Browser session quota cleanup on worker loss;
-- retention/GC race;
-- no sensitive audit/log fields.
+- concurrent policy CAS updates;
+- exact-principal override update/delete;
+- lost Redis invalidation + polling recovery;
+- policy schema rolling compatibility;
+- dynamic policy cannot contain/disable `admin` control-plane capability;
+- admin auth/network boundary;
+- Browser/Job/Content durable quota races;
+- UsageReconciler drift repair;
+- billable reservation double-spend/unknown outcome;
+- policy lowering below consumed usage;
+- audit transaction rollback;
+- generation-safe worker drain;
+- hot-principal Job fairness;
+- maintenance input bounds;
+- no secrets in policy/audit/diagnostics.
 
 ---
 
-# 31. Non-goals
+# 24. Non-goals
 
-Этот design не вводит:
+v1 policy/operations design does not introduce:
 
 - user account product;
-- OAuth/OIDC provider implementation;
+- OAuth/OIDC implementation;
+- arbitrary RBAC/expression engine;
+- billing/invoice system;
 - secret manager UI;
-- billing/invoicing system;
-- generic scheduler;
-- general workflow engine;
+- generic scheduler/workflow engine;
 - arbitrary runtime code/config hot reload;
-- MCP operator console.
+- MCP operator console;
+- dynamic self-disable of admin recovery control plane.
