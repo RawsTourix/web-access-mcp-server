@@ -1,10 +1,12 @@
 # Integration with internet-search-bot
 
-## Статус документа
+## Статус
 
-Канонический владелец Web Access-side expectations для интеграции с собственным ИИ-агентом `RawsTourix/internet-search-bot` как builtin MCP service.
+Канонический владелец Web Access-side expectations для интеграции с `RawsTourix/internet-search-bot` как builtin MCP service.
 
-Документ **не копирует внутреннюю архитектуру агента**. Канонический agent-side contract остаётся в его `docs/design/contracts/builtin-mcp-service-contract.md`.
+Agent-side canonical contract остаётся в его `docs/design/contracts/builtin-mcp-service-contract.md`.
+
+Web Access не копирует/импортирует Agent Runtime.
 
 ---
 
@@ -17,194 +19,268 @@ internet-search-bot Agent Runtime
 → Web Access MCP
 ```
 
-Web Access является отдельным deployable service.
+Service independently deployable.
 
-Он не импортирует код агента и не зависит от его conversation/runtime models.
+No direct REST bypass for normal builtin tool execution baseline.
 
 ---
 
-# 2. Transport
+# 2. Transport/lifecycle
 
-Production builtin integration использует Streamable HTTP endpoint `/mcp` согласно agent-side builtin contract.
+Production integration uses `/mcp` Streamable HTTP.
 
-Service authentication передаётся transport/deployment configuration, а не MCP tool arguments.
+Authentication belongs transport/deployment, not tool args.
 
 MCP disconnect/reconnect:
 
-- не закрывает BrowserSession;
-- не отменяет durable Job автоматически;
-- не удаляет ContentObject;
-- не меняет owner.
+- does not close BrowserSession;
+- does not cancel Job;
+- does not delete ContentObject;
+- does not change owner.
 
 ---
 
-# 3. Tool discovery workflow
+# 3. Agent discovery model
 
-Agent может видеть внешний MCP tool через последовательность:
+Agent workflow:
 
 ```text
-list tools
-→ short name/description discovery
-→ get full schema
-→ call tool
+mcp_list_tools
+→ tool name + description
+→ mcp_get_tool_schema
+→ full input schema
+→ mcp_call_tool
 ```
 
-Следствие для Web Access:
+Therefore Web Access must provide:
 
-- первый абзац русскоязычного tool description должен однозначно объяснять intent;
-- соседние tools явно разводятся по назначению;
-- каждая input property имеет description;
-- actual JSON Schema содержит machine-readable constraints;
-- runtime validation остаётся обязательной.
+- Russian discovery descriptions with clear intent;
+- neighbor-tool distinctions;
+- every nested property description;
+- machine-readable bounds/unions;
+- runtime validation independent of LLM compliance.
+
+Exact current target: `contracts/mcp-tools.md`.
 
 ---
 
 # 4. Trusted metadata boundary
 
-Web Access tool output **не определяет** agent-side:
+Tool output cannot appoint its own:
 
+- agent permission;
 - trusted presentation profile;
-- permissions;
-- cleanup binding;
 - retry class;
-- user-facing progress text.
+- lifecycle cleanup binding;
+- user-facing progress string.
 
-Эти значения принадлежат trusted builtin registry агента.
+These live in agent trusted builtin registry.
 
-Web Access предоставляет объективную operation/resource semantics, достаточную для такого trusted mapping.
+Web Access supplies objective stable semantics/resources/outcomes enabling that mapping.
 
 ---
 
-# 5. Canonical capability mapping
+# 5. Current catalog compatibility
 
-Agent-side integration может классифицировать tools по stable semantics:
+Current freeze candidate = **28 tools**.
+
+Agent descriptor compatibility checks exact names/semantics from:
 
 ```text
-web_search
-web_fetch
-content_get
-content_parse
-browser_*
-job_*
+mcp.md
+contracts/mcp-tools.md
+ADR-0021/0022/0024/0025
 ```
 
-Конкретная trusted metadata версия хранится со стороны агента и проходит compatibility tests против фактических Web Access schemas.
+Unknown future/additive tool gets generic safe presentation until explicitly trusted; it cannot inherit privileged lifecycle/retry profile by name similarity.
 
 ---
 
-# 6. BrowserSession remote resource
+# 6. Remote resources
 
-`browser_create` возвращает opaque BrowserSession handle.
+## BrowserSession
 
-Agent trusted descriptor знает:
+`browser_create` returns opaque handle.
+
+Agent trusted descriptor maps:
 
 ```text
 resource_type = browser_session
 cleanup_operation = browser_close
 ```
 
-Web Access:
+Agent may attach resource to cycle/run/session owner.
 
-- проверяет owner handle на каждом вызове;
-- обеспечивает idempotent explicit close;
-- имеет собственный TTL/reaper;
-- окончательно очищает browser process/resource независимо от agent cleanup.
+Web Access sees authenticated principal/resource calls, not AgentCycle object.
 
-Agent best-effort cleanup не является единственной защитой от orphan session.
+Server TTL/reaper remains final cleanup authority.
 
----
+## Content
 
-# 7. Browser lifecycle owner
+Content generally not per-AgentCycle cleanup.
 
-Agent может привязать BrowserSession к своему lifecycle owner (`cycle`, future run/task/session) согласно agent design.
+Lifetime controlled by Web Access retention/quota.
 
-Web Access получает только service principal/resource calls и не обязан понимать AgentCycle object.
+Agent stores opaque refs/cursors only.
 
-Web Access internal owner remains authenticated principal; agent-side lifecycle owner is orchestration metadata outside service.
+## Job
 
----
+Durable Job survives AgentCycle/MCP disconnect.
 
-# 8. ContentRef
+Agent does not auto-cancel every Job on cycle completion.
 
-ContentObjects обычно не требуют per-AgentCycle cleanup hook.
-
-Service retention policy управляет lifetime.
-
-Agent может хранить opaque ContentRef в working/result context, но:
-
-- handle не раскрывает storage key;
-- owner validated server-side;
-- expiration may make old handle unavailable;
-- large content read through `content_get` cursor/bounds.
-
----
-
-# 9. JobRef
-
-Durable Job переживает MCP connection и AgentCycle boundary согласно explicit semantics.
-
-Agent не должен автоматически cancel every Job только потому, что один cycle завершился, если trusted policy не определяет это отдельно.
-
-Lifecycle:
+Explicit lifecycle:
 
 ```text
-create durable mode
+web_fetch_job/content_parse_job
 → JobRef
 → job_get
 → optional job_cancel
 ```
 
-Web Access server-side retention/reconciliation authoritative.
-
 ---
 
-# 10. Retry mapping
+# 7. Retry mapping — cost/resource aware
 
-Agent-side trusted execution semantics должны согласовываться с Web Access behavior.
+ADR-0024 replaces old simplistic “read tool = safe retry” mapping.
+
+Trusted Agent semantics must distinguish:
+
+## Pure safe observations
 
 Examples:
 
 ```text
-web_search      safe/read-oriented
-web_fetch       safe/read-oriented
-content_get     safe
-content_parse   safe/idempotent relative immutable source/revision where applicable
-browser_get     safe
-browser_snapshot safe/read
-browser_close   idempotent cleanup
-browser_click/fill/press/navigate  never blind automatic retry after uncertain dispatch
-job_get         safe
-job_cancel      idempotent cancellation request
+content_get
+browser_get
+browser_snapshot
+browser_tabs
+browser_events
+browser_wait
+job_get
 ```
 
-Exact agent descriptor version reviewed with actual schemas.
+Safe subject to ordinary deadline/capacity policy.
+
+## `web_search`
+
+Read-oriented but selected provider can be billable.
+
+```text
+possible provider dispatch/cost
+→ no blind Agent-level automatic repeat after lost result
+```
+
+Service may internally retry only pre-dispatch/provably-safe phases according provider/budget evidence.
+
+## `web_fetch`
+
+Creates raw/derived Content resources.
+
+```text
+lost result after acquisition/resource creation
+→ no blind duplicate Agent call
+```
+
+## `content_parse`
+
+Can use idempotent Agent class only after implementation proves canonical compatible representation reuse under concurrent/replay tests.
+
+## Resource creation
+
+```text
+web_fetch_job
+content_parse_job
+browser_create
+browser_page_create
+browser_content
+browser_screenshot
+```
+
+Conservative after uncertain creation unless explicit same-operation/idempotency evidence exists.
+
+## Browser stateful actions
+
+```text
+browser_navigate
+browser_click
+browser_fill_form
+browser_type
+browser_press
+browser_hover
+browser_drag
+browser_scroll
+browser_upload
+```
+
+never blind automatic repeat after dispatch uncertainty.
+
+Worker action ledger/status recovery first tries to recover **same action**, not issue a new action.
+
+## Cleanup/cancel
+
+```text
+browser_close
+browser_page_close
+job_cancel
+```
+
+idempotent according exact semantics.
 
 ---
 
-# 11. `unknown` outcome
+# 8. `unknown` outcome
 
-Browser mutating action can return/normalize `unknown` when service cannot prove whether side effect happened.
-
-Agent must not transform it into automatic duplicate call.
-
-Recommended orchestration:
+If Browser/resource operation outcome cannot be proven:
 
 ```text
 unknown
 → safe observation/status/snapshot where possible
-→ infer current state only from evidence
-→ ask user if consequential ambiguity remains
+→ infer only from evidence
+→ ask user when consequential ambiguity remains
 ```
 
-Web Access structured result should include enough code/context for this behavior without prescribing UI text.
+Agent must not collapse `unknown` into failed/not-executed.
 
 ---
 
-# 12. Structured hints
+# 9. Browser exploration UX
 
-Web Access hints are trusted **service-generated codes/messages**, distinct from untrusted web content.
+Bounded snapshot intentionally does not reveal infinite UI at once.
 
-Agent may use them in reasoning/presentation mapping.
+Canonical long/lazy page flow:
+
+```text
+browser_snapshot
+→ agent sees current refs/truncation/state
+→ browser_scroll
+→ browser_snapshot
+```
+
+Scroll is explicit so Agent can display/trace that page state changed.
+
+No hidden scroll inside snapshot.
+
+---
+
+# 10. Form/key/upload UX
+
+Agent schema/presentation assumes exact contract:
+
+- `browser_fill_form` sequential fail-fast;
+- prior fields may remain changed;
+- later fields `not_attempted` after first failure;
+- no automatic submit;
+- `browser_press` structured named/character key + modifiers;
+- multi-file upload uses ContentIds and requires actual multiple-capable control.
+
+Agent should reason from per-field/action results, not assume atomic browser DOM rollback.
+
+---
+
+# 11. Structured hints
+
+Trusted service-generated hints are distinct from untrusted web content.
 
 Examples:
 
@@ -216,160 +292,138 @@ processing_requires_job
 session_expiring
 ```
 
-Hint is recommendation, not imperative automatic action.
+Hint = recommendation, not automatic command.
 
-Page/document text cannot create a trusted hint merely by containing similar text.
-
----
-
-# 13. Progress
-
-Web Access may emit technical MCP progress only where protocol/tool execution benefits.
-
-Agent remains owner of canonical user-facing progress.
-
-Useful stable semantic metadata from tool/result includes:
-
-- capability/tool;
-- URL/domain where safe;
-- provider;
-- phase/outcome;
-- resource/job IDs;
-- progress counts for durable jobs.
-
-Web Access does not generate Telegram/Web-specific phrases.
+Page/document text cannot manufacture trusted hint by containing same phrase.
 
 ---
 
-# 14. Presentation profile compatibility
+# 12. Pretty progress
 
-Agent can show semantic phrases such as:
+Agent owns user-facing progress/presentation.
+
+Possible trusted mapping:
 
 ```text
-Ищу в интернете…
-Читаю страницы…
-Открываю сайт в браузере…
+web_search       → Ищу в интернете…
+web_fetch        → Читаю страницы…
+browser_navigate → Открываю сайт…
+browser_snapshot → Анализирую интерфейс…
+browser_scroll   → Прокручиваю страницу…
+browser_click    → Взаимодействую со страницей…
+web_fetch_job    → Запускаю фоновое получение страниц…
+job_get          → Проверяю прогресс…
 ```
 
-but these strings are agent-side trusted presentation profiles.
+Exact UI wording remains agent-side.
 
-Web Access only guarantees stable tool identities/semantics that allow mapping.
-
-Renaming tool/intent therefore has integration compatibility impact even if backend unchanged.
+Web Access returns stable provider/URL/domain/resource/progress metadata, not Telegram/Web-specific prose.
 
 ---
 
-# 15. Service unavailable/restart
+# 13. Service restart/unavailability
 
-Agent must tolerate Web Access endpoint temporary failure as optional builtin capability failure according its runtime policy.
+Agent tolerates optional builtin service failure according its runtime policy.
 
 Web Access restart semantics:
 
-- request-bound operation lost according normal transport/outcome rules;
-- durable Jobs recover from DB/worker model;
-- Browser Worker session resources are independent of Control Plane MCP connection, but actual owning Browser Worker loss can mark session lost;
-- Content remains in durable storage.
+- request-bound in-flight call follows outcome/retry evidence;
+- Jobs recover through DB/outbox/worker lifecycle;
+- BrowserSession independent of MCP connection but owning Browser Worker loss can mark it `lost`;
+- Content remains durable according storage/lifecycle.
+
+Web Access outage must not destroy unrelated Agent Runtime.
 
 ---
 
-# 16. Schema compatibility
+# 14. Contract freeze/compatibility
 
-Web Access v0.8 maintains generated MCP schema fixture.
+In v0.8 Web Access generates actual MCP golden fixture.
 
-Agent integration acceptance compares:
+Agent coordinated acceptance compares:
 
-- expected tool names;
-- input schema compatibility;
-- resource/result shapes relevant to trusted descriptor;
-- retry/remote-resource semantics.
+- exact 28 names;
+- schema compatibility;
+- resources/results used by trusted descriptor;
+- retry/cost/resource class;
+- cleanup mapping;
+- progress presentation mapping.
 
-Agent must not infer compatibility only from service package version string.
+Do not infer compatibility from package version string alone.
 
 ---
 
-# 17. Cross-repository testing
+# 15. Cross-repository tests
 
-Responsibilities:
+## Web Access repo
 
-## Web Access repository
-
-- standard MCP client connect/discovery/call tests;
-- actual schema fixtures;
-- lifecycle/retry behavior tests;
+- generic MCP connect/discovery/call;
+- actual schemas;
+- retry/lifecycle fault tests;
 - generic-client compatibility.
 
-## Agent repository
+## Agent repo
 
-- trusted builtin registry descriptor tests;
-- ToolDispatcher mapping;
-- presentation profile;
-- lifecycle owner/cleanup;
-- `unknown` behavior;
-- degraded/unavailable server handling.
+- builtin registry descriptors;
+- Dispatcher routing/retry;
+- presentation profiles;
+- remote-resource ownership/cleanup;
+- `unknown` handling;
+- degraded/unavailable service.
 
-## Coordinated integration acceptance
+## Coordinated acceptance
 
-Use pinned refs/controlled test deployment for end-to-end verification without creating runtime code dependency between repositories.
+Pinned refs/test deployment without runtime code dependency between repositories.
+
+Scenarios include:
+
+1. Search→Fetch;
+2. Search→Browser;
+3. long page Snapshot→Scroll→Snapshot;
+4. Browser form/key/upload;
+5. cleanup at Agent lifecycle end;
+6. server TTL if Agent disappears;
+7. Browser worker lost;
+8. billable Search response loss no duplicate paid Agent call;
+9. web_fetch response loss no blind duplicate acquisition;
+10. mutating Browser response loss no duplicate action;
+11. durable Job polling/cancel;
+12. service outage leaves unrelated agent functionality alive.
 
 ---
 
-# 18. Generic MCP client compatibility
+# 16. Generic MCP client
 
-All essential Web Access MCP tools work without `internet-search-bot` manager functions.
+All essential tools work without own-agent manager functions.
 
-A generic client can:
+Generic client can:
 
-- discover/call tools;
+- discover/call;
 - manage BrowserSession explicitly;
-- poll/cancel Job;
-- read Content.
+- read Content;
+- create/poll/cancel Jobs.
 
-What generic client does not get automatically:
-
-- agent-specific pretty progress;
-- agent lifecycle auto-cleanup;
-- trusted local permission/budget mapping.
+It simply lacks agent-specific pretty progress, lifecycle auto-cleanup and trusted local policy mapping.
 
 ---
 
-# 19. Security
+# 17. Security
 
-- external bearer/service credential never appears in LLM arguments;
-- agent user/session identifier is not trusted unless conveyed through authenticated/delegated identity contract;
-- Browser/Content/Job ownership enforced server-side;
-- tool output cannot escalate agent trusted metadata;
-- web content remains untrusted;
-- cleanup only operates owner-authorized resource.
-
----
-
-# 20. Acceptance matrix
-
-Builtin integration must verify:
-
-1. Streamable HTTP connect/discovery/reconnect;
-2. schema fixture match;
-3. Russian descriptions sufficient for agent discovery;
-4. `web_search`/`web_fetch` direct flow;
-5. ContentRef chunk flow;
-6. durable Job creation/poll/cancel;
-7. Browser create/use/close;
-8. AgentCycle completion triggers bounded browser cleanup when configured;
-9. service cleanup/TTL works even if agent disappears;
-10. Browser worker loss becomes explicit lost resource;
-11. mutating response loss does not produce duplicate action;
-12. `unknown` propagated;
-13. generic fallback presentation for unrecognized future tool;
-14. Web Access outage does not destroy unrelated Agent Runtime;
-15. secrets absent from LLM context/tool schemas.
+- bearer/service credential never enters LLM tool args;
+- user/session ID not trusted unless authenticated/delegated through proper identity contract;
+- resource owner enforced server-side;
+- output cannot escalate trusted registry metadata;
+- web content untrusted;
+- cleanup owner-authorized;
+- billable/retry semantics cannot be weakened by model-generated argument.
 
 ---
 
-# 21. Non-goals
+# 18. Non-goals
 
-- copying agent Dispatcher implementation into this repo;
-- storing agent conversations;
-- defining Telegram/Web UI;
-- agent authorization database;
-- hard dependency on one LLM/provider;
-- making Web Access useful only to own agent.
+- copy Agent Dispatcher into Web Access;
+- store agent conversations;
+- define Telegram/Web UI;
+- build agent authorization DB;
+- hard-depend on one LLM/provider;
+- make Web Access useful only to own agent.
