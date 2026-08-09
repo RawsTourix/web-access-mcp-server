@@ -23,7 +23,7 @@ ADR должен содержать:
 6. что решение намеренно не определяет;
 7. ссылки на затронутые design docs.
 
-Если ADR меняет ранее принятый design, канонический документ-владелец темы и связанные version docs обновляются согласованным consistency patch.
+Если ADR меняет ранее принятый design, канонический документ-владелец темы и связанные version/contracts обновляются согласованным consistency patch.
 
 ## Реестр
 
@@ -51,6 +51,7 @@ ADR должен содержать:
 | [ADR-0020](ADR-0020-durable-quota-and-usage-accounting.md) | Durable resource quotas/billable budgets учитываются transactionally в PostgreSQL; Redis остаётся flow limiter, не accounting source | accepted |
 | [ADR-0021](ADR-0021-mcp-durable-job-tool-boundary.md) | Request-bound Retrieval/Content и durable Job creation — разные MCP tools из-за разных lifecycle/retry semantics | accepted |
 | [ADR-0022](ADR-0022-v0.8-mcp-tool-catalog.md) | v0.8 MCP freeze candidate: explicit 27-tool semantic catalog; one stable execution class per tool | accepted |
+| [ADR-0023](ADR-0023-admin-control-plane-authority.md) | Dynamic policy не может отключить собственный admin control plane; admin authority принадлежит AuthProvider scopes + deployment boundary | accepted |
 
 ## Browser ADR progression
 
@@ -92,9 +93,10 @@ Queue/runtime generic внутри backend; public creation typed.
 ```text
 ADR-0019  revisioned dynamic non-secret policy registry
 ADR-0020  durable principal quota/billable usage accounting
+ADR-0023  admin control plane authority outside mutable dynamic task capability policy
 ```
 
-Secrets остаются deployment configuration; policy не расширяет auth scopes/hard ceilings.
+Secrets остаются deployment configuration; policy не расширяет auth scopes/hard ceilings. Dynamic policy управляет task/resource/provider admission, но не может логически заблокировать authorized policy recovery API.
 
 ## MCP stabilization
 
@@ -103,4 +105,4 @@ ADR-0021  direct vs Job resource creation split
 ADR-0022  semantic freeze candidate catalog
 ```
 
-При противоречии exploratory MCP examples ранних version docs с ADR-0021/0022 приоритет имеют ADR-0021/0022 и актуальный `mcp.md`; такие хвосты должны быть удалены consistency pass до implementation соответствующей версии.
+При противоречии exploratory MCP examples ранних version docs с ADR-0021/0022 приоритет имеют ADR-0021/0022, актуальный `mcp.md` и `contracts/mcp-tools.md`.
