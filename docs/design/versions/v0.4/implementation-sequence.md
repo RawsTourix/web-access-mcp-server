@@ -2,533 +2,537 @@
 
 ## Назначение
 
-Документ задаёт обязательный порядок реализации `Managed Browser Runtime`.
+Обязательный порядок реализации `Managed Browser Runtime`.
 
-Он предназначен прежде всего для Codex/ChatGPT implementation work и не заменяет канонические design docs/ADR.
+Ключевой принцип:
 
-Ключевое правило:
+> Не начинать с MCP/REST или локального Playwright wrapper. Сначала ownership/process/routing/egress/recovery, затем Browser semantics/actions/artifacts, и только после этого public facades.
 
-> Нельзя начинать с MCP tools или простого локального Playwright wrapper. Сначала строятся runtime ownership, worker protocol, lifecycle и recovery; затем Browser semantics; только после этого REST/MCP facades.
+Canonical exact targets:
 
----
-
-# Patch B0 — Preconditions / characterization
-
-До production-кода:
-
-1. убедиться, что v0.1/v0.3 migrations/tests зелёные;
-2. зафиксировать текущие application/result/content contracts тестами;
-3. добавить architecture import assertions для будущего Browser package;
-4. добавить test fixtures для controlled public/private HTTP targets и browser egress scenarios;
-5. зафиксировать exact Playwright dependency/image compatibility в `uv.lock`/container build;
-6. CI не выполняет произвольный public Internet browser test по умолчанию.
-
-**Gate:** baseline зелёный без Browser implementation.
+- `../../browser.md`;
+- Browser ADR-0001/0009..0014;
+- ADR-0024/0025;
+- `../../contracts/browser-api-v1.md`;
+- relevant Browser sections `../../contracts/mcp-tools.md`.
 
 ---
 
-# Patch B1 — Browser domain/application contracts
+# B0 — Preconditions
 
-Добавить:
+Before code:
+
+1. v0.1/v0.3 accepted gates green;
+2. existing application/result/content contracts characterized;
+3. Browser package dependency/import rules test prepared;
+4. controlled public/private web targets/egress fixtures prepared;
+5. Playwright/Chromium dependency/container versions pinned for implementation branch;
+6. public Internet is not required for default CI.
+
+**Gate:** baseline green with no Browser runtime.
+
+---
+
+# B1 — Domain/application Browser contracts
+
+Create:
 
 ```text
-domain/browser
-application/browser
+domain/browser/
+application/browser/
 ```
 
-Модели:
+Models/contracts:
 
-- BrowserSessionId;
-- BrowserPageId;
-- BrowserSessionState;
-- BrowserSession metadata;
-- BrowserPageInfo;
-- BrowserAction type/result;
-- Snapshot metadata;
-- Browser event model;
-- Browser-specific errors.
+- BrowserSessionId/PageId;
+- lifecycle states/revisions;
+- PageInfo/page_generation;
+- typed action/result;
+- Snapshot/ElementRef metadata;
+- Browser events;
+- normalized Browser errors;
+- action ID/recovery state.
 
 Ports:
 
-- BrowserSessionRepository;
-- BrowserWorkerRegistry;
-- BrowserWorkerClient;
-- BrowserPlacementPolicy;
-- BrowserArtifactHandoff;
-- Clock/ID dependencies reused from foundation.
+```text
+BrowserSessionRepository
+BrowserWorkerRegistry
+BrowserWorkerClient
+BrowserPlacementPolicy
+BrowserArtifactHandoff
+```
 
-Реализовать state-machine unit tests до infrastructure.
+State-machine/unit tests before infrastructure.
 
-**Не добавлять Playwright.**
+**No Playwright yet.**
 
 ---
 
-# Patch B2 — PostgreSQL BrowserSession persistence
+# B2 — PostgreSQL BrowserSession persistence
 
-Alembic migration:
+Alembic `browser_sessions` according v0.4/resource design.
 
-```text
-browser_sessions
-```
-
-Минимум fields/indexes согласно `README.md`.
-
-Repository:
+Repository supports:
 
 - create `creating`;
-- CAS revision updates;
-- get owner-scoped;
-- list stale creating/expiring/worker generation sessions;
-- mark ready/closing/closed/failed/lost/expired;
-- no hidden commits.
+- owner get;
+- CAS revision transitions;
+- stale creating/expiry/worker-generation queries;
+- ready/closing/closed/failed/lost/expired;
+- no hidden commit.
 
 Race tests:
 
-- double terminal transition;
+- double terminal;
 - stale revision;
 - close vs expiry;
-- loss vs late ready.
-
-**Gate:** lifecycle persistence deterministic.
+- worker loss vs late ready.
 
 ---
 
-# Patch B3 — Browser Worker internal authentication and registration
+# B3 — Browser Worker identity/auth/registration
 
-Создать Browser Worker entrypoint **без Playwright session execution пока**.
+Create Browser Worker entrypoint without real browser session.
 
-Реализовать internal service principal/config отдельно от external Bearer clients.
+Implement internal trusted service identity separate from external Bearer clients.
 
-Control Plane internal endpoints/application operations:
+Control Plane operations:
 
-- register worker;
-- heartbeat worker;
-- optional drain state transition/status.
+```text
+register
+heartbeat
+status/drain admission
+```
 
-Validate advertised endpoint:
-
-- internal scheme/address policy;
-- allowed port/network;
-- generation/runtime revision.
+Validate worker endpoint/network/runtime revision/generation.
 
 Redis worker registry TTL.
 
-Tests:
-
-- invalid credential;
-- malicious external endpoint;
-- restart same worker_id/new generation;
-- TTL.
+Tests invalid auth, external endpoint, restart generation, TTL.
 
 ---
 
-# Patch B4 — Worker lease/self-fencing + placement
+# B4 — Lease/self-fencing/placement
 
-Реализовать ADR-0009:
+Implement ADR-0009:
 
-- heartbeat loop;
-- lease tracking;
-- self-fenced state;
+- heartbeat;
+- worker lease;
+- self-fence;
 - final loss grace;
-- Redis route registry/cache;
-- DB authoritative owner coordinates;
-- placement among ready workers;
-- local final capacity rejection.
-
-Пока worker create_session может быть fake/test executor.
-
-Multi-replica integration tests:
-
-- Redis flush/rebuild;
-- temporary partition/recover;
-- stale generation;
-- capacity race;
+- DB authoritative `worker_id+generation`;
+- Redis route cache;
+- ready-worker placement;
+- capacity rejection;
 - drain excludes worker.
 
-**Gate:** routing correct before real browser state exists.
+Multi-replica Redis loss/flush/partition/stale generation/capacity tests.
 
 ---
 
-# Patch B5 — Browser Worker direct RPC protocol
+# B5 — Direct internal Browser Worker RPC
 
-Реализовать ADR-0001:
+Implement ADR-0001.
 
-Control Plane → owning worker authenticated internal HTTP/RPC.
-
-Operations internal minimum:
+Internal minimum:
 
 ```text
 create session
 session status
 execute action
-get action status
+get same action status
 close session
-artifact stream/status as required
+artifact stream/status
 ```
 
 Requirements:
 
-- bounded bodies;
-- deadline propagation;
-- operation/action IDs;
 - internal auth;
 - generation/session validation;
+- bounded request/result;
+- propagated deadlines;
+- action IDs;
 - normalized internal errors;
-- no Redis action queue.
+- no Redis action bus.
 
-Add response-loss simulation tests with fake session executor.
+Response-loss simulation with fake executor required.
 
 ---
 
-# Patch B6 — Session subprocess supervisor protocol
+# B6 — Session subprocess supervisor
 
-Реализовать ADR-0013 **до Playwright actions**.
+Implement ADR-0013 before Playwright.
 
 Supervisor:
 
 - `asyncio.create_subprocess_exec`, no shell;
-- generated session temp root;
-- minimal environment allowlist;
-- process group/session semantics;
+- session-private temp root;
+- minimal env allowlist;
+- separate process group/session;
 - length-prefixed UTF-8 JSON frames;
-- 1 MiB command / 2 MiB result initial ceilings;
-- stderr separate diagnostics;
-- bounded read/write/deadline;
+- command <=1 MiB / result <=2 MiB baseline;
+- stderr diagnostics separate;
+- bounded I/O/deadline;
 - graceful close → terminate → kill → reap;
-- startup stale temp cleanup.
+- stale temp cleanup.
 
-Сделать fake child entrypoint, который:
-
-- отвечает ping;
-- симулирует hang;
-- crash;
-- malformed/oversized frame;
-- delayed result.
-
-**Gate:** supervisor process lifecycle доказан без Playwright.
+Fake child tests hang/crash/malformed/oversized/delayed frames.
 
 ---
 
-# Patch B7 — Browser egress gateway reference deployment
+# B7 — Browser egress boundary
 
-Реализовать ADR-0014 infrastructure before allowing real arbitrary browsing.
+Implement ADR-0014 before arbitrary browsing.
 
-Reference Compose:
+Reference topology:
 
 ```text
-browser-control internal network
-browser-egress network
-egress proxy/gateway
-Browser Worker without direct Internet route
+Browser Worker/session child
+(no direct Internet route)
+→ explicit forward proxy/gateway
+→ public Internet
 ```
 
-Выбрать и **pin** конкретный maintained forward-proxy image/config during implementation review.
+Gateway denies private/loopback/link-local/reserved/internal/metadata destinations and unsupported ports.
 
-Proxy policy:
+No direct fallback when egress gateway unavailable.
 
-- public-only destinations;
-- ports 80/443 baseline;
-- deny loopback/private/link-local/reserved/internal/metadata;
-- no direct fallback.
-
-Controlled network tests must pass before Playwright browsing enabled.
-
-**Release blocker:** если reference proxy не может доказуемо enforce destination policy, заменить implementation, а не ослаблять ADR.
+Controlled network tests are release blocker before B8 real browsing.
 
 ---
 
-# Patch B8 — Playwright session runtime foundation
-
-Добавить Playwright dependency/browser image.
+# B8 — Playwright session child foundation
 
 Session child:
 
 ```text
 start Playwright
-→ launch Chromium with server-controlled profile/proxy
-→ new non-persistent context
-→ initial blank page
-→ return page_id
+→ launch dedicated Chromium through controlled proxy
+→ non-persistent BrowserContext
+→ initial blank Page
+→ PageId
 ```
 
-Requirements:
+Rules:
 
-- one child → one Chromium;
+- one logical session = one child = one Chromium;
 - headless baseline;
-- sandbox enabled in supported production topology;
-- no client launch args;
-- no persistent profile;
-- no extensions;
-- explicit egress proxy;
-- no internal credentials in child env.
+- sandbox/security not silently disabled;
+- no client launch args/proxy/profile/extensions/CDP;
+- no internal credentials child-side.
 
-Tests:
-
-- two sessions → two children/two Chromium;
-- cookie/storage isolation;
-- public site fixture works through proxy;
-- private target blocked;
-- child kill does not affect sibling.
+Isolation/egress/kill tests with sibling sessions.
 
 ---
 
-# Patch B9 — Real BrowserSession create/close/reconciler
+# B9 — Real session create/close/reconciler
 
 Connect B2–B8.
 
-Create protocol exactly follows v0.4 README.
+Create protocol follows Browser design.
 
-Implement reconciler for:
+Reconcile:
 
-- stale `creating` with worker child created;
-- worker generation loss;
-- `closing` stuck;
+- stale creating/orphan child;
+- lost worker generation;
+- stuck closing;
 - idle/max expiry;
-- child disappeared.
+- disappeared child.
 
-Close:
+Close idempotent; capacity released only after child reap/required cleanup.
 
-- idempotent application semantics;
-- capacity slot release only after reap;
-- forced kill observable.
+Fault windows:
 
-Fault injection:
-
-- Control Plane crash after child create before DB ready;
+- child created before DB ready crash;
 - response loss after ready commit;
-- worker crash during create/close.
+- worker crash create/close.
 
 ---
 
-# Patch B10 — Pages, generations and events
+# B10 — Pages/generations/event buffer
 
-Session child registry:
+Implement:
 
-- page IDs;
-- initial page;
+- initial Page;
+- opaque PageIds;
+- page create/close/list;
 - navigate;
-- popup/new page events;
-- page close;
+- popup/new-page events;
 - page generation;
-- active/default page convenience only, backend actions remain unambiguous.
+- bounded sequenced event log/gap indicator.
 
-Implement bounded event buffer with sequence/gap metadata.
+No required hidden active page.
 
-Navigation invalidates old generation snapshot refs.
+Closing last page rejected.
 
-Tests for SPA/navigation/popups/page close.
+Navigation/document replacement invalidates old refs.
 
 ---
 
-# Patch B11 — Semantic snapshot + ElementRef
+# B11 — Semantic snapshot + exact ElementRef
 
-Реализовать ADR-0010.
+Implement ADR-0010:
 
-Do not start with public CSS/XPath.
+```text
+semantic/ARIA snapshot
+→ bounded ref inventory
+→ private locator recipe
+→ snapshot-time ElementHandle anchor
+```
 
-Pipeline:
+Action resolution:
 
-1. semantic/ARIA-oriented snapshot;
-2. bounded actionable inventory;
-3. `element_ref` generation;
-4. private locator recipe;
-5. snapshot-time ElementHandle anchor;
-6. retention/TTL;
-7. handle dispose on eviction/navigation/close.
+```text
+re-resolve Locator
+→ exactly one candidate
+→ exact DOM identity == anchor
+→ actionability
+```
 
-Action resolution exact identity tests:
+Tests:
 
-- same node still works;
-- identical replacement becomes stale;
-- ambiguous locator rejected;
+- same node;
+- identical replacement stale;
+- ambiguous;
 - iframe;
 - representative shadow DOM;
-- max refs/snapshot;
-- huge snapshot Content fallback.
+- snapshot/ref limits;
+- huge snapshot Content fallback;
+- ref disposal on eviction/navigation/close.
 
-**Gate:** no heuristic retargeting.
+No heuristic retargeting.
 
 ---
 
-# Patch B12 — Typed browser interactions + action ledger
+# B12 — Action ledger + core interaction primitives
 
-Implement typed actions incrementally:
-
-1. click;
-2. fill form;
-3. select;
-4. check/uncheck;
-5. press key;
-6. type text;
-7. additional justified interactions.
-
-Use Locator actionability.
-
-Implement supervisor recent action ledger/status recovery:
+Implement per-session serialized queue and action ledger first:
 
 ```text
 received
-dispatched
-running
-terminal
-unknown
+→ dispatched
+→ running
+→ terminal | unknown
 ```
 
-Response-loss tests must prove click/submit not executed twice.
+Then typed actions in this order:
 
-No `force` baseline.
+1. click;
+2. fill form;
+3. type;
+4. structured press key;
+5. hover;
+6. drag;
+7. scroll;
+8. wait.
+
+Rules from exact contracts:
+
+- no selectors/coordinates/force/JS;
+- fill-form sequential **fail-fast**, remaining `not_attempted`;
+- select/check/radio are typed values inside fill-form, not separate MCP intents;
+- press uses structured named/character key + modifiers;
+- scroll uses direction + viewport units, optional scrollable ElementRef;
+- scroll does not auto-snapshot;
+- wait typed/bounded, no JS/networkidle semantic shortcut.
+
+Response-loss tests prove no second click/press/scroll etc. after uncertain dispatch.
 
 ---
 
-# Patch B13 — Dialogs
+# B13 — Dialog policy
 
 Implement ADR-0011:
 
 - default dismiss-and-report;
 - per-action accept/dismiss;
-- prompt text validation;
-- async dialogs auto-dismiss;
-- max dialogs/action;
-- bounded events.
+- prompt text only accept;
+- async dialog auto-dismiss/report;
+- bounded dialogs/action.
 
-Test beforeunload and response-loss/unknown semantics.
-
----
-
-# Patch B14 — Content artifacts
-
-Implement Browser → Content handoff for:
-
-- screenshot;
-- rendered HTML/content;
-- downloads;
-- upload materialization from ContentRef.
-
-Rules:
-
-- child only writes generated session temp;
-- no arbitrary paths;
-- no ContentStore credential child-side;
-- large artifact streamed, not JSON/base64;
-- Content uses v0.3 `creating → available` protocol;
-- temp deleted after acknowledgement;
-- Content survives BrowserSession close.
-
-Fault tests at every handoff phase.
+Test beforeunload/dialog interaction with action outcome recovery.
 
 ---
 
-# Patch B15 — Browser diagnostics/events surface
+# B14 — Browser → Content artifacts
 
-Add bounded useful diagnostics:
+Implement:
 
-- selected console;
+```text
+screenshot
+rendered page content
+downloads
+```
+
+Flow:
+
+```text
+child private temp
+→ supervisor validate/stream
+→ Control Plane Content ingest/finalize
+→ ContentRef
+→ temp delete after ack
+```
+
+No base64 giant result, no child ContentStore credentials/path leakage.
+
+Artifact creation participates in Content quota/lifecycle and conservative retry semantics ADR-0024.
+
+Fault tests each handoff crash window.
+
+---
+
+# B15 — Content → Browser multi-file upload
+
+After artifact/content handoff exists, implement file-input upload:
+
+```text
+owner-authorized ContentIds[]
+→ bounded temporary materialization
+→ file input ElementRef
+→ Playwright set input files
+```
+
+Exact rules:
+
+- MCP 1..16 ContentIds;
+- REST 1..32;
+- target supporting `multiple` required when >1;
+- no silent truncation;
+- no local host path;
+- temp cleanup;
+- action recovery/no blind retry.
+
+---
+
+# B16 — Browser diagnostics/events
+
+Expose bounded:
+
+- console;
 - request/response failures;
 - egress denies;
-- browser disconnect;
-- downloads/dialogs/popups.
+- dialogs/downloads/popups;
+- browser disconnect/lifecycle.
 
-Do not implement unbounded network recorder/HAR baseline.
+No unbounded HAR/network recording baseline.
 
 Sensitive values redacted.
 
 ---
 
-# Patch B16 — REST facade
+# B17 — REST Browser facade
 
-Only now add public Browser REST projection.
+Only after runtime/actions/artifacts stable.
 
-Use application services; routers never call Playwright/supervisor directly.
+Implement exactly from:
 
-Implement typed session/page/action/content/event endpoints according `rest-api.md`.
+```text
+../../contracts/browser-api-v1.md
+../../contracts/common-models.md
+```
 
-Requirements:
+Routers call application services only.
 
-- owner/scopes;
-- operation envelopes/errors;
-- no internal worker endpoint/process fields;
-- no raw Playwright types;
-- OpenAPI schema tests;
-- negative auth/owner tests.
+Tests:
+
+- auth/owner;
+- exact OpenAPI unions/bounds;
+- page/session lifecycle;
+- snapshot refs;
+- scroll;
+- fail-fast form;
+- structured press;
+- multi-upload;
+- unknown/retry projection;
+- no raw Playwright/internal worker fields.
 
 ---
 
-# Patch B17 — MCP facade
+# B18 — MCP Browser facade
 
-Implement only LLM-useful compact tools from approved catalog.
-
-Requirements:
-
-- Russian tool/field descriptions;
-- every public nested field documented;
-- no `*_many` stateful variants;
-- no selectors;
-- `element_ref` targeting;
-- accurate annotations/retry class;
-- structured hints/errors;
-- no authentication secret argument;
-- actual FastMCP schema extracted/tested.
-
-Before merge review catalog against real agent workflow:
+Implement only Browser subset of:
 
 ```text
-mcp_list_tools
-→ description sufficient for discovery
-→ mcp_get_tool_schema
-→ arguments understandable without guesswork
+../../contracts/mcp-tools.md
+```
+
+Current semantic Browser tools include explicit:
+
+```text
+browser_scroll
+```
+
+and use:
+
+- Russian descriptions;
+- exact bounds/unions;
+- no selectors;
+- one stable execution class/tool;
+- ADR-0024 conservative resource/side-effect retry metadata;
+- actual FastMCP schema tests.
+
+Agent workflow test:
+
+```text
+list tools
+→ description chooses tool
+→ get schema
+→ arguments understandable
+→ result/hints/resources usable
 ```
 
 ---
 
-# Patch B18 — TTL/reaper/drain hardening
+# B19 — TTL/reaper/drain race hardening
 
-Run real timing/race matrix:
+Matrix:
 
-- idle expiry while action queued/running;
-- explicit close vs expiry;
-- worker self-fence vs incoming action;
-- rolling drain;
-- worker crash;
+- expiry while action queued/running;
+- close vs expiry;
+- self-fence vs incoming action;
+- worker drain/restart;
 - proxy outage;
 - Redis loss;
-- Control Plane replica restart.
+- Control Plane replica restart;
+- child crash during action/artifact/upload.
 
-No resource may depend on MCP connection lifetime.
+No Browser resource depends on MCP connection lifetime.
 
 ---
 
-# Patch B19 — Security audit
+# B20 — Security audit
 
-Mandatory checks:
+Mandatory:
 
-- private IPv4/IPv6 blocked;
-- metadata/link-local blocked;
-- DNS rebinding fixture blocked at gateway;
-- WebSocket direct/internal blocked;
+- private IPv4/IPv6/metadata blocked;
+- DNS rebinding controlled fixture blocked by egress boundary;
 - direct worker Internet route absent;
+- WebSocket/internal access tested under gateway policy;
 - proxy failure no fallback;
-- child env credential scan;
-- temp path traversal;
+- child env secret scan;
+- temp/path traversal;
 - upload ownership;
 - malformed IPC;
-- browser dialog/page text untrusted;
-- no arbitrary schemes;
-- no raw secrets/log leaks.
+- untrusted browser/dialog/event text;
+- no raw scheme/selector/JS escape.
 
 ---
 
-# Patch B20 — Soak/load/fault roast
+# B21 — Soak/load/fault roast
 
-Run dedicated Browser roast:
+Run:
 
-- thousands create/close cycles;
-- forced kill cycles;
-- repeated navigation/snapshot/action;
-- popup/dialog/download loops;
-- worker restart/drain loops;
+- thousands create/close;
+- forced kill;
+- repeated navigate/snapshot/action/scroll;
+- long/lazy page exploration;
+- popup/dialog/download/upload loops;
+- worker restart/drain;
 - multi-worker placement;
 - response-loss injection;
-- memory/process/temp leak checks.
+- memory/process/temp/ref leak checks.
 
 Measure:
 
@@ -537,49 +541,53 @@ session launch p50/p95/p99
 RAM/session
 action latency
 snapshot latency/size
+scroll/snapshot workflow latency
 max stable sessions/worker
-forced cleanup time
-drain time
+forced cleanup/drain time
 ```
 
-Do **not** optimize to shared Chromium as part of v0.4. Measurements only inform future ADR.
+Do not optimize to shared Chromium in v0.4.
 
 ---
 
-# Patch B21 — Documentation/acceptance closure
+# B22 — Documentation/acceptance closure
 
-Before marking v0.4 complete:
+Before v0.4 complete:
 
-1. actual code layout matches dependency rules;
-2. all ADR acceptance tests represented;
-3. actual OpenAPI reviewed;
-4. actual MCP schemas reviewed;
-5. README/version status updated;
-6. `current.md` updated with evidence;
-7. release gates recorded;
-8. unresolved defects/flakes explicitly listed;
-9. no «temporary» single-process Browser shortcut remains.
+1. code layout respects dependency rules;
+2. ADR tests represented;
+3. actual Browser OpenAPI matches exact contract;
+4. actual FastMCP Browser schemas match exact contract;
+5. retry metadata matches ADR-0024;
+6. scroll/fail-fast/key/multi-upload tested;
+7. current/version status updated only from factual evidence;
+8. release gates recorded;
+9. no single-process/selector/direct-egress shortcut remains.
 
 ---
 
 # Forbidden shortcuts
 
-Codex/implementation must not:
+Do not:
 
-- instantiate Playwright inside FastAPI request handler;
-- keep all BrowserContexts directly in Control Plane memory;
-- use Redis queue as Browser action bus;
-- use one global Chromium process baseline;
-- retry click after timeout without action status recovery;
-- expose CSS/XPath because ElementRef is harder;
-- allow direct Browser Worker Internet egress instead of proxy/gateway;
-- give Browser child DB/Redis/ContentStore credentials;
-- store downloads only in browser temp and call operation successful without Content handoff when durable result expected;
-- launch Browser automatically from Retrieval;
-- weaken tests because browser cases are flaky.
+- run Playwright in FastAPI handler;
+- store authoritative BrowserContexts in Control Plane RAM;
+- use Redis action queue;
+- share one global Chromium baseline;
+- retry stateful action after timeout without same-action status recovery;
+- omit `browser_scroll` and compensate by hidden snapshot scrolling;
+- expose CSS/XPath/JS because ElementRef is harder;
+- keep separate select/check MCP aliases instead of exact fill-form contract;
+- accept free-form keyboard shortcuts instead of structured key model;
+- truncate multi-file upload silently;
+- bypass egress gateway;
+- give child DB/Redis/ContentStore/provider secrets;
+- mark artifact success before Content handoff where durable result expected;
+- auto-launch Browser from Retrieval;
+- weaken flaky Browser tests.
 
 ---
 
 # Final acceptance
 
-Implementation sequence считается завершённой только когда все criteria из `README.md` и applicable release gates доказаны automated tests + controlled integration/soak evidence.
+Implementation sequence complete only when v0.4 README/Browser design/exact contracts and applicable Browser/security/race/soak/schema gates are proven by automated + controlled integration evidence.
