@@ -4,416 +4,316 @@
 
 `ready for implementation`
 
-Версия добавляет полноценную stateful Browser capability поверх v0.1 Foundation и v0.3 Content Core.
+Version добавляет полноценную stateful Browser capability поверх accepted v0.1 Foundation и v0.3 Retrieval/Content Core.
 
-Подробный порядок реализации: `implementation-sequence.md`.
-
-Точный MCP catalog **не дублируется** в этом version README. Канонические владельцы public MCP surface: `../../mcp.md`, ADR-0021 и ADR-0022.
+Implementation order: `implementation-sequence.md`.
 
 ---
 
 # 1. Цель
 
-После v0.4 backend/REST/MCP должны поддерживать explicit browser workflow:
+После v0.4 backend/REST/MCP поддерживают explicit workflow:
 
 ```text
 create BrowserSession
-→ navigate
-→ semantic snapshot
-→ typed interactions
+→ explicit navigation
+→ semantic snapshot / ElementRefs
+→ typed interactions / scroll / wait
 → pages/popups/dialogs
-→ screenshots/rendered content/downloads/uploads
-→ explicit close / server expiry
+→ screenshot/rendered Content/download/upload
+→ explicit close or server expiry
 ```
 
 с:
 
-- отдельным Browser Worker runtime;
 - multi-replica Control Plane routing;
-- отдельным session subprocess на BrowserSession;
-- отдельным Chromium process на BrowserSession;
-- exact snapshot-scoped element refs;
-- serialized session actions;
-- action result/status recovery;
-- first-class `unknown` outcome;
-- Content artifact handoff;
-- TTL/reaper;
-- worker self-fencing;
-- public-only browser egress boundary.
+- separate Browser Worker supervisor;
+- one session subprocess + dedicated Chromium per BrowserSession;
+- session action serialization;
+- exact stale-safe refs;
+- action result recovery/`unknown`;
+- Content artifact boundary;
+- TTL/reaper/drain;
+- self-fencing worker lease;
+- public-only egress gateway.
 
 ---
 
-# 2. Canonical design / ADR
+# 2. Canonical design/contracts
+
+Semantic:
 
 - `../../browser.md`;
 - `../../resource-model.md`;
 - `../../security.md`;
 - `../../runtime-topology.md`;
 - `../../rest-api.md`;
-- `../../mcp.md`;
-- ADR-0001 Browser Worker direct RPC;
-- ADR-0009 worker registry/lease/fencing;
-- ADR-0010 snapshot/ElementRef;
-- ADR-0011 dialog policy;
-- ADR-0012 separate Chromium per session;
-- ADR-0013 session subprocess ownership/kill boundary;
-- ADR-0014 browser egress proxy/gateway;
-- ADR-0022 public MCP catalog freeze candidate.
+- `../../mcp.md`.
 
-При process-management conflict между ADR-0012 и ADR-0013 приоритет имеет ADR-0013.
+Exact facade:
 
----
+- `../../contracts/browser-api-v1.md`;
+- Browser subset `../../contracts/mcp-tools.md`;
+- `../../contracts/common-models.md`.
 
-# 3. Explicit non-goals
-
-- persistent browser profiles/cookies;
-- credential vault/autologin;
-- arbitrary JS evaluation для обычного agent;
-- CSS/XPath normal MCP targeting;
-- stealth/fingerprint evasion;
-- CAPTCHA bypass;
-- proxy rotation/client-supplied proxy;
-- durable browser workflow;
-- live BrowserSession migration/failover;
-- automatic Browser fallback from Retrieval;
-- OCR/VLM/screenshot semantic reasoning;
-- shared Chromium pool optimization;
-- browser extensions/remote desktop.
-
----
-
-# 4. Runtime topology
+ADR:
 
 ```text
-Control Plane replica(s)
-        │
-        │ authenticated direct internal HTTP/RPC
+0001 direct Browser Worker RPC
+0009 worker registry/lease/fencing
+0010 snapshot/ElementRef
+0011 dialog policy
+0012 dedicated Chromium invariant (partially superseded)
+0013 session subprocess ownership/kill boundary
+0014 browser egress gateway
+0024 resource/side-effect-aware retry
+0025 explicit scroll
+```
+
+При conflict ADR-0012 process ownership с ADR-0013 приоритет ADR-0013.
+
+---
+
+# 3. Non-goals
+
+- persistent browser profiles/cookies across sessions;
+- credential vault/autologin;
+- arbitrary JS evaluate;
+- CSS/XPath ordinary MCP targeting;
+- raw Playwright/CDP public API;
+- CAPTCHA/stealth/fingerprint bypass;
+- client-supplied proxy rotation;
+- durable browser workflow;
+- live session migration;
+- automatic Retrieval→Browser fallback;
+- OCR/VLM visual reasoning;
+- shared Chromium pool optimization;
+- remote desktop.
+
+---
+
+# 4. Runtime ownership
+
+```text
+Control Plane replicas
+        │ authenticated direct internal RPC
         ▼
 Browser Worker supervisor
         │
-        ├── BrowserSession subprocess A
-        │      └── Playwright → Chromium A → BrowserContext → Pages
-        └── BrowserSession subprocess B
-               └── Playwright → Chromium B → BrowserContext → Pages
+        ├── session child A → Playwright → Chromium A
+        └── session child B → Playwright → Chromium B
 
 Chromium
-→ explicit Browser Egress Proxy/Gateway
+→ controlled Browser Egress Gateway
 → public Internet
 ```
 
-Browser Worker has no direct public Internet route baseline.
+BrowserSession metadata durable in PostgreSQL; Pages/snapshots/ElementRefs live in owning session child.
+
+Redis only worker registry/route cache/coordination.
 
 ---
 
-# 5. BrowserSession durable metadata
-
-PostgreSQL `browser_sessions` stores owner/lifecycle/routing coordinates, conceptually:
+# 5. BrowserSession lifecycle
 
 ```text
-session_id
-owner_principal_id
-state
-revision
-worker_id | null
-worker_generation | null
-created/updated/ready/last_activity timestamps
-idle/max expiry
-closing/terminal timestamps
-failure/loss metadata
-creation operation ID
-```
-
-Pages/snapshots/ElementRefs are live runtime children and are not durable PostgreSQL resources baseline.
-
----
-
-# 6. Session lifecycle
-
-```text
-creating
-→ ready
-→ closing
-→ closed
-```
-
-Alternative terminal:
-
-```text
+creating → ready → closing → closed
 creating → failed
 ready/closing → lost
 ready → expired
 ```
 
-No automatic resurrection.
+No automatic resurrection/migration.
 
-MCP/HTTP transport reconnect does not affect session lifecycle.
+MCP/HTTP connection close does not close BrowserSession.
 
 ---
 
-# 7. Worker routing
+# 6. Worker generation/lease
 
-PostgreSQL is authoritative for:
+PostgreSQL stores authoritative:
 
 ```text
 worker_id
 worker_generation
 ```
 
-Redis holds ephemeral worker registry/route cache.
+Worker heartbeat/lease/self-fencing follows ADR-0009.
 
-Worker:
-
-- heartbeats to Control Plane;
-- has generation changing on restart;
-- self-fences after lease loss;
-- stops new sessions while draining.
-
-Initial direction:
+Reference direction:
 
 ```text
-heartbeat = 5 s
-lease TTL = 20 s
-final loss grace = 30 s
+heartbeat ~5 s
+lease ~20 s
+final loss grace ~30 s
 ```
 
-Configurable with validated relationship.
+validated/configurable.
 
-No live migration of BrowserSession to another generation.
+Stale generation cannot accept/revive work.
 
 ---
 
-# 8. Session process boundary
-
-Canonical invariant:
+# 7. Session process boundary
 
 ```text
 1 BrowserSession
-→ 1 session subprocess
+→ 1 Python session subprocess
 → 1 Playwright runtime
-→ 1 Chromium process
-→ 1 non-persistent BrowserContext
-→ N Pages
+→ 1 Chromium
+→ 1 non-persistent context
+→ <= bounded Pages
 ```
 
-Session subprocess owns all live Playwright objects and snapshot handles.
+Child has no DB/Redis/provider/ContentStore/external auth credentials.
 
-Supervisor owns:
-
-- process lifecycle;
-- capacity;
-- internal RPC;
-- routing to child;
-- artifact forwarding;
-- drain/reaping.
-
-Child receives no PostgreSQL/Redis/Search provider/ContentStore/external auth secrets.
+Supervisor can cooperative-close, terminate, hard-kill/reap entire session process tree without private Playwright PID hacks.
 
 ---
 
-# 9. Supervisor ↔ child protocol
-
-ADR-0013 baseline:
-
-```text
-async subprocess stdin/stdout
-→ length-prefixed UTF-8 JSON frames
-```
-
-Initial ceilings:
-
-```text
-command <= 1 MiB
-result <= 2 MiB
-```
-
-No pickle.
-
-Large snapshot/artifact externalized through Content boundary.
-
-Child stderr is diagnostics, not protocol stream.
-
----
-
-# 10. Process cleanup
-
-Browser Worker must be able to:
-
-```text
-cooperative close
-→ bounded grace
-→ terminate session subprocess
-→ bounded grace
-→ hard-kill process tree if needed
-→ reap
-→ temp cleanup
-```
-
-No reliance on private Playwright Chromium PID APIs.
-
-Production worker uses init/subreaper/process-group semantics preventing orphan Chromium.
-
-Capacity slot releases only after child reap/required cleanup.
-
----
-
-# 11. Initial capacity/lifetime profile
-
-Initial defaults:
+# 8. Initial capacity/lifetime direction
 
 ```text
 max sessions/worker = 4
 max pages/session = 8
 max pending actions/session = 16
-
 idle TTL = 5 min
-maximum lifetime = 30 min
+max lifetime = 30 min
 create timeout = 30 s
 close graceful deadline = 10 s
 ```
 
-These are measured/tunable operational defaults, not universal constants.
+Tunable from measurements within hard ceilings.
 
 ---
 
-# 12. Page identity
+# 9. Page identity/state
 
-Each page/tab/popup gets opaque:
+Each page/popup gets opaque PageId.
 
-```text
-page_id = pg_<uuid4hex>
-```
+Initial blank page created with session.
 
-Initial blank page is created with session.
+No hidden active-tab requirement in public facade; actions use explicit `page_id`.
 
-Navigation is always explicit separate operation.
+Closing final remaining page rejected; whole session closes via session operation.
 
-There is no required hidden “active page” state in public MCP freeze; page actions accept explicit `page_id`.
+`page_generation` invalidates old snapshot refs after document replacement/navigation.
 
 ---
 
-# 13. Session action serialization
+# 10. Action lane/recovery
 
-One BrowserSession has one logical serial lane.
+One logical serialized action lane per BrowserSession.
 
-Different sessions run concurrently.
+Different sessions parallel.
 
-This protects ordering for:
+Internal `action_id` + ledger/status recovery:
 
-- cookies/storage;
-- page/navigation state;
-- dialogs/popups;
-- snapshot/ref validity;
-- action recovery/cancellation.
+```text
+response lost
+→ query same action ID
+→ known terminal → recover result
+→ running → same execution
+→ impossible to prove after possible side effect → unknown
+```
 
-No parallel mutating commands inside same session baseline.
+Never blind retry a new stateful action call.
 
 ---
 
-# 14. Action identity / recovery
+# 11. Snapshot/ElementRef
 
-Internal:
-
-```text
-action_id = act_<uuid4hex>
-```
-
-If Control Plane loses worker response:
+Bounded semantic/ARIA-oriented snapshot:
 
 ```text
-query same action_id
-→ terminal known → return same result
-→ still running → same execution
-→ outcome cannot be proven after possible side effect → unknown
+snapshot_id
+page_generation
+semantic view
+element_refs <= bounded count
+optional ContentRef for externalized large view
 ```
 
-Never retry click/fill/press/navigation blindly.
-
----
-
-# 15. Snapshot / ElementRef
-
-Snapshot:
-
-- semantic/ARIA-oriented;
-- bounded;
-- actionable inventory;
-- `snapshot_id`;
-- `page_generation`;
-- explicit `element_ref`s;
-- optional full ContentRef for large representation.
-
-ElementRef exact strategy ADR-0010:
+ADR-0010 exact target identity:
 
 ```text
-element_ref
-→ private LocatorRecipe + original ElementHandle
-→ re-resolve Locator
-→ exactly one candidate
-→ compare exact DOM node identity
-→ Locator actionability
-→ action
+ref
+→ private locator recipe + original ElementHandle
+→ re-resolve Locator exactly
+→ DOM identity comparison
+→ actionability
 ```
 
-Replacement node is `stale_target`; no fuzzy retargeting.
+Replacement node = `stale_target`; no fuzzy retargeting.
 
-Initial:
+Baseline:
 
 ```text
 3 snapshots/page
-5 min ref TTL
+ref TTL 5 min
 300 refs/snapshot
-MCP inline snapshot <= 30k chars
-REST inline default <= 100k chars
-backend hard generation <= 256k chars
+MCP inline 30k chars
+REST inline 100k chars
+backend generation hard 256k chars
 ```
 
 ---
 
-# 16. Browser actions
+# 12. Browser interaction surface
 
-Backend supports typed semantic operations, including:
+Backend supports typed:
 
-- navigation;
-- page create/close/list;
-- snapshot;
-- click;
-- form fill;
-- typing/key press;
-- hover/drag/wait where justified;
-- screenshot;
-- rendered content;
-- upload/download artifact handling;
-- bounded events/diagnostics.
+```text
+navigate
+page list/create/close
+snapshot
+click
+fill form
+type
+structured key press
+hover
+drag
+scroll
+wait
+screenshot
+rendered content
+events
+download artifacts
+multi-file upload from ContentRefs
+```
 
-The **exact MCP decomposition** follows ADR-0022, not this README.
+Important exact semantics:
 
-No arbitrary Playwright code/selector ordinary facade.
+- fill form sequential fail-fast, later fields `not_attempted`;
+- select/check/radio encoded as typed form values, not separate MCP aliases;
+- press uses structured key+modifiers;
+- scroll is explicit viewport-relative action, optional scrollable ElementRef;
+- scroll never auto-snapshot;
+- no arbitrary selectors/coordinates/JS;
+- upload supports multiple ContentRefs only when target control supports multiple.
 
 ---
 
-# 17. Dialogs
+# 13. Dialogs
 
-ADR-0011:
-
-Default unexpected dialog:
+Default:
 
 ```text
 dismiss + report
 ```
 
-Per-action explicit accept/dismiss may be requested where schema supports it.
+Per action explicit accept/dismiss where schema supports it.
 
-Prompt text only with explicit accept.
+Prompt text only accept.
 
-Async dialog outside active action auto-dismissed and recorded.
+Unexpected async dialog auto-dismissed/recorded.
 
-Initial max dialogs/action = 5.
+Bounded dialogs/action.
 
 ---
 
-# 18. Content artifacts
+# 14. Artifacts/Content
 
-Browser-generated:
+Browser generated:
 
 ```text
 screenshot
@@ -421,161 +321,115 @@ rendered HTML/content
 download
 ```
 
-must cross Content lifecycle:
+flows through Content lifecycle before durable handoff.
+
+Upload reverse flow:
 
 ```text
-session temp artifact
-→ supervisor validates/streams
-→ Control Plane Content ingest
-→ ContentObject available
-→ child temp delete
-```
-
-Upload is reverse:
-
-```text
-owner-authorized ContentRef
-→ bounded internal materialization
+owner-authorized ContentRefs
+→ bounded session-private materialization
 → file input
 ```
 
-No host path/client ContentStore access.
+No host path, no ContentStore credentials child-side.
 
-Content survives BrowserSession close.
+Finalized Content survives BrowserSession close.
 
 ---
 
-# 19. Browser egress security
+# 15. Browser egress
 
-ADR-0014:
+Website traffic:
 
 ```text
-Browser Worker/session child
+session child/Chromium
 (no direct Internet route)
-→ explicit forward proxy/gateway
+→ forward proxy/gateway
 → public Internet
 ```
 
-Gateway denies private/loopback/link-local/reserved/internal/cloud-metadata destinations.
+Gateway denies loopback/private/link-local/reserved/internal/metadata destinations.
 
-Baseline public ports 80/443.
+No direct fallback if gateway unavailable.
 
-No direct fallback if proxy unavailable.
-
-Top-level navigation only `http`/`https`.
-
-Application interception is defense in depth, not sole SSRF boundary.
+Top-level URL HTTP(S) only.
 
 ---
 
-# 20. Worker drain/loss
+# 16. Public facades
 
-Drain:
-
-1. advertise draining/no new sessions;
-2. bounded close children;
-3. force terminate remaining after deadline;
-4. ensure zero children;
-5. worker exits.
-
-Worker generation lost after lease/grace:
+REST exact owner:
 
 ```text
-live sessions → lost
+../../contracts/browser-api-v1.md
 ```
 
-Late stale worker cannot resurrect them.
+MCP semantic/exact owners:
+
+```text
+../../mcp.md
+../../contracts/mcp-tools.md
+```
+
+Current overall MCP freeze candidate = 28 tools; v0.4 implements only Browser subset.
+
+Version docs do not invent alternate public catalog.
 
 ---
 
-# 21. REST projection
+# 17. Retry/resource semantics
 
-REST exposes rich typed Browser API according `rest-api.md`:
+ADR-0024 applies.
 
-- session lifecycle;
-- pages;
-- navigation/snapshot/actions;
-- events;
-- screenshot/rendered content/upload/download artifacts;
-- authorized diagnostics.
+Pure observations such as snapshot/events/status can be safe reads.
 
-No raw Playwright API/internal worker endpoint/PID.
+Artifact/resource-producing operations such as rendered Content/screenshot are not blind replay safe after uncertain response merely because target website was not mutated.
+
+Stateful interactions/navigation/scroll/upload are never automatic retry after dispatch uncertainty.
 
 ---
 
-# 22. MCP projection
+# 18. Required evidence
 
-Current canonical MCP surface = `mcp.md` + ADR-0022.
-
-Important version invariant:
-
-- tool identity has one stable execution class;
-- explicit page IDs;
-- no CSS/XPath;
-- no stateful `*_many` variants;
-- Russian descriptions;
-- exact ElementRefs;
-- structured errors/hints;
-- lifecycle/retry metadata compatible with own Agent Dispatcher.
-
-Version implementation must **not** invent its own tool catalog from old examples.
-
----
-
-# 23. Observability
-
-Measure:
-
-- worker generations/leases/capacity;
-- session subprocess/Chromium process counts;
-- launch/action/snapshot latency;
-- action outcomes/unknown;
-- snapshot size/ref retention;
-- dialogs/events;
-- artifacts;
-- egress denies/proxy failures;
-- forced kills;
-- expiry/reaper/drain;
-- zombie/orphan/temp leak.
-
----
-
-# 24. Required tests
+At minimum:
 
 - owner isolation;
-- multi-replica routing;
-- generation/lease/self-fencing;
-- separate session subprocess/Chromium;
+- multi-replica route/generation/lease;
+- session subprocess/dedicated Chromium;
 - cookie/storage isolation;
-- exact stale-safe refs;
-- action serialization/recovery;
-- response-loss unknown/no duplicate;
+- exact stale refs;
+- serial actions/recovery/unknown;
+- scroll + lazy/infinite fixture;
+- form fail-fast;
+- structured press;
+- multi-upload;
 - dialogs;
-- Content artifact handoff;
-- TTL/reaper;
-- forced kill/reap;
-- worker crash/drain;
-- egress private/internal block/no direct route;
-- real-browser soak;
-- actual REST OpenAPI;
-- actual FastMCP schemas according current `mcp.md`.
+- artifact Content handoff;
+- TTL/reaper/forced kill/drain;
+- private/internal egress block;
+- no direct browser Internet route;
+- response-loss no duplicate side effects;
+- real-browser soak/leak;
+- exact Browser OpenAPI;
+- actual Browser FastMCP schemas.
 
 ---
 
-# 25. Definition of Done
+# 19. Definition of Done
 
 v0.4 complete only if:
 
-1. Browser is separate worker runtime, not request-handler Playwright.
-2. Each session owns isolated child + Chromium.
-3. Control Plane replicas route by durable worker generation, not local RAM.
-4. Worker partition self-fences.
-5. Element refs exact/stale-safe.
-6. Mutating response loss never blindly duplicates action.
-7. `unknown` supported end-to-end.
-8. Browser artifacts use Content boundary.
-9. Egress cannot reach private/internal network.
-10. Server TTL cleans without client/MCP connection.
-11. Forced cleanup kills child tree and soak leaves no zombies/leaks.
-12. REST is rich while MCP follows compact canonical catalog.
-13. Applicable Browser/security/race/soak/schema release gates are green.
+1. Browser is separate worker/session-process runtime, not request-handler Playwright.
+2. Durable owner/generation routing works across Control Plane replicas.
+3. Worker partition self-fences.
+4. ElementRefs exact/stale-safe.
+5. Mutating response loss never blindly duplicates action.
+6. `unknown` supported end-to-end.
+7. Scroll explicitly enables bounded/lazy-page exploration.
+8. Form/key/upload semantics match exact contracts.
+9. Browser artifacts use Content boundary.
+10. Egress cannot reach private/internal network.
+11. Server TTL cleans without MCP connection.
+12. Forced cleanup leaves no orphan Chromium/temp/ref leaks.
+13. REST/MCP actual schemas match exact contracts.
+14. Applicable Browser/security/race/soak/load gates green.
