@@ -8,7 +8,16 @@
 
 - `../project-concept.md` — общая концепция проекта и направление разработки;
 - `../architecture-concept.md` — предварительная архитектурная концепция и предполагаемые границы модулей;
-- `documentation-plan.md` — правила и порядок проектирования design-документации.
+- `documentation-plan.md` — правила и порядок проектирования design-документации;
+- `current.md` — текущее состояние проектирования и следующий канонический шаг.
+
+Текущий архитектурный фундамент:
+
+- `principles.md` — сквозные архитектурные инварианты;
+- `glossary.md` — каноническая терминология;
+- `dependency-rules.md` — направление зависимостей и module boundaries;
+- `system-context.md` — граница системы и внешние actors;
+- `runtime-topology.md` — process topology и runtime boundaries.
 
 Concept-документы отвечают на вопрос **«что мы строим и в каком направлении»**.
 
@@ -301,18 +310,37 @@ MCP agent-facing descriptions и docstrings преимущественно пи�
 
 ---
 
-## 10. Текущий следующий шаг
+## 10. Уже спроектировано
 
-После фиксации правил проектирования следующим этапом является создание сквозного архитектурного фундамента:
+На текущем этапе зафиксированы:
 
 1. `principles.md`;
 2. `glossary.md`;
 3. `dependency-rules.md`;
 4. `system-context.md`;
-5. `runtime-topology.md`;
-6. `application-contracts.md`;
-7. `resource-model.md`;
-8. `persistence.md`;
-9. `security.md`.
+5. `runtime-topology.md`.
 
-После этого можно безопасно проектировать предметные подсистемы Search, Retrieval, Content, Browser и Jobs.
+Актуальный статус и открытые вопросы находятся в `current.md`.
+
+---
+
+## 11. Текущий следующий шаг
+
+Следующий общий foundation проектируется в порядке:
+
+1. `application-contracts.md`;
+2. `resource-model.md`;
+3. `persistence.md`;
+4. `security.md`.
+
+После этого можно безопасно переходить к предметным подсистемам:
+
+```text
+Search
+→ Retrieval
+→ Content
+→ Browser
+→ Jobs
+```
+
+Затем проектируются observability, REST, MCP, deployment, testing и только после полной картины — roadmap и version implementation plans.
