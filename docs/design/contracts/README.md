@@ -22,12 +22,26 @@ Contract spec не может изменить lifecycle/security semantics, о�
 # Документы
 
 - [`common-models.md`](common-models.md) — общие public result/error/resource/cursor модели и сериализация.
-- [`mcp-tools.md`](mcp-tools.md) — exact freeze-candidate MCP input/output contracts, bounds, unions и execution metadata для catalog ADR-0022.
-- [`rest-api-v1.md`](rest-api-v1.md) — exact freeze-candidate обычного REST `/api/v1`: Search/Retrieval/Content/Browser/Jobs + базовые operational references.
+- [`mcp-tools.md`](mcp-tools.md) — exact freeze-candidate **28-tool MCP** input/output contracts, bounds, unions и execution metadata.
+- [`rest-api-v1.md`](rest-api-v1.md) — exact freeze-candidate общего REST `/api/v1`: Search/Retrieval/Content/Jobs и общий transport baseline.
+- [`browser-api-v1.md`](browser-api-v1.md) — exact Browser REST namespace: sessions/pages/navigation/snapshot/actions/events/artifacts; более специфичный владелец Browser routes/DTO.
 - [`policy-models.md`](policy-models.md) — exact dynamic non-secret task policy, global defaults/maxima, principal overrides и PolicySnapshot serialization.
 - [`admin-api-v1.md`](admin-api-v1.md) — exact protected `/api/v1/admin/*`: policy revisions/overrides, provider/usage diagnostics, audit, worker drain и typed maintenance.
 
-`admin-api-v1.md` является более специфичным exact contract для `/api/v1/admin/*`. Если ранняя краткая admin-секция `rest-api-v1.md` не перечисляет более поздний exact endpoint, приоритет для admin namespace имеет `admin-api-v1.md` при сохранении общей REST semantics `../rest-api.md`.
+Specificity rule:
+
+```text
+Browser REST
+→ browser-api-v1.md
+
+Admin REST
+→ admin-api-v1.md + policy-models.md
+
+Everything else/general REST
+→ rest-api-v1.md
+```
+
+Если ранняя краткая section общего REST-файла расходится с более специфичным contract, приоритет имеет специализированный contract при сохранении semantic invariants `../rest-api.md`/component design.
 
 Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable contract artifacts и должны соответствовать совокупности этих specs.
 
@@ -46,6 +60,7 @@ Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable 
 9. Contract spec не имеет права самовольно расширять capability beyond canonical component/facade design.
 10. Generated actual FastMCP/OpenAPI contract в v0.8 должен соответствовать этим specs или design меняется явно до freeze.
 11. Dynamic policy не хранит secrets и не может логически отключить собственный admin recovery control plane (ADR-0023).
+12. Retry semantics учитывает billable/resource effects (ADR-0024), а не только intuitive read/write classification.
 
 ---
 
@@ -56,7 +71,7 @@ Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable 
 - removal/rename/meaning change — breaking;
 - bounds/default/required changes — compatibility-sensitive;
 - additive optional output fields проходят compatibility review;
-- новый MCP tool требует отдельного semantic intent/execution-class review;
+- новый MCP tool требует semantic intent/execution-class review;
 - новый REST endpoint может быть additive, если не меняет существующую semantics;
 - policy schema revision требует rolling-software compatibility;
 - behavioral retry/ownership/security/admin-authority change считается contract change даже без изменения JSON shape.
