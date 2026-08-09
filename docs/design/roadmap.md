@@ -2,50 +2,45 @@
 
 ## Статус документа
 
-Этот документ является каноническим владельцем **порядка реализации принятой архитектуры по версиям**.
+Канонический владелец **порядка реализации принятой архитектуры по версиям**.
 
-Roadmap не переопределяет component design. Каждая версия реализует часть уже принятых contracts и обязана ссылаться на канонические документы.
-
-Подробные implementation plans создаются в `docs/design/versions/` после закрытия ADR/open decisions соответствующего scope.
+Roadmap не переопределяет component design/ADR. Каждая версия реализует часть уже принятых contracts и обязана проходить собственный Definition of Done + applicable release gates.
 
 ---
 
-# 1. Принцип roadmap
-
-Версии упорядочены по dependency graph:
+# 1. Общий dependency graph
 
 ```text
-Foundation
-→ Search
-→ Retrieval + Content Core
-→ Managed Browser
-→ Native Content Expansion
-→ Durable Jobs
-→ Distributed/Operator Hardening
-→ Contract & Agent Integration Stabilization
-→ Production Hardening
-→ v1.0
+v0.1 Service Foundation
+→ v0.2 Search Runtime
+→ v0.3 Retrieval & Content Core
+→ v0.4 Managed Browser Runtime
+→ v0.5 Native Content Expansion
+→ v0.6 Durable Jobs Runtime
+→ v0.7 Distributed Operations & Policy Hardening
+→ v0.8 REST/MCP & Agent Integration Stabilization
+→ v0.9 Production Hardening
+→ v1.0 Stable Web Access
 ```
 
-Нельзя реализовать Browser раньше Content foundation, потому что screenshots/downloads/rendered content должны использовать Content boundary.
-
-Нельзя делать production Jobs раньше persistence/outbox foundation.
+Это dependency order, а не утверждение, что разработчик обязан делать каждый commit строго последовательно, если independent work не нарушает prerequisites. Release acceptance следует цепочке.
 
 ---
 
-# 2. Что означает pre-1.0 version
+# 2. Что означает v0.x
 
-`v0.x` — законченный архитектурный этап, но public API/MCP contract ещё может развиваться быстрее, чем после `v1.0`.
+`v0.x` здесь не означает MVP/одноразовый код.
 
-Это не означает MVP-качество.
+Каждая версия должна:
 
-Каждая версия обязана:
-
-- не закладывать заведомый технический долг в core boundaries;
-- проходить applicable release gates;
+- реализовывать законченный архитектурный слой;
+- не закладывать заведомый shortcut, который следующая версия обязана переписать;
 - иметь explicit non-goals;
+- проходить applicable unit/contract/race/fault/security gates;
 - сохранять предыдущие invariants;
-- быть пригодной как foundation следующего этапа.
+- быть пригодной foundation следующей версии.
+
+До v1.0 public contracts могут корректироваться быстрее, но только через явный design/compatibility review, особенно после v0.8 freeze candidate.
 
 ---
 
@@ -53,41 +48,29 @@ Foundation
 
 ## Цель
 
-Создать production-oriented каркас сервиса без преждевременной web capability logic.
+Production-oriented каркас без premature web logic.
 
 ## Scope
 
-- `src/web_access` layout;
-- domain/application/transport/infrastructure/bootstrap/entrypoints boundaries;
-- typed configuration;
-- OperationResult/Error/Hint/Warning foundation;
-- Principal/Owner minimal model;
-- ResourceRef/content/job/browser ID primitives;
-- FastAPI + FastMCP в одном Control Plane app;
-- PostgreSQL + SQLAlchemy async + Alembic;
-- Redis connectivity/adapters foundation;
+- `src/web_access` layered package;
+- FastAPI + FastMCP Control Plane;
+- common OperationResult/Error/Hint contracts;
+- AuthProvider/PrincipalContext baseline;
+- PostgreSQL/SQLAlchemy async/Alembic/UnitOfWork;
+- Redis lifecycle foundation;
 - ContentStore port + filesystem adapter;
-- UnitOfWork/transaction foundation;
-- structured logging/operation IDs;
-- liveness/readiness/status foundation;
-- service authentication baseline;
-- Docker Compose reference stack;
-- migration command;
-- CI/static/unit/contract infrastructure;
-- architecture import tests.
+- structured observability foundation;
+- health/readiness;
+- Docker Compose;
+- CI/architecture/contract tests.
 
 ## Non-goals
 
-- Search;
-- external Retrieval;
-- Native Parsers;
-- Browser;
-- durable user Jobs;
-- rich REST/MCP business tools.
+Search/Retrieval/Content public API/Browser/Jobs.
 
-## Required gates
+## Status
 
-G0–G6, G12, foundation parts G15/G21.
+`ready for implementation`
 
 ---
 
@@ -95,39 +78,33 @@ G0–G6, G12, foundation parts G15/G21.
 
 ## Цель
 
-Получить первый полноценный web capability через общий backend + REST + MCP.
+Первый полноценный web capability через общий backend + REST + MCP.
 
 ## Scope
 
 - Search domain/application;
-- SearchProvider registry/port;
-- SearXNG adapter;
-- private SearXNG Compose service;
-- optional Yandex Search adapter;
-- provider capabilities;
+- provider registry;
+- SearXNG default free provider;
+- optional direct Yandex Search provider;
+- common language/region mapping;
 - explicit/default provider selection;
-- batch-first Search;
-- cache/freshness;
-- provider rate/capacity controls;
-- billable usage accounting foundation;
-- provider health/degraded state;
-- REST `POST /api/v1/search`;
-- provider discovery/status REST;
-- MCP `web_search`;
-- actual OpenAPI/MCP schema tests;
-- controlled SearXNG integration.
+- batch-first search;
+- Redis cache/rate/concurrency controls;
+- provider health/usage metadata;
+- REST Search API;
+- MCP `web_search`.
 
-## Non-goals
+## Critical invariant
 
-- чтение найденных страниц;
-- auto provider fallback;
-- Browser;
-- image/video search;
-- live billable provider calls в default CI.
+```text
+Search result ≠ target page content
+```
 
-## Required gates
+No hidden provider fallback.
 
-G0–G7, G12–G15, G20/G21 для MCP integration.
+## Status
+
+`ready for implementation`
 
 ---
 
@@ -135,62 +112,44 @@ G0–G7, G12–G15, G20/G21 для MCP integration.
 
 ## Цель
 
-Сделать известный URL непосредственно читаемым для агента/REST без Browser, если native content доступен.
+Известный URL становится непосредственно читаемым без Browser, если native content доступен.
 
-## Scope Retrieval
+## Retrieval
 
-- SafeHttpFetcher;
-- SSRF/redirect/DNS/egress protections;
-- bounded streaming GET;
-- TLS;
+- safe arbitrary HTTP(S) GET;
+- SSRF/DNS rebinding/redirect/TLS protection;
+- bounded streaming/decompression;
 - deadlines/cancellation;
-- batch-first Retrieval;
-- HTTP response normalization;
-- Content handoff.
+- batch-first retrieval.
 
-## Scope Content
+## Content
 
-- ContentObject metadata/resource lifecycle;
-- filesystem ContentStore production-quality local profile;
-- staged/finalized ingest + reconciliation;
+- durable ContentObject lifecycle;
+- staged/finalized filesystem storage;
 - L0 Inspection;
-- ContentFormatRegistry;
-- NativeParser abstraction/executor;
-- initial parser set sufficient for web use:
+- initial L1 registry:
   - HTML;
-  - plain text;
+  - text;
   - JSON;
   - XML;
-  - CSV/tabular text;
+  - CSV;
   - PDF native text;
-- HTML main-content + structural metadata;
-- PDF image-only/no-native-text diagnostics;
-- derived ContentObjects/provenance;
-- bounded content read/cursor foundation.
+- isolated risky parser executor;
+- immutable derived representations/provenance;
+- bounded Content read/cursor;
+- REST Content/Retrieval;
+- MCP `web_fetch`, `content_get`, `content_parse`.
 
-## REST
+## Critical invariant
 
-- Retrieval fetch;
-- Content metadata/data;
-- Native Parsing existing content.
+```text
+L0/L1 only
+no Browser/OCR/LibreOffice/VLM hidden fallback
+```
 
-## MCP
+## Status
 
-- `web_fetch`;
-- `content_get`;
-- `content_parse`.
-
-## Non-goals
-
-- Browser fallback;
-- OCR/VLM;
-- LibreOffice conversion;
-- exhaustive Office/media support;
-- generic file conversion.
-
-## Required gates
-
-G0–G9, G12–G15, G17, G20/G21.
+`ready for implementation`
 
 ---
 
@@ -198,57 +157,34 @@ G0–G9, G12–G15, G17, G20/G21.
 
 ## Цель
 
-Добавить полноценную stateful browser capability без привязки к MCP connection и без single-process shortcut.
+Stateful browser capability, независимая от MCP connection и single API process.
 
 ## Scope
 
-- separate Browser Worker runtime/image;
-- Playwright Python + Chromium;
-- ephemeral BrowserSession;
-- worker registry/identity/generation;
-- session placement/capacity;
-- owning-worker routing protocol;
-- lease/fencing policy;
-- session action serialization;
-- page identities/popups;
-- semantic snapshot;
-- snapshot-scoped element refs;
-- navigation;
-- typed interactions;
-- tabs/pages;
-- screenshots → Content;
-- rendered page → Content;
-- downloads → Content;
-- uploads from Content;
-- bounded browser events;
-- TTL/max lifetime/reaper;
-- worker drain/loss;
-- `unknown outcome`;
-- private/internal browser egress protection;
-- Browser REST API;
-- Browser MCP tools approved for this version.
+- Browser Worker supervisor runtime;
+- one BrowserSession subprocess per session;
+- one Chromium + non-persistent BrowserContext per session baseline;
+- direct authenticated Control Plane→worker RPC;
+- PostgreSQL authoritative session owner generation;
+- Redis worker registry/route cache;
+- worker lease/self-fencing;
+- semantic snapshots/exact `element_ref`;
+- serialized actions/action status recovery;
+- first-class `unknown`;
+- pages/popups/dialogs;
+- screenshot/rendered/download/upload through Content;
+- TTL/reaper/drain/loss;
+- public-only browser egress gateway;
+- REST Browser facade;
+- MCP Browser tools according current `mcp.md`/ADR-0022.
 
-## Explicit ADR prerequisites
+## Critical invariant
 
-До implementation должны быть закрыты:
+Browser is expensive explicit capability, not hidden `web_fetch` mode.
 
-1. Control Plane ↔ Browser Worker transport.
-2. Worker registry/lease/fencing protocol.
-3. Snapshot/ElementRef representation/resolution strategy.
-4. Dialog handling policy.
-5. Browser service authentication.
+## Status
 
-## Non-goals
-
-- persistent browser profiles;
-- unrestricted JavaScript evaluate;
-- stealth/CAPTCHA bypass;
-- durable browser workflows;
-- automatic Browser launch from Retrieval.
-
-## Required gates
-
-G0–G6, G10, G12–G17, G19/G20/G21; Browser load baseline begins here.
+`ready for implementation`
 
 ---
 
@@ -256,42 +192,30 @@ G0–G6, G10, G12–G17, G19/G20/G21; Browser load baseline begins here.
 
 ## Цель
 
-Расширить L1 Native Parsing, не превращая Web Access в L2 document-processing service.
+Расширить direct L1 reading и production shared ContentStore, не превращая сервис в L2 document processor.
 
 ## Scope
 
-После отдельной library/security evaluation добавляются прямые parsers/inspectors, где они инженерно оправданы.
-
-Приоритетные families:
-
-- OOXML: DOCX/XLSX/PPTX;
-- ODF: ODT/ODS/ODP и совместимые непосредственно читаемые структуры;
-- EPUB/FB2;
-- SVG;
-- bitmap image L0 metadata;
-- additional safe tabular/text formats;
-- media technical metadata, если выбран bounded inspector;
-- optional legacy direct parsers только при безопасной библиотеке.
-
-Дополнительно:
-
-- isolated parser executor для riskier L1 parsers;
-- parser registry/revision tooling;
-- expanded format fixture/security corpus;
-- representation schema stabilization;
-- ContentStore S3-compatible adapter.
+- SafePackageReader;
+- parser isolation profiles;
+- direct L1:
+  - DOCX/XLSX/PPTX;
+  - ODT/ODS/ODP;
+  - EPUB/FB2;
+  - SVG textual structure;
+- image technical metadata;
+- optional audio technical metadata;
+- macro/formula/external resource execution forbidden;
+- S3-compatible ContentStore;
+- common filesystem/S3 contract tests.
 
 ## Non-goals
 
-- OCR;
-- VLM;
-- LibreOffice fallback;
-- transcription;
-- «поддерживать любой файл любой ценой».
+OCR/VLM/LibreOffice conversion/transcription/legacy Office conversion.
 
-## Required gates
+## Status
 
-G0–G6, G9, G12–G17, G19/G21 по Content scope.
+`ready for implementation`
 
 ---
 
@@ -299,40 +223,48 @@ G0–G6, G9, G12–G17, G19/G21 по Content scope.
 
 ## Цель
 
-Добавить устойчивое explicit background execution для long-running/batch workloads.
+Durable background execution только для явно typed long-running workloads.
 
-## Scope
+## Runtime
 
-- Job/JobAttempt persistence;
-- Transactional Outbox;
-- Outbox publisher;
-- Redis/arq JobQueue adapter;
-- worker capability registry;
-- claim/lease/fencing;
-- retry_wait/backoff;
-- cancellation;
-- progress/events;
-- reconciler;
-- Job REST lifecycle;
-- MCP `job_get` / `job_cancel`;
-- первые **typed** durable operations, выбранные после отдельного design.
+```text
+PostgreSQL Job + JobItems + Outbox
+→ arq wake-up
+→ PostgreSQL Attempt claim/lease/fencing
+→ typed Job handler
+```
 
-В качестве первых candidates рассматриваются:
+## Initial workloads
 
-- durable large Retrieval batch;
-- job-required Content Native Parsing;
-- bounded crawl, только если предварительно создан отдельный `crawl.md` design.
+```text
+retrieval_batch
+content_parse_batch
+```
+
+Persistent JobItem checkpoints позволяют после worker crash продолжать незавершённые items, не повторяя successful items.
+
+## MCP
+
+Per ADR-0021:
+
+```text
+web_fetch         direct
+web_fetch_job     creates durable Job
+content_parse     direct
+content_parse_job creates durable Job
+job_get
+job_cancel
+```
+
+No argument-sensitive direct/durable execution class.
 
 ## Non-goals
 
-- generic arbitrary task execution;
-- cron scheduler;
-- durable browser click workflow;
-- infinite retry.
+Crawl, durable Browser workflows, arbitrary task runner.
 
-## Required gates
+## Status
 
-G0–G6, G11–G17, G19–G21.
+`ready for implementation`
 
 ---
 
@@ -340,34 +272,31 @@ G0–G6, G11–G17, G19–G21.
 
 ## Цель
 
-Довести уже распределённую архитектуру до устойчивой multi-replica/multi-principal эксплуатации под реальной нагрузкой, **не переписывая core runtime**.
+Сделать multi-replica/multi-principal service управляемым без code changes/redeploy для каждого non-secret operational policy.
 
 ## Scope
 
-- principal/owner policy hardening;
-- quotas/fairness;
-- operator/admin REST surface;
-- capability/provider/parser/worker diagnostics;
-- S3 production profile hardening;
-- Redis cache vs coordination split, если load evidence требует;
-- HA outbox/reconciler;
-- health/readiness finalization;
-- rolling deployment compatibility matrices;
-- configuration revision/operational controls;
-- retention/cleanup administration;
-- rate/cost budgets;
-- audit policy для security-sensitive actions;
-- load-driven capacity defaults.
+- revisioned PostgreSQL dynamic PolicySnapshot;
+- bounded policy staleness/replica refresh;
+- principal capability/soft-limit policy;
+- durable Browser/Job/Content quota accounting;
+- billable provider unit reservation/accounting;
+- Job fairness;
+- retention classes;
+- protected admin REST;
+- typed worker drain/maintenance;
+- transactional operator/security audit;
+- usage reconciliation;
+- capability-aware detailed readiness;
+- S3 production profile hardening.
 
-## Non-goals
+## Critical invariant
 
-- создание пользовательских аккаунтов как отдельного identity product;
-- новый reasoning layer;
-- архитектурный rewrite single-node→distributed: distributed assumptions уже должны существовать раньше.
+Dynamic policy can restrict existing authority, not mint missing authentication scope or exceed software hard ceilings.
 
-## Required gates
+## Status
 
-Все применимые G0–G21, включая load/soak/rolling subsets для hardened capabilities.
+`ready for implementation`
 
 ---
 
@@ -375,33 +304,30 @@ G0–G6, G11–G17, G19–G21.
 
 ## Цель
 
-Зафиксировать внешний contract перед production-hardening и будущим `v1.0`.
+Стабилизировать внешний contract перед production hardening.
 
 ## Scope
 
-- REST endpoint/schema audit;
-- MCP catalog/schema audit;
-- Russian descriptions/docs polish;
-- public error taxonomy stabilization;
-- ResourceRef/cursor shapes stabilization;
-- OpenAPI compatibility fixtures;
-- FastMCP tool schema compatibility fixtures;
-- own `internet-search-bot` builtin integration;
-- trusted presentation metadata mapping;
-- BrowserSession lifecycle cleanup integration;
-- agent retry semantics/unknown outcome verification;
-- generic MCP client compatibility;
-- optional generated REST client/SDK evaluation;
-- protocol/version negotiation where needed.
+- generated deterministic REST OpenAPI fixture;
+- generated actual MCP tool/schema fixture;
+- contract manifest/fingerprints;
+- common error/resource/cursor review;
+- exact MCP freeze candidate ADR-0022;
+- one stable execution class per MCP tool;
+- public-contract diff CI gate;
+- generic MCP client acceptance;
+- representative REST client acceptance;
+- coordinated builtin integration with `internet-search-bot`;
+- Browser cleanup/unknown end-to-end;
+- durable Job integration end-to-end.
 
-## Non-goals
+## Freeze candidate MCP catalog
 
-- major new backend capability;
-- breaking architecture changes без нового design.
+Canonical owner remains `mcp.md`; version does not duplicate schema definitions beyond acceptance references.
 
-## Required gates
+## Status
 
-G0–G6, G12–G17, G20–G21 + full schema compatibility suite.
+`ready for implementation`
 
 ---
 
@@ -409,33 +335,34 @@ G0–G6, G12–G17, G20–G21 + full schema compatibility suite.
 
 ## Цель
 
-Прожарить всю систему до production-ready состояния.
+Доказать operational correctness существующей системы, не добавляя capabilities.
 
 ## Scope
 
-- complete fault-injection matrix;
-- randomized race suite;
-- Browser/Job/Content soak;
-- load baselines/performance budgets;
-- security review/threat model closure;
-- dependency/container scans;
-- backup/restore/DR drills;
-- Redis loss recovery;
-- rolling upgrade tests;
-- leak/resource accounting;
-- alert/SLO baseline;
-- operator runbooks;
-- release evidence/report automation;
-- all previous open implementation questions resolved for v1 scope.
+- dependency/image reproducibility;
+- migration drills;
+- PostgreSQL + ContentStore backup/restore;
+- Redis destructive recovery;
+- Browser/Job/parser/Content long soak;
+- race/fault/chaos matrices;
+- capacity characterization;
+- saturation/backpressure;
+- rolling upgrade/rollback;
+- secret rotation;
+- security/supply-chain scans;
+- alert validation;
+- runbook game days;
+- production smoke;
+- release evidence;
+- known limitations register.
 
-## Non-goals
+## Critical invariant
 
-- feature expansion;
-- L2 processing.
+Hardening cannot be used as feature creep or reason to silently drift v0.8 public contracts.
 
-## Required gates
+## Status
 
-Полный применимый набор G0–G21.
+`ready for implementation`
 
 ---
 
@@ -443,266 +370,98 @@ G0–G6, G12–G17, G20–G21 + full schema compatibility suite.
 
 ## Цель
 
-Объявить текущий public REST/MCP/application behavior стабильной первой major contract line.
+Объявить первую stable contract line **только после** выполнения release checklist конкретным v0.9-proven candidate.
 
-## Требования
+## Stable promises
 
-- v0.9 gates green;
-- no unresolved implementation-critical architecture questions;
-- REST v1 compatibility policy опубликована;
-- MCP core catalog/version policy опубликована;
-- migration/upgrade path документирован;
-- own-agent integration production accepted;
-- generic MCP client accepted;
-- backup/restore/runbooks validated;
-- performance/capacity defaults основаны на измерениях;
-- security gates closed.
+- `/api/v1` compatibility policy;
+- stable MCP semantic catalog;
+- stable resource/lifecycle semantics;
+- upgrade/migration discipline;
+- production restore/operations evidence;
+- own-agent + generic client compatibility;
+- additive-by-default future evolution.
 
-`v1.0` не означает «в проект больше нечего добавить». Он означает, что foundation/contracts можно развивать additive образом без постоянной смены основных границ.
+v1.0 не является feature big bang.
 
----
+## Release condition
 
-# 13. Dependency graph
+[`versions/v1.0/release-checklist.md`](versions/v1.0/release-checklist.md) полностью evidenced, release blockers absent.
 
-```text
-v0.1 Foundation
-   │
-   ├──→ v0.2 Search
-   │       │
-   │       └──────────────┐
-   │                      │
-   └──→ v0.3 Retrieval + Content Core
-               │          │
-               ├──→ v0.4 Browser
-               │          │
-               ├──→ v0.5 Content Expansion
-               │          │
-               └──→ v0.6 Jobs ←────────┘
-                           │
-                           ▼
-                  v0.7 Operations/Policy
-                           │
-                           ▼
-                  v0.8 Contract/Agent
-                           │
-                           ▼
-                  v0.9 Hardening
-                           │
-                           ▼
-                         v1.0
-```
+## Status
 
-v0.4/v0.5 теоретически могут разрабатываться независимо после v0.3, но canonical project sequence оставляет Browser раньше расширения форматов, поскольку Browser является core Web Access capability.
+`release contract defined`
 
 ---
 
-# 14. Почему Search раньше Retrieval
+# 13. Почему именно такой порядок
 
-Search имеет более простую stateless provider boundary и позволяет:
+### Search раньше Retrieval
 
-- проверить FastAPI/FastMCP/application skeleton;
-- проверить batch/result schemas;
-- проверить provider adapters/cache;
-- интегрировать первый полезный MCP tool;
+Позволяет получить первый полезный capability без риска arbitrary URL parser/browser surface.
 
-до появления сложного Content storage/security pipeline.
+### Retrieval + Content раньше Browser
 
----
+Browser screenshots/downloads/rendered content должны сразу использовать нормальный Content boundary.
 
-# 15. Почему Retrieval и Content вместе в v0.3
+### Browser раньше Native Content Expansion
 
-Retrieval без Content быстро упирается в giant raw bytes/HTML.
+Основной web workflow становится завершённым; дальнейшее количество direct document formats не блокирует browser capability.
 
-Content без источника реального web content менее полезен.
+### Native Content Expansion раньше Jobs
 
-Их contracts уже разделены архитектурно, но implementation milestone должен сразу обеспечить законченный flow:
+Durable `content_parse_batch` опирается на уже определённый parser registry/isolation.
 
-```text
-URL
-→ safe Retrieval
-→ raw ContentObject
-→ L0/L1
-→ bounded result/ContentRef
-```
+### Jobs раньше Policy Hardening
 
----
+Multi-principal quotas/fairness должны учитывать реальный durable resource model, а не абстрактный будущий job.
 
-# 16. Почему Browser только после Content Core
+### Policy раньше Contract Freeze
 
-Browser производит:
+External stable errors/admin/readiness должны freeze-иться уже после operational policy model.
 
-- screenshots;
-- downloads;
-- rendered HTML;
+### Contract Freeze раньше Hardening
 
-которые должны использовать уже готовую Content resource/storage/provenance model.
+v0.9 должен проверять один release-candidate contract, а не постоянно меняющийся facade.
 
-Иначе Browser неизбежно создаст собственное временное artifact storage, которое потом придётся мигрировать.
+### Hardening раньше v1.0
+
+Stable contract без restore/race/security/soak evidence не считается production stability.
 
 ---
 
-# 17. Почему Content Expansion после Browser
+# 14. Правило изменения roadmap
 
-Широкая поддержка Office/ebook/media formats полезна, но не является prerequisite основного web-browsing workflow.
+Новая идея не вставляется в roadmap автоматически.
 
-Core HTML/PDF/text достаточно, чтобы безопасно построить Browser first.
+Сначала определить:
 
-Parser registry позволит расширить formats additive без rewrite.
-
----
-
-# 18. Почему Jobs после Browser/Content
-
-Jobs должен оборачивать уже готовые application operations, а не становиться местом, где впервые появляется Search/Retrieval/Content logic.
-
-Worker вызывает существующие services.
-
-Это предотвращает duplicate «worker implementation» backend-а.
-
----
-
-# 19. Почему scaling не отдельная поздняя переделка
-
-Horizontal/multi-worker assumptions входят design с v0.1/v0.4.
-
-v0.7 только hardening/operations:
-
-```text
-не: single-node → distributed rewrite
-а: distributed design → production HA/policy tuning
-```
-
----
-
-# 20. ADR schedule
-
-До detailed version implementation plans необходимо закрывать ADR **до версии, которая от него зависит**.
-
-Минимально ожидаемые decisions:
-
-## До v0.1
-
-- baseline authentication/service-principal mechanism;
-- application UoW/transaction implementation pattern;
-- FastMCP/FastAPI mounting/bootstrap pattern;
-- initial ContentStore filesystem finalization semantics.
-
-## До v0.2
-
-- SearchRegion/language common mapping;
-- Yandex API/version adapter strategy;
-- rate-limit/cache implementation choices.
-
-## До v0.3
-
-- SafeHttpFetcher DNS-rebinding/connect strategy;
-- structural HTML parser;
-- PDF native parser;
-- Content staged/finalized write protocol;
-- initial Native Parser set.
-
-## До v0.4
-
-- Browser Worker transport;
-- worker registry/lease/fencing;
-- ElementRef/snapshot implementation;
-- dialog policy;
-- browser internal auth/egress.
-
-## До v0.5
-
-- isolated Native Parser executor;
-- S3-compatible adapter semantics;
-- format library choices.
-
-## До v0.6
-
-- outbox publisher runtime placement;
-- Job lease/cancellation signal;
-- first typed job types;
-- crawl design, если crawl входит version.
-
----
-
-# 21. Version document requirements
-
-Каждый version folder должен содержать минимум:
-
-```text
-README.md
-implementation-sequence.md
-```
-
-При необходимости:
-
-```text
-migration-plan.md
-compatibility.md
-acceptance.md
-```
-
-Version README не дублирует component design целиком, а ссылается на него.
-
----
-
-# 22. Patch granularity
-
-Даже если Codex получает один большой запрос, implementation sequence внутри версии должен быть patch-oriented.
+1. является ли это capability Web Access;
+2. меняет ли она existing invariant;
+3. нужна ли отдельная ADR/component design;
+4. какие prerequisites;
+5. additive ли она после v1.0.
 
 Например:
 
 ```text
-contracts/models
-→ ports/fakes/tests
-→ infrastructure adapters
-→ application service
-→ REST
-→ MCP
-→ integration/fault tests
-→ docs/status
+crawl
 ```
 
-Это позволяет независимо проверять состояние после каждого логического блока и уменьшает риск гигантского монолитного diff.
+не является «ещё одним флагом Retrieval» и требует отдельного design перед добавлением в future roadmap.
 
 ---
 
-# 23. No speculative version features
+# 15. Implementation source of truth
 
-Если capability не имеет component design, она не должна внезапно появиться внутри version implementation prompt.
+Для coding agent:
 
-Например bounded crawler сначала получает отдельный design, только затем включается в v0.6 scope.
+```text
+roadmap
+→ target version README
+→ relevant Design/ADR
+→ target implementation-sequence
+→ tests/release-gates
+```
 
----
-
-# 24. Post-v1 candidates
-
-За пределами текущего v1 roadmap могут рассматриваться:
-
-- bounded/site crawling advanced policies;
-- image/news/video search kinds;
-- persistent encrypted browser profiles;
-- advanced authorized browser evaluate;
-- additional search providers;
-- separate L2 document/media processing MCP-service;
-- richer async MCP Tasks integration;
-- user-facing admin/Web UI;
-- distributed Content processing worker pool, если native parser load требует.
-
-Они не должны усложнять v1 core без доказанной необходимости.
-
----
-
-# 25. Roadmap acceptance
-
-Roadmap считается готовым к подробному version planning, если:
-
-1. Dependencies между версиями не требуют будущего архитектурного rewrite.
-2. Каждая версия имеет полезный и проверяемый результат.
-3. Core security/persistence не отложены «на потом» после capability release.
-4. Browser строится сразу через proper worker boundary.
-5. L2 processing остаётся отдельной ответственностью.
-6. REST/MCP развиваются поверх backend каждого этапа.
-7. v0.7 hardens scaling, а не впервые добавляет его.
-8. v0.8 стабилизирует contracts после завершения основных capabilities.
-9. v0.9 содержит hardening, а не feature rush.
-10. v1.0 имеет ясный definition of stable contract.
+Roadmap сам по себе недостаточен для написания production code.
