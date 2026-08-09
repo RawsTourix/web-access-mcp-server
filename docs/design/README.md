@@ -2,28 +2,20 @@
 
 ## Назначение
 
-`docs/design/` — каноническое место полноценной архитектурной, contract и version-документации проекта `web-access-mcp-server`.
+`docs/design/` — каноническое место архитектурной, contract и version-документации проекта.
 
-Уровни документации:
+Иерархия:
 
 ```text
 Concept
-→ Design
+→ Design semantics/invariants
 → ADR
 → exact public contracts
-→ Version implementation plans
+→ version implementation plans
 → generated runtime contract fixtures / release evidence
 ```
 
-Concept отвечает на вопрос **«что строим и почему»**.
-
-Design — **«как система должна быть устроена»**.
-
-ADR — **«какое значимое решение выбрано между альтернативами»**.
-
-`contracts/` — **«какая точная public DTO/schema должна получиться»**.
-
-Versions — **«что реализуем в конкретном milestone и в каком порядке»**.
+`current.md` показывает фактический статус и следующий допустимый шаг.
 
 ---
 
@@ -36,11 +28,11 @@ Versions — **«что реализуем в конкретном milestone и 
 
 ## Governance/status
 
-- `documentation-plan.md` — правила и первоначальный порядок проектирования;
-- `current.md` — фактический текущий статус и следующий допустимый шаг;
-- `../AGENTS.md` — обязательные правила для Codex/ChatGPT coding work.
+- `documentation-plan.md`;
+- `current.md`;
+- `../AGENTS.md`.
 
-## Cross-cutting foundation
+## Foundation
 
 - `principles.md`;
 - `glossary.md`;
@@ -75,17 +67,25 @@ Versions — **«что реализуем в конкретном milestone и 
 - `limitations.md`;
 - `roadmap.md`.
 
-## Decisions
+## ADR
 
-- `decisions/README.md` — ADR registry;
-- `decisions/ADR-xxxx-*.md` — individual decisions.
+- `decisions/README.md`;
+- `decisions/ADR-xxxx-*.md`.
 
 ## Exact public contracts
 
-- `contracts/README.md`;
-- `contracts/common-models.md`;
-- `contracts/mcp-tools.md`;
-- `contracts/rest-api-v1.md`.
+Index: `contracts/README.md`.
+
+Current specs:
+
+```text
+contracts/common-models.md
+contracts/mcp-tools.md
+contracts/rest-api-v1.md
+contracts/browser-api-v1.md
+contracts/policy-models.md
+contracts/admin-api-v1.md
+```
 
 ## Versions
 
@@ -96,12 +96,12 @@ Versions — **«что реализуем в конкретном milestone и 
 
 # 2. Канонический владелец темы
 
-У каждой нормы должен быть один владелец.
+У архитектурной нормы один основной owner.
 
-Примеры:
+Examples:
 
 ```text
-retry/outcome/batch semantics
+operation/outcome/retry/batch
 → application-contracts.md
 
 resource ownership/lifecycle
@@ -110,35 +110,47 @@ resource ownership/lifecycle
 PostgreSQL/Redis/ContentStore consistency
 → persistence.md
 
-Search provider semantics
+Search semantics
 → search.md
 
-Browser lifecycle/action semantics
-→ browser.md + accepted Browser ADR
+Browser semantics
+→ browser.md + Browser ADR
 
-MCP semantic catalog
-→ mcp.md + ADR-0022
+policy/quota/operator semantics
+→ policy-and-operations.md + ADR-0019/0020/0023
 
-exact MCP DTO/schema
+MCP semantic facade
+→ mcp.md
+
+exact MCP DTO
 → contracts/mcp-tools.md
 
-REST semantic facade
+REST semantics
 → rest-api.md
 
-exact REST v1 DTO/routes
+exact normal REST
 → contracts/rest-api-v1.md
+
+exact Browser REST
+→ contracts/browser-api-v1.md
+
+exact dynamic policy
+→ contracts/policy-models.md
+
+exact Admin REST
+→ contracts/admin-api-v1.md
 
 implementation order
 → versions/<version>/implementation-sequence.md
 ```
 
-Другие документы могут ссылаться/кратко повторять контекст, но не должны независимо переопределять contract.
+Более общий документ не переопределяет более специфичный exact contract; exact contract не отменяет lifecycle/security semantics Design/ADR.
 
 ---
 
 # 3. Backend-first invariant
 
-Любая capability проектируется и реализуется в направлении:
+Любая capability:
 
 ```text
 предметная задача
@@ -150,78 +162,99 @@ implementation order
 → MCP projection
 ```
 
-Не наоборот.
-
-REST и MCP используют один application backend, но имеют разные transport-facing DTO и разную granularity.
+REST/MCP share backend; transport schemas могут различаться.
 
 ---
 
-# 4. Public contracts
+# 4. Contract discipline
 
-После определения semantics точные schemas фиксируются в `contracts/`.
+Exact public spec создаётся только после semantic design.
 
-Contract spec обязан:
+Обязательные свойства:
 
-- не менять component lifecycle/security semantics;
-- иметь exact bounds/defaults/required/union rules;
-- описывать `null`/omission/default;
-- не раскрывать infrastructure fields;
-- быть пригодным для automatic schema contract tests.
+- exact required/default/bounds;
+- discriminated unions/cross-field invariants;
+- explicit null/omission semantics;
+- unknown fields rejected;
+- no infrastructure/provider/worker leakage;
+- structured errors;
+- bounded result;
+- compatibility classification.
 
-В v0.8 generated runtime artifacts:
+Current MCP target = **28 semantic tools**.
+
+Current REST target split by specificity:
 
 ```text
-OpenAPI
-actual FastMCP tool schemas
-common error/resource schemas
+rest-api-v1.md
++ browser-api-v1.md
++ admin-api-v1.md/policy-models.md
 ```
 
-должны быть детерминированно получены из реальной реализации и сравнены с contract specs.
+---
+
+# 5. ADR/current precedence
+
+Если evidence меняет принятое решение:
+
+1. create/update/supersede ADR;
+2. update canonical Design owner;
+3. update exact contracts;
+4. update version plans;
+5. update tests/gates/status.
+
+Не оставлять два одновременно «правильных» варианта.
+
+Examples already applied:
+
+- ADR-0012 partially superseded by ADR-0013;
+- ADR-0022 partially refined/superseded by ADR-0024/0025;
+- dynamic task policy admin self-lockout removed by ADR-0023.
 
 ---
 
-# 5. Документация для coding agents
+# 6. Documentation for coding agents
 
-Design намеренно пишется так, чтобы Codex/ChatGPT не пришлось угадывать архитектуру.
+Implementation-ready docs должны исключать архитектурные догадки.
 
-Обязательны:
+Нужны:
 
-- explicit responsibilities/non-goals;
-- invariants;
-- lifecycle/state transitions;
-- retry/idempotency/unknown-outcome semantics;
-- persistence/concurrency boundaries;
-- security rules;
-- exact public schemas там, где facade уже спроектирован;
+- responsibilities/non-goals;
+- state/lifecycle;
+- persistence/concurrency;
+- retry/idempotency/unknown outcome;
+- security;
+- exact facade schemas;
 - required tests;
-- binary acceptance criteria.
+- acceptance gates.
 
-Если решение ещё не принято, оно должно быть open question/ADR blocker. Нельзя оставлять фразу «сделать как лучше» в implementation-ready version.
-
----
-
-# 6. Изменение принятого design
-
-Если новое evidence требует изменить архитектуру:
-
-1. найти canonical owner;
-2. обновить/создать ADR при значимом выборе;
-3. обновить owner document;
-4. обновить dependent public contracts;
-5. проверить roadmap/version plans;
-6. обновить tests/gates;
-7. не оставлять старый competing contract как будто он всё ещё актуален.
-
-Superseded ADR сохраняется как история, но явно помечается.
+Если решение не принято — оно blocker/open question, а не «сделать как удобнее».
 
 ---
 
-# 7. Текущее состояние
+# 7. Generated executable contracts
 
-Архитектурный design v0.1→v1.0 первой stable line сформирован.
+В v0.8 фактическая реализация генерирует:
 
-Точные MCP и REST v1 contract specs также сформированы.
+```text
+FastAPI OpenAPI
+actual FastMCP schemas/annotations
+common serialized error/resource fixtures
+```
 
-Production implementation ещё не начата; актуальный следующий шаг — `v0.1 Service Foundation` после финального consistency check.
+Они:
 
-Подробности: `current.md`.
+- сравниваются с `contracts/*`;
+- сохраняются как golden fixtures;
+- получают CI-visible diff;
+- меняются только через compatibility review.
+
+---
+
+# 8. Текущее состояние
+
+Design первой v1.0 line сформирован; production implementation ещё не начат.
+
+После финального consistency check новый feature-design следует остановить и переходить к реализации **только v0.1 Service Foundation**.
+
+Подробнее: `current.md`.
