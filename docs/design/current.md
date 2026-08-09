@@ -2,62 +2,52 @@
 
 ## Назначение
 
-Этот документ является кратким навигационным статусом проекта. Он не переопределяет канонические contracts; его задача — показать, что уже спроектировано, что ещё не реализовано и какой следующий шаг допустим.
+Краткий factual status проекта. Канонические contracts принадлежат соответствующим Design/ADR/`contracts/*`; этот файл только показывает состояние и следующий допустимый шаг.
 
 ---
 
 # 1. Общий статус
 
-**Архитектурный design первой stable line v1.0 спроектирован. Production-код сервиса ещё не реализован.**
+**Архитектурный design первой stable line v1.0 сформирован. Production-код Web Access ещё не реализован.**
 
-Выполнены:
+Закрыты:
 
 ```text
 Concept
 → architecture foundation
 → component design
-→ runtime/infrastructure design
-→ REST/MCP facade design
-→ ADR decisions
-→ exact public contracts
-→ version roadmap v0.1..v1.0
+→ runtime/persistence/security
+→ REST/MCP facade semantics
+→ accepted ADR
+→ exact public DTO/contracts
+→ roadmap v0.1..v1.0
 → implementation sequences
 → testing/release/operational gates
 ```
 
-Следующий канонический этап после финального consistency-аудита документации:
+Следующий implementation milestone:
 
 ```text
-реализация v0.1 Service Foundation
+v0.1 Service Foundation
 ```
 
-Нельзя начинать v0.2+ до отдельной задачи и acceptance предыдущей версии.
+Version-by-version order обязателен; design readiness поздней версии не разрешает перепрыгнуть acceptance prerequisites.
 
 ---
 
-# 2. Concept layer
+# 2. Core architecture
 
-Зафиксирован:
+Основные application areas:
 
-- `../project-concept.md`;
-- `../architecture-concept.md`.
+```text
+Search
+Retrieval
+Content
+Browser
+Jobs
+```
 
-Главные границы:
-
-- backend-first;
-- единый application backend для REST/MCP;
-- Search / Retrieval / Content / Browser / Jobs;
-- L0 Inspection / L1 Native Parsing;
-- L2 Advanced Processing вне Web Access;
-- structured hints без hidden orchestration;
-- REST — rich programmatic facade;
-- MCP — compact LLM-facing facade.
-
----
-
-# 3. Архитектурный foundation
-
-Канонические документы:
+Cross-cutting foundation:
 
 - `principles.md`;
 - `glossary.md`;
@@ -69,22 +59,57 @@ Concept
 - `persistence.md`;
 - `security.md`.
 
-Зафиксированы:
+Главные invariants:
 
-- direction of dependencies / ports-adapters;
-- common `OperationResult`/error/warning/hint/batch semantics;
-- `unknown outcome` и retry classes;
-- opaque resources/ownership;
-- immutable Content representations + provenance;
-- PostgreSQL/Redis/ContentStore responsibilities;
-- transactional outbox/reconciliation;
-- SSRF/egress/parser/browser/resource security boundaries.
+- backend-first;
+- REST/MCP share application backend;
+- PostgreSQL durable source of truth;
+- Redis cache/coordination/queue signal, not durable truth;
+- ContentStore large immutable payloads;
+- opaque owner-bound resources;
+- no hidden Search→Fetch→Browser/L2 orchestration;
+- `unknown outcome` first-class;
+- security/recovery designed before implementation shortcuts.
 
 ---
 
-# 4. Component design
+# 3. Runtime topology
 
-Зафиксированы:
+```text
+Control Plane
+Job Worker
+Browser Worker supervisor
+BrowserSession subprocess
+```
+
+BrowserSession process model:
+
+```text
+1 logical session
+→ 1 child Python process
+→ 1 Playwright runtime
+→ 1 dedicated Chromium
+→ bounded Pages
+```
+
+Browser control and website egress are separate trust paths.
+
+External/runtime services:
+
+```text
+PostgreSQL
+Redis
+ContentStore
+SearXNG
+optional Yandex Search
+Browser Egress Gateway
+```
+
+---
+
+# 4. Component/operations design
+
+Canonical:
 
 - `search.md`;
 - `retrieval.md`;
@@ -96,162 +121,166 @@ Concept
 - `operational-readiness.md`;
 - `limitations.md`.
 
-Крупных component-level архитектурных blockers для текущего roadmap не осталось.
+L0 Inspection/L1 Native Parsing входят Web Access.
+
+L2 OCR/VLM/LibreOffice/transcription остаётся внешней responsibility.
 
 ---
 
-# 5. Runtime topology
+# 5. Important ADR chains
 
-Основные runtime classes:
-
-```text
-Control Plane
-Job Worker
-Browser Worker supervisor
-BrowserSession subprocess
-```
-
-Внешние dependencies/services:
+Registry: `decisions/README.md`.
 
 ```text
-PostgreSQL
-Redis
-ContentStore
-SearXNG
-optional Yandex Search
-Browser Egress Gateway
+Browser
+→ ADR-0001, 0009..0014, 0025
+
+Content
+→ ADR-0007, 0008, 0015, 0016
+
+Jobs
+→ ADR-0017, 0018, 0021
+
+Policy/usage/admin authority
+→ ADR-0019, 0020, 0023
+
+MCP external contract
+→ ADR-0021, 0022, 0024, 0025
 ```
 
-BrowserSession:
-
-```text
-1 logical BrowserSession
-→ 1 session subprocess
-→ 1 Playwright runtime
-→ 1 dedicated Chromium
-→ N bounded Pages
-```
-
-MCP connection lifetime не владеет BrowserSession/Job/Content lifecycle.
+ADR-0012 и ADR-0022 частично superseded; читать их вместе с более поздними ADR и current exact contracts.
 
 ---
 
-# 6. Accepted ADR
+# 6. Public facades
 
-Реестр: `decisions/README.md`.
-
-Особенно важные chains:
-
-```text
-Browser:
-ADR-0001, ADR-0009..0014
-
-Content:
-ADR-0007, ADR-0008, ADR-0015, ADR-0016
-
-Jobs:
-ADR-0017, ADR-0018
-
-Policy/usage:
-ADR-0019, ADR-0020
-
-External contract/freeze:
-ADR-0021, ADR-0022
-```
-
-При конфликте старого exploratory текста с accepted ADR приоритет имеет canonical Design + latest non-superseded ADR.
-
----
-
-# 7. Public facades
-
-Канонические semantic docs:
+Semantic owners:
 
 - `rest-api.md`;
 - `mcp.md`;
 - `compatibility.md`;
 - `agent-integration.md`.
 
-Exact transport-facing specs:
+Exact contracts index: `contracts/README.md`.
 
-- `contracts/common-models.md`;
-- `contracts/mcp-tools.md`;
-- `contracts/rest-api-v1.md`.
-
-MCP core freeze candidate содержит 27 tools и не включает raw Playwright/HTTP/L2/generic task primitives.
-
-REST `/api/v1` является более богатым typed facade и включает protected operator/admin surface.
-
-Generated FastMCP/OpenAPI fixtures появляются и freeze-ятся в v0.8 после фактической реализации.
-
----
-
-# 8. Version design
-
-Roadmap: `roadmap.md`.
-
-Текущие design statuses:
+Current exact specs:
 
 ```text
-v0.1 Service Foundation                       ready for implementation
-v0.2 Search Runtime                           ready for implementation
-v0.3 Retrieval & Content Core                 ready for implementation
-v0.4 Managed Browser Runtime                  ready for implementation
-v0.5 Native Content Expansion                 ready for implementation
-v0.6 Durable Jobs Runtime                     ready for implementation
-v0.7 Distributed Operations & Policy          ready for implementation
-v0.8 REST/MCP & Agent Integration Stabilization ready for implementation
-v0.9 Production Hardening                     ready for implementation
-v1.0 Stable Web Access                        release contract defined
+contracts/common-models.md
+contracts/mcp-tools.md
+contracts/rest-api-v1.md
+contracts/browser-api-v1.md
+contracts/policy-models.md
+contracts/admin-api-v1.md
 ```
 
-`ready for implementation` означает готовность design конкретной версии, **не разрешение перепрыгивать предыдущие milestones**.
+MCP freeze candidate: **28 semantic tools**.
+
+Not in core MCP:
+
+- raw Playwright/HTTP;
+- admin/operator tools;
+- L2 processing;
+- generic Job/code runner.
+
+REST v1 is richer and includes protected Admin/Operations namespace.
 
 ---
 
-# 9. Тестирование и release evidence
+# 7. Final MCP refinements already accepted
 
-Канонические документы:
+Current contract includes:
+
+- direct/durable split (`web_fetch` vs `web_fetch_job`, `content_parse` vs `content_parse_job`);
+- cost/resource-aware retry semantics;
+- explicit `browser_scroll` for bounded/lazy UI exploration;
+- form fill sequential fail-fast + `not_attempted` remainder;
+- structured key + modifiers for `browser_press`;
+- multi-file ContentRef upload;
+- no hidden active-tab state;
+- exact ElementRef targeting/no fuzzy retargeting.
+
+---
+
+# 8. Policy/Admin refinements already accepted
+
+Dynamic policy:
+
+- revisioned PostgreSQL logical state;
+- global defaults/maxima + exact principal override exceptions;
+- durable quotas/billable accounting;
+- task capabilities only.
+
+According ADR-0023, `admin:read/admin:write` belongs to AuthProvider/deployment control plane and cannot be self-disabled by mutable dynamic task policy.
+
+Exact Admin REST covers policy revisions/rollback, overrides, usage/providers, audit, worker drain and bounded typed maintenance.
+
+---
+
+# 9. Version design status
+
+```text
+v0.1 Service Foundation                         ready for implementation
+v0.2 Search Runtime                             ready for implementation
+v0.3 Retrieval & Content Core                   ready for implementation
+v0.4 Managed Browser Runtime                    ready for implementation
+v0.5 Native Content Expansion                   ready for implementation
+v0.6 Durable Jobs Runtime                       ready for implementation
+v0.7 Distributed Operations & Policy Hardening  ready for implementation
+v0.8 REST/MCP & Agent Integration Stabilization ready for implementation
+v0.9 Production Hardening                       ready for implementation
+v1.0 Stable Web Access                          release contract defined
+```
+
+Это design status, не implementation status.
+
+---
+
+# 10. Release evidence
+
+Canonical:
 
 - `testing.md`;
 - `release-gates.md`;
 - `deployment.md`;
 - `operational-readiness.md`.
 
-Roadmap требует не только unit/integration, но также contract, race, fault, restart/recovery, security, soak/leak, load/backpressure, migration/restore и rolling-upgrade evidence в соответствующих версиях.
+По мере версий обязательны contract/integration/race/fault/restart/security/soak/load/migration/restore/rolling evidence, а не один happy-path pytest.
 
 ---
 
-# 10. Что намеренно не входит в v1.0 line
+# 11. Designed exclusions
 
 См. `limitations.md`.
 
-В частности baseline не обещает:
+v1 baseline намеренно не обещает:
 
-- L2 OCR/VLM/LibreOffice/transcription;
+- L2 processing;
 - CAPTCHA bypass/stealth;
 - arbitrary JS/code execution;
 - raw HTTP proxy;
 - generic arbitrary Job runner;
 - persistent browser profiles;
-- live BrowserSession migration между workers;
-- automatic Search→Retrieval→Browser orchestration.
+- live BrowserSession migration;
+- automatic research/orchestration layer.
 
-Это designed boundaries, а не defects.
+Это non-goals, не defects.
 
 ---
 
-# 11. Следующий шаг
+# 12. Следующий шаг
 
-После последнего документационного consistency check можно формировать подробный coding prompt для **только v0.1 Service Foundation** на основе:
+Design-phase feature expansion **остановлен**. Новые capability не следует добавлять без новой реальной requirement/review.
+
+Перед coding v0.1:
 
 ```text
 docs/AGENTS.md
-→ docs/design/current.md
-→ foundation design/ADR
-→ docs/design/versions/v0.1/README.md
-→ docs/design/versions/v0.1/implementation-sequence.md
+→ this current.md
+→ v0.1 foundation Design/ADR
+→ versions/v0.1/README.md
+→ versions/v0.1/implementation-sequence.md
 → testing/release gates
 ```
 
-Реализация должна идти version-by-version с factual acceptance evidence перед переходом дальше.
+Дальше реализация идёт только по v0.1 scope до factual acceptance.
