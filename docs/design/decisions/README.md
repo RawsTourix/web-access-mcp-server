@@ -45,6 +45,8 @@ ADR должен содержать:
 | [ADR-0014](ADR-0014-browser-egress-proxy.md) | Browser egress идёт через public-only forward proxy/gateway; Browser Worker не имеет direct Internet route | accepted |
 | [ADR-0015](ADR-0015-v0.5-native-content-expansion.md) | v0.5 расширяет только direct L1 readers/inspectors: OOXML, ODF, EPUB/FB2/SVG, image/audio metadata; без LibreOffice/OCR/VLM | accepted |
 | [ADR-0016](ADR-0016-s3-content-store.md) | S3-compatible ContentStore использует boto3 в bounded I/O executor и сохраняет тот же staged/finalized Content lifecycle | accepted |
+| [ADR-0017](ADR-0017-job-outbox-arq-delivery.md) | Durable Jobs доставляются `PostgreSQL outbox → arq wake-up → authoritative DB claim`; Redis не является source of truth | accepted |
+| [ADR-0018](ADR-0018-v0.6-durable-job-types-and-items.md) | Первые durable workloads — retrieval/content parse batches с persistent `JobItem` checkpoints; crawl/browser workflow отложены | accepted |
 
 ## Приоритет при чтении Browser ADR
 
@@ -72,3 +74,12 @@ ADR-0016  S3-compatible shared ContentStore
 ```
 
 Ни ADR-0015, ни ADR-0016 не расширяют Web Access до L2 document/media processing.
+
+## Jobs ADR progression
+
+```text
+ADR-0017  durable outbox/arq delivery + DB claim/fencing
+ADR-0018  first typed batch Job workloads + JobItem checkpoints
+```
+
+Queue/runtime остаётся generic внутри backend, но public Job creation — typed; arbitrary task execution не вводится.
