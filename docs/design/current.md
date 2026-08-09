@@ -58,72 +58,44 @@
 
 ## 3. Архитектурный фундамент
 
-### `principles.md`
-
 Статус: **зафиксирован**.
 
-Определены сквозные invariants:
+Документы:
 
-- backend-first;
-- lazy execution;
-- отсутствие hidden reasoning fallback;
-- ownership/lifecycle;
-- operation identity;
-- retry/unknown outcome;
-- provenance;
-- L0/L1/L2;
-- batch-first для независимых операций;
-- structured hints;
-- scalability;
-- MCP/REST роли.
+- `principles.md`;
+- `glossary.md`;
+- `dependency-rules.md`;
+- `system-context.md`;
+- `runtime-topology.md`;
+- `application-contracts.md`;
+- `resource-model.md`;
+- `persistence.md`;
+- `security.md`.
 
-### `glossary.md`
+### Основные принятые решения
 
-Статус: **зафиксирован**.
+Зафиксированы:
 
-Определён общий словарь для последующих design-документов.
-
-### `dependency-rules.md`
-
-Статус: **зафиксирован**.
-
-Определены:
-
-- `domain → application → transport/infrastructure` boundaries;
-- ownership ports;
-- separation ORM/domain/transport models;
-- Control Plane / Job Worker / Browser Worker responsibilities;
-- запрет hidden Search→Retrieval→Browser orchestration;
-- composition root;
-- infrastructure error normalization;
-- cross-module dependency rules.
+- направление зависимостей и ports/adapters;
+- единый application protocol;
+- `OperationId`, outcomes, warnings, hints, batch/partial-success semantics;
+- `unknown outcome` и retry classes;
+- opaque Resource handles и ownership;
+- immutable ContentObject payload + provenance graph;
+- BrowserSession и Job как отдельные resources;
+- PostgreSQL как durable structured source of truth;
+- Redis как cache/queue/coordination infrastructure;
+- ContentStore как storage крупных payloads;
+- Transactional Outbox как target consistency model для durable Job publication;
+- обязательный reconciliation для cross-system crash windows;
+- server-side cleanup/retention;
+- security foundation для SSRF, Content, Browser и resource isolation.
 
 ---
 
-## 4. System context
+## 4. Runtime topology
 
-### `system-context.md`
-
-Статус: **зафиксирован**.
-
-Определены:
-
-- внешние actors;
-- Web Access system boundary;
-- Search/Internet/Advanced L2 boundaries;
-- trust boundaries;
-- ownership/lifecycle boundaries;
-- интеграция с собственным ИИ-агентом и другими clients.
-
----
-
-## 5. Runtime topology
-
-### `runtime-topology.md`
-
-Статус: **зафиксирован на концептуальном design-уровне**.
-
-Определены три основных runtime classes:
+Зафиксированы три основных runtime classes:
 
 ```text
 Control Plane
@@ -131,93 +103,113 @@ Job Worker
 Browser Worker
 ```
 
-Зафиксированы:
+Browser Worker владеет live Playwright state.
 
-- Browser Worker ownership live Playwright state;
-- горизонтальное масштабирование control plane;
-- BrowserSession routing requirement;
-- request-bound vs durable execution path;
-- graceful shutdown direction;
-- capability-aware degraded operation;
-- separation PostgreSQL / Redis / ContentStore / worker memory.
+Control Plane должен масштабироваться горизонтально и не хранить authoritative live browser objects.
 
-### Намеренно открытые решения
+Request-bound и durable execution разделены.
+
+---
+
+## 5. Закрытые ранее открытые решения
+
+### Durable Job publication
+
+Принято target-направление:
+
+```text
+PostgreSQL Job state
++
+Transactional Outbox
+→ at-least-once publish в Redis/arq
+→ idempotent Job claim
+```
+
+Простой незащищённый dual write `DB commit → redis.enqueue` не является целевым production contract.
+
+---
+
+## 6. Намеренно открытые сквозные решения
 
 Пока не зафиксированы:
 
 1. Control Plane ↔ Browser Worker transport.
-2. Browser Worker registry/heartbeat mechanism.
-3. Необходимость fencing token.
-4. Точная DB access policy Browser Worker.
-5. Durable Job publication strategy (`reconciliation` / `outbox` / другое).
-6. Production ContentStore backend.
-7. Exact readiness schema.
-8. Browser session placement algorithm.
+2. Browser Worker registry/heartbeat/lease/fencing mechanism.
+3. Точная DB access policy Browser Worker.
+4. Production ContentStore backend.
+5. Exact capability-aware readiness schema.
+6. Browser session placement algorithm.
+7. Нужен ли отдельный isolated executor/runtime для части L1 Native Parsers.
+8. Точная Principal/Owner authentication model.
 
 Эти вопросы должны закрываться соответствующими component design/ADR, а не случайным implementation choice.
 
 ---
 
-# 6. Текущий следующий этап
+# 7. Текущий следующий этап
 
-Следующий блок проектирования:
+Общий foundation завершён.
+
+Начинается подробное проектирование предметных подсистем в порядке:
 
 ```text
-application-contracts.md
-        ↓
-resource-model.md
-        ↓
-persistence.md
-        ↓
-security.md
+Search
+→ Retrieval
+→ Content
+→ Browser
+→ Jobs
 ```
 
-Это последний общий foundation перед подробным проектированием Search / Retrieval / Content / Browser / Jobs.
+Текущий приоритет:
+
+```text
+search.md
+```
 
 ---
 
-## 7. Приоритет ближайшего документа
+## 8. Что должен закрыть `search.md`
 
-### `application-contracts.md`
+Необходимо определить:
 
-Нужно определить единый application protocol проекта:
+- Search responsibilities/non-goals;
+- application inputs/results;
+- batch semantics поверх общего contract;
+- `SearchProvider` port;
+- provider registry/selection;
+- SearXNG adapter;
+- Yandex Search adapter;
+- normalization/provenance;
+- pagination/limits;
+- language/region/time/category semantics;
+- cache/freshness;
+- provider rate limits/quotas/cost accounting;
+- provider availability/degraded behavior;
+- error mapping;
+- structured hints без reasoning fallback;
+- security/privacy;
+- observability;
+- acceptance criteria.
 
-- `OperationId`;
-- `ExecutionContext`;
-- principal/owner context;
-- deadline/cancellation;
-- `OperationResult`;
-- `OperationOutcome`;
-- `OperationError`;
-- warnings;
-- structured hints;
-- provenance references;
-- batch semantics;
-- partial success;
-- retry/idempotency classes;
-- unknown outcome;
-- operation metadata.
-
-Этот документ должен стать общим основанием для всех последующих application services и обоих transport facades.
+Search не должен читать найденные страницы и не должен автоматически менять provider из-за оценки «качества» выдачи.
 
 ---
 
-## 8. После общего foundation
+## 9. Последующий порядок
 
-После `application-contracts.md`, `resource-model.md`, `persistence.md`, `security.md` проектирование идёт в порядке:
+После `search.md`:
 
-1. `search.md`;
-2. `retrieval.md`;
-3. `content.md`;
-4. `browser.md`;
-5. `jobs.md`;
-6. `observability.md`;
-7. `rest-api.md`;
-8. `mcp.md`;
-9. `deployment.md`;
-10. `testing.md`;
-11. `release-gates.md`;
-12. `roadmap.md`;
-13. `versions/`.
+1. `retrieval.md`;
+2. `content.md`;
+3. `browser.md`;
+4. `jobs.md`;
+5. `observability.md`;
+6. `rest-api.md`;
+7. `mcp.md`;
+8. `deployment.md`;
+9. `testing.md`;
+10. `release-gates.md`;
+11. `roadmap.md`;
+12. `versions/`.
 
 Порядок может уточняться только если новый dependency analysis показывает реальную необходимость.
