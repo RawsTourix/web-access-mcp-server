@@ -2,9 +2,9 @@
 
 ## Назначение
 
-Этот каталог является входной точкой в архитектурную и version-specific документацию проекта.
+Этот каталог — входная точка в concept, architecture, exact public contracts и version-specific документацию проекта.
 
-Перед изменением production-кода или public contracts coding agent должен восстановить контекст по соответствующим каноническим документам, а не проектировать архитектуру заново из одного task prompt.
+Перед изменением production-кода или public contracts coding agent должен восстановить repository design context, а не проектировать систему заново из одного task prompt.
 
 ---
 
@@ -20,14 +20,17 @@
 
 ## Перед реализацией конкретной версии
 
-1. [`design/principles.md`](design/principles.md)
-2. [`design/dependency-rules.md`](design/dependency-rules.md)
-3. relevant component design;
-4. relevant ADR from [`design/decisions/README.md`](design/decisions/README.md);
-5. `design/versions/vX.Y/README.md`;
-6. `design/versions/vX.Y/implementation-sequence.md` или release checklist;
-7. [`design/testing.md`](design/testing.md);
-8. [`design/release-gates.md`](design/release-gates.md).
+1. [`AGENTS.md`](AGENTS.md)
+2. [`design/current.md`](design/current.md)
+3. [`design/principles.md`](design/principles.md)
+4. [`design/dependency-rules.md`](design/dependency-rules.md)
+5. relevant component design;
+6. relevant accepted ADR from [`design/decisions/README.md`](design/decisions/README.md);
+7. relevant exact public contract from [`design/contracts/README.md`](design/contracts/README.md), если версия затрагивает facade/schema;
+8. `design/versions/vX.Y/README.md`;
+9. `design/versions/vX.Y/implementation-sequence.md` или release checklist;
+10. [`design/testing.md`](design/testing.md);
+11. [`design/release-gates.md`](design/release-gates.md).
 
 ---
 
@@ -44,10 +47,11 @@ docs/
     ├── roadmap.md
     ├── cross-cutting/component designs
     ├── decisions/
+    ├── contracts/
     └── versions/
 ```
 
-`design/README.md` является подробным индексом canonical design topics.
+`design/README.md` — подробный индекс canonical design topics.
 
 ---
 
@@ -56,16 +60,17 @@ docs/
 При противоречии использовать порядок:
 
 ```text
-accepted current ADR / canonical Design
+accepted current ADR + canonical Design semantics
+→ exact public contract spec for facade shape
 → current version specification
 → implementation sequence
 → architecture concept
 → project concept
 ```
 
-Concept documents объясняют направление и не должны переопределять более позднее инженерное решение.
+`contracts/` не может сам изменить lifecycle/security semantics Design/ADR; он фиксирует точную transport-facing форму уже принятого решения.
 
-Если новый ADR supersedes старое решение, связанные canonical/version docs обновляются consistency patch.
+Если новый ADR supersedes старое решение, canonical/version/contracts обновляются consistency patch.
 
 ---
 
@@ -75,13 +80,15 @@ Concept documents объясняют направление и не должны
 
 Главный принцип:
 
-> Реализовывать принятую архитектуру, а не изобретать более простой shortcut без явного design change.
+> Реализовывать принятую архитектуру и target version, а не изобретать более простой shortcut или новый public API без явного design change.
 
-Особенно запрещено самостоятельно ослаблять:
+Особенно запрещено самостоятельно ослаблять/переопределять:
 
 - security boundary;
 - ownership;
 - lifecycle/recovery;
 - transaction/outbox/fencing semantics;
-- public REST/MCP contract;
+- exact REST/MCP contract;
 - release gates.
+
+Текущий следующий implementation milestone указан в [`design/current.md`](design/current.md).
