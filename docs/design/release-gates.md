@@ -1,628 +1,543 @@
-# Release gates Web Access MCP
+# Release Gates Web Access MCP
 
-## Статус документа
+## Статус
 
-Этот документ является каноническим владельцем **общих критериев допуска implementation/version к завершению и release**.
+Каноническая система acceptance gates.
 
-Version plan выбирает применимые gates и добавляет version-specific acceptance, но не может ослабить общие security/consistency invariants без изменения design/ADR.
+Version считается `accepted` только после всех применимых gates + version-specific DoD. Green happy-path unit tests недостаточны.
 
 ---
 
-# 1. Главный принцип
+# G0 — Documentation / design consistency
 
-Версия считается завершённой не потому, что:
+Required:
+
+- code follows current Design/non-superseded ADR;
+- exact public contracts match implementation scope;
+- version README/sequence/current status factual;
+- no unresolved implementation blocker hidden in code;
+- superseded contract not implemented as alternative.
+
+Fail if documentation and code disagree on lifecycle/security/public semantics.
+
+---
+
+# G1 — Dependency / architecture boundaries
+
+Verify automatically where possible:
+
+- domain/application do not import transport/concrete infrastructure;
+- REST/MCP do not own business logic;
+- REST and MCP do not call each other in baseline;
+- provider/ORM/Playwright types do not leak public models;
+- worker child boundaries respected.
+
+---
+
+# G2 — Unit/type/static quality
+
+Required for affected code:
+
+- unit tests;
+- configured type/static checks;
+- formatting/lint/import discipline;
+- no unexplained warnings/errors;
+- deterministic serialization/schema where required.
+
+Exact tooling pinned by target version/project config.
+
+---
+
+# G3 — Public contract/schema
+
+For affected facade:
+
+- actual FastMCP schemas from real MCP client;
+- generated FastAPI OpenAPI;
+- common public serialization;
+- exact required/default/bounds/enums/oneOf;
+- descriptions;
+- no private fields;
+- positive/negative fixtures.
+
+v0.8+ compares generated golden contract diff/compatibility.
+
+---
+
+# G4 — Authentication / ownership / authorization
+
+Test:
+
+- missing/invalid credential;
+- wrong owner;
+- missing task scope;
+- dynamic policy restriction;
+- delegated context if implemented;
+- admin:read/write boundary;
+- dynamic task policy cannot mint scope or self-lock admin recovery.
+
+Opaque handle knowledge alone never grants access.
+
+---
+
+# G5 — Persistence / migrations / consistency
+
+For schema/state change:
+
+- empty DB→head migration;
+- upgrade from previous accepted head;
+- one Alembic head;
+- constraints/indexes;
+- transaction boundaries;
+- no hidden commit;
+- crash-window reconciliation;
+- stale revision/fencing tests;
+- rollback/restart semantics where designed.
+
+---
+
+# G6 — Security boundary
+
+Applicable tests include:
+
+- SSRF/private/metadata/DNS rebinding;
+- redirect/TLS;
+- Browser public-only egress;
+- parser/session subprocess isolation;
+- path/temp traversal;
+- compression/package/parser bombs;
+- secret redaction;
+- untrusted page/content not becoming trusted hint/control;
+- no raw JS/selector/HTTP/admin escape not designed.
+
+Critical/High dependency/container findings require documented disposition according release security policy; production release cannot silently ignore them.
+
+---
+
+# G7 — Search provider/cost
+
+Search release must prove:
+
+- deterministic provider selection;
+- no hidden fallback;
+- cache freshness/isolation;
+- distributed rate/concurrency correctness;
+- provider outage/rate-limit/timeout mapping;
+- default CI live billable calls = 0;
+- billable provider send/usage evidence;
+- **response loss after possible paid dispatch does not cause blind second provider/Agent call**;
+- cache hit consumes zero upstream billable unit.
+
+---
+
+# G8 — Retrieval / Content acquisition
+
+Must prove:
+
+- safe DNS/connect/redirect path;
+- streaming/decompression limits;
+- Content staging/finalization/reconciliation;
+- owner isolation;
+- no hidden Browser/L2;
+- `web_fetch` ambiguous response after possible acquisition/Content creation **does not blind replay**;
+- large payload externalized/bounded.
+
+---
+
+# G9 — Content parser / representation reuse
+
+For L1 parser changes:
+
+- format detection contract;
+- parser input/output/time/resource limits;
+- isolated risky parser crash/timeout/kill;
+- no OCR/L2 hidden escalation;
+- provenance;
+- concurrent/replayed compatible representation reuse;
+- `content_parse` cannot receive idempotent trusted classification until canonical reuse is proven.
+
+v0.5 additionally tests archive/container bomb limits and S3/filesystem parity.
+
+---
+
+# G10 — Browser lifecycle / interaction
+
+Browser release must prove:
+
+- worker generation/lease/self-fencing;
+- session subprocess + dedicated Chromium boundary;
+- public-only egress/no fallback;
+- create/close/TTL/reaper/lost/drain;
+- page identity/generation;
+- exact ElementRef stale identity;
+- per-session serial action lane;
+- action ledger/status recovery/`unknown`;
+- no blind duplicate mutation;
+- explicit `browser_scroll` on long/lazy/nested-scroll fixtures;
+- snapshot→scroll→snapshot behavior;
+- fill-form sequential fail-fast + `not_attempted`;
+- structured key press;
+- multi-file upload semantics;
+- dialogs/popups/downloads;
+- screenshot/rendered/download Content handoff;
+- no orphan Chromium/temp/ref leaks.
+
+---
+
+# G11 — Durable Jobs
+
+Must prove:
+
+- transactional Job+Items+Outbox create;
+- Redis outage/recovery;
+- duplicate queue delivery;
+- authoritative DB claim;
+- attempt lease/fencing;
+- worker crash/lost attempt/retry_wait;
+- succeeded JobItems not rerun;
+- cancellation;
+- partial result manifest;
+- bounded progress writes;
+- no generic arbitrary function payload.
+
+---
+
+# G12 — Policy / quota / admin operations
+
+v0.7+ must prove:
+
+- global policy CAS/revision/rollback;
+- principal override update/delete + revision bump;
+- schema/static registry validation;
+- no `admin` dynamic task capability;
+- authorized admin can recover with all task capabilities disabled;
+- quota races cannot oversubscribe;
+- billable reservation cannot double-spend;
+- usage reconciliation repairs drift;
+- audit mutation atomicity/redaction;
+- generation-safe worker drain;
+- typed maintenance only;
+- hot-principal Job fairness/backpressure.
+
+---
+
+# G13 — Observability / health / readiness
+
+Verify:
+
+- operation/request/trace correlation;
+- no secrets/high-cardinality content labels;
+- dependency/capability states accurate;
+- liveness does not incorrectly equal every dependency health;
+- readiness/degraded semantics observable;
+- metrics/events bounded;
+- audit distinct from telemetry.
+
+---
+
+# G14 — MCP facade usability
+
+Actual MCP acceptance:
+
+- exact current catalog (v0.8 target **28 tools**);
+- descriptions sufficient for discovery;
+- every nested input field described;
+- no aliases/obsolete tools;
+- no infrastructure/provider secrets;
+- batch-first independent operations;
+- stateful actions separate;
+- cost/resource-aware own-agent retry metadata ADR-0024;
+- no admin/L2/raw Playwright tools;
+- representative generic MCP client works.
+
+---
+
+# G15 — REST facade
+
+Verify exact composite contract:
 
 ```text
-«код написан и happy path работает»
+rest-api-v1
+browser-api-v1
+policy-models
+admin-api-v1
 ```
 
-а потому, что выполнены проверяемые gates по:
+Including:
 
-- design consistency;
-- contracts;
-- persistence;
-- security;
-- lifecycle/concurrency;
-- fault/recovery;
-- deployment;
-- integration;
-- performance для реализованного scope.
+- security/scopes;
+- normalized errors;
+- streaming Content;
+- opaque cursors/refs;
+- Browser action unions;
+- Admin typed operations;
+- no raw SQL/Redis/provider/Playwright proxy.
 
 ---
 
-# 2. Gate G0 — Design completeness
+# G16 — Own-agent integration
 
-Перед implementation/release scope должен иметь канонический design.
+Cross-repository acceptance with `internet-search-bot`:
 
-Требования:
-
-- component responsibilities/non-goals определены;
-- application operations описаны;
-- ports/dependencies определены;
-- lifecycle/concurrency/retry/failure semantics определены;
-- persistence/security impact определён;
-- acceptance criteria существуют;
-- implementation-relevant open questions закрыты или явно отложены вне scope;
-- design docs не противоречат друг другу;
-- `current.md`/roadmap/version status актуальны.
-
-Coding agent не должен самостоятельно принимать архитектурное решение, отмеченное design как open и необходимое для текущего patch.
+- tool discovery/schema retrieval/call;
+- trusted presentation metadata;
+- BrowserSession remote handle cleanup;
+- Job/Content lifecycle;
+- `unknown` preserved;
+- billable/resource/stateful response-loss no blind duplicate;
+- `snapshot→scroll→snapshot` flow;
+- service unavailable does not destroy unrelated Agent runtime.
 
 ---
 
-# 3. Gate G1 — Build/static quality
+# G17 — Race / concurrency
 
-Обязательные проверки:
+Applicable randomized/adversarial cases:
 
-- dependency lock разрешается reproducibly;
-- package/build импортируется;
-- formatter/linter green;
-- type checks green согласно принятому уровню strictness;
-- architecture import checks green;
-- no committed secrets;
-- migrations имеют один ожидаемый head;
-- docs links/schema examples checks green, если соответствующее tooling уже введено.
+- last quota slot across replicas;
+- stale revisions;
+- concurrent Content finalization/reuse;
+- worker generation changes;
+- close vs expiry;
+- cancellation vs completion;
+- outbox publishers/claims;
+- Redis lease ownership;
+- policy concurrent update;
+- Browser queued action vs drain/loss.
 
-Новых ignored type/lint errors без documented reason не допускается.
-
----
-
-# 4. Gate G2 — Unit/application contracts
-
-Все unit/contract tests текущего scope green.
-
-Особенно:
-
-- OperationOutcome invariants;
-- batch/partial success;
-- warning/hint/error separation;
-- ownership;
-- retry/unknown outcome;
-- state machines;
-- application ports;
-- no hidden orchestration.
-
-Ни один critical invariant не должен быть проверен только E2E случайно.
+A race only reproduced once is still a defect until resolved/explained.
 
 ---
 
-# 5. Gate G3 — Public schema contracts
+# G18 — Fault injection / restart / recovery
 
-Если версия изменяет REST/MCP:
+Inject failures at important commit/dispatch boundaries:
 
-- actual OpenAPI tests green;
-- actual FastMCP schema tests green;
-- catalog/operationId diff reviewed;
-- descriptions/constraints complete;
-- internal fields absent;
-- breaking change либо отсутствует, либо явно оформлена version/migration strategy;
-- own-agent compatibility fixtures updated осознанно.
+- before/after DB commit;
+- before/after Redis publish;
+- after remote send before response;
+- worker kill;
+- Control Plane restart;
+- Redis restart/flush;
+- ContentStore write/finalize fault;
+- parser/session child hang/crash;
+- Browser egress outage;
+- policy invalidation loss.
 
----
-
-# 6. Gate G4 — Persistence/migrations
-
-Если scope затрагивает durable state:
-
-- real PostgreSQL integration green;
-- migrations empty→head green;
-- previous supported schema→head green;
-- constraints/concurrency verified;
-- transaction boundaries tested;
-- rollback paths tested;
-- no hidden repository commits;
-- migration compatible с declared rollout strategy.
+System must converge to documented state or explicit `unknown/lost`, never silent corruption.
 
 ---
 
-# 7. Gate G5 — Cross-system consistency
+# G19 — Soak / resource leak
 
-Если scope затрагивает PostgreSQL + Redis/ContentStore/worker boundary:
+For long-lived/child-process capabilities:
 
-обязательны crash-window tests.
+- repeated create/use/close;
+- temp files;
+- child processes;
+- Browser refs/handles;
+- DB/Redis connections;
+- parser workers;
+- Content staging garbage;
+- memory/FD growth.
 
-Примеры:
-
-- Job + Outbox;
-- duplicate publish;
-- Content staging/finalization;
-- Browser routing loss;
-- resource cleanup/reconciliation.
-
-Нельзя закрыть gate только unit mock-ом cross-system failure.
-
----
-
-# 8. Gate G6 — Security baseline
-
-Для каждого реализованного external input surface:
-
-- threat-specific negative tests green;
-- ownership checks green;
-- secrets/error redaction green;
-- resource limits существуют;
-- unsafe defaults отсутствуют;
-- dependency/container scan reviewed;
-- no unresolved Critical security finding;
-- High finding либо исправлен, либо release blocked до отдельного explicit security decision.
-
-Нельзя «отложить SSRF» после выпуска Retrieval/Browser.
+No unbounded leak trend within measured acceptance budget.
 
 ---
 
-# 9. Gate G7 — Search
+# G20 — Load / backpressure / fairness
 
-Применяется версиям с Search.
+Measure by defined hardware/profile:
 
-Требования:
+- request throughput/latency;
+- Search provider cap;
+- Retrieval bytes/concurrency;
+- Content parser capacity;
+- Browser sessions/worker/RAM/action latency;
+- Job backlog/throughput;
+- quota/policy contention;
+- hot-principal fairness.
 
-- no hidden provider fallback;
-- batch/partial failure green;
-- default/explicit provider selection green;
-- provider capability rejection green;
-- SearXNG adapter controlled integration green;
-- Yandex adapter protocol tests green, если входит scope;
-- cache freshness semantics tested;
-- billable accounting tested без live billing default CI;
-- provider outage/degraded readiness tested;
-- snippets остаются untrusted metadata.
+Overload must reject/defer with structured capacity/backpressure, not OOM/thread/process explosion.
 
----
-
-# 10. Gate G8 — Retrieval
-
-Применяется версиям с Retrieval.
-
-Требования:
-
-- SSRF matrix green;
-- redirect revalidation green;
-- TLS verification default;
-- streaming size/decompression limits green;
-- timeout/cancellation green;
-- batch isolation green;
-- 4xx/5xx response/body semantics tested;
-- Content handoff green;
-- no Browser fallback;
-- no arbitrary auth/header proxy common surface.
+Exact budgets become measured baselines in version evidence; they are not invented by this generic gate.
 
 ---
 
-# 11. Gate G9 — Content
+# G21 — Upgrade / rolling compatibility
 
-Применяется версиям с Content.
+Applicable v0.7+ / production:
 
-Требования:
-
-- raw Content immutable;
-- format identification multi-signal;
-- parser registry extensible;
-- L0/L1/L2 boundary verified;
-- scanned PDF/no-native-text does not call OCR;
-- parser limits/security corpus green;
-- derived provenance/revision green;
-- large result uses ContentRef;
-- ContentStore adapter contract green;
-- staging/orphan reconciliation green;
-- isolated parser execution tested, если scope его включает.
+- expand-first migrations;
+- mixed old/new API replicas;
+- policy schema readable overlap;
+- Browser/Job worker revision compatibility;
+- drain/rolling restart;
+- old client compatibility according public policy;
+- rollback within supported window.
 
 ---
 
-# 12. Gate G10 — Browser
+# G22 — Backup / restore / disaster recovery
 
-Применяется версиям с Browser.
+v0.9 production candidate:
 
-Требования:
-
-- real Chromium integration green;
-- BrowserSession independent from transport connection;
-- worker ownership/routing tested;
-- session action serialization green;
-- element_ref stale/ambiguity safety green;
-- actionability behavior green;
-- mutating duplicate delivery does not double-execute;
-- response loss returns `unknown` where required;
-- worker loss → session lost;
-- TTL/reaper/close races green;
-- popup/download/upload Content handoff green;
-- private/internal browser egress blocked;
-- worker sandbox/least privilege deployment verified;
-- no unrestricted evaluate tool ordinary surface.
+- PostgreSQL backup/restore;
+- ContentStore restore/reconciliation;
+- Redis disposable/rebuild assumptions validated;
+- restored resource metadata/blob consistency;
+- runbook game day;
+- documented RPO/RTO evidence/profile.
 
 ---
 
-# 13. Gate G11 — Jobs
+# G23 — Supply chain / artifact reproducibility
 
-Применяется версиям с durable Jobs.
+Production release validates:
 
-Требования:
-
-- Job + Outbox atomic transaction;
-- at-least-once duplicate-safe publish;
-- DB claim prevents double execution;
-- attempt lease/fencing green;
-- worker crash/retry green;
-- retry finite/backoff durable;
-- cancellation races green;
-- stale attempt cannot overwrite terminal result;
-- reconciler green;
-- large result ContentRefs;
-- admission quotas/backpressure.
+- lockfile/pinned critical runtime artifacts;
+- container/image digest/version evidence;
+- browser/runtime dependencies;
+- dependency/security scans;
+- no accidental secret in image/repo;
+- reproducible documented build path.
 
 ---
 
-# 14. Gate G12 — Observability/health
+# G24 — Full test result hygiene
 
-Для production-capable версии:
-
-- structured logs with redaction;
-- operation IDs propagated;
-- low-cardinality metrics;
-- component metrics exist;
-- liveness/readiness/degraded status tested;
-- dependency outage reflected correctly;
-- worker capacity/drain distinguishable from crash;
-- telemetry backend failure does not cascade;
-- key leak/backlog/error conditions alertable.
-
----
-
-# 15. Gate G13 — REST
-
-Если REST facade входит scope:
-
-- actual OpenAPI contract green;
-- common error mapping green;
-- auth/owner isolation green;
-- batch partial success green;
-- content streaming green;
-- Browser typed endpoints green;
-- no raw infrastructure/provider leakage;
-- unknown fields rejected;
-- request/response limits green;
-- operational/admin surface separated.
-
----
-
-# 16. Gate G14 — MCP
-
-Если MCP facade входит scope:
-
-- real MCP client discovers expected catalog;
-- full schema retrieval works;
-- recursive field descriptions/constraints green;
-- Russian agent-facing descriptions reviewed;
-- web_search/web_fetch distinction clear;
-- no `*_many` duplicates;
-- Browser refs/lifecycle green;
-- large result bounded ContentRef/cursor;
-- structured repairable errors/hints;
-- annotations/trusted agent metadata consistent;
-- generic MCP client green;
-- own-agent integration green;
-- server reconnect does not define resource lifecycle.
-
----
-
-# 17. Gate G15 — Deployment
-
-Для версии, объявленной deployable:
-
-- reference Compose starts cleanly from empty state;
-- migration one-shot succeeds;
-- only intended ingress exposed;
-- health probes green;
-- dependency restart tested;
-- API replica restart safe;
-- Job Worker restart safe;
-- Browser Worker restart/lost-session semantics green;
-- persistent volumes/storage configured;
-- secrets not baked/logged;
-- proxy streaming MCP/Content works.
-
----
-
-# 18. Gate G16 — Rolling upgrade
-
-Для release с persisted/distributed compatibility changes:
-
-- old→new migration tested;
-- mixed API versions tested where promised;
-- Browser Worker protocol rolling compatibility/drain tested;
-- queued Jobs compatible/migrated;
-- MCP/REST client compatibility reviewed;
-- rollback/forward-fix strategy documented.
-
----
-
-# 19. Gate G17 — Race/fault recovery
-
-Critical concurrency/fault suites green.
-
-Required relevant scenarios repeated/randomized, not one pass.
-
-No known reproducible race may remain marked flaky/ignored in implemented lifecycle.
-
-Failpoint/crash tests должны подтверждать recovery, а не только failure detection.
-
----
-
-# 20. Gate G18 — Load baseline
-
-Перед production release реализованные capabilities имеют reproducible baseline:
-
-- throughput;
-- latency distribution;
-- memory/CPU;
-- browser capacity;
-- queue/backlog behavior;
-- Content throughput.
-
-Hard regression thresholds устанавливаются после первого baseline, а не заранее.
-
----
-
-# 21. Gate G19 — Soak/leak
-
-Перед production-ready Browser/worker release выполняется длительный soak.
-
-После cleanup/reconciliation:
-
-- BrowserContexts/pages не растут бесконечно;
-- zombie Chromium processes отсутствуют;
-- temp files/downloads bounded;
-- DB pool стабилен;
-- Redis leases/outbox backlog восстанавливается;
-- orphan Content bounded/reconciled;
-- memory growth объясним/bounded.
-
----
-
-# 22. Gate G20 — Own-agent integration
-
-Для builtin use в `internet-search-bot`:
-
-- Streamable HTTP connect;
-- tool discovery;
-- schema lookup;
-- calls;
-- Content handles;
-- BrowserSession cleanup;
-- presentation metadata mapping;
-- retry semantics;
-- server restart/reconnect;
-- optional Job lifecycle
-
-проверяются на совместимых contract revisions.
-
-Agent repository не должен требовать private Python imports Web Access.
-
----
-
-# 23. Gate G21 — Documentation consistency
-
-Перед version acceptance:
-
-- `current.md` актуален;
-- roadmap/status актуален;
-- component design соответствует implementation;
-- version non-goals соблюдены;
-- new ADR добавлены/linked;
-- obsolete decisions superseded, а не оставлены параллельно;
-- examples/schema names совпадают с code.
-
----
-
-# 24. Zero-failure policy
-
-Required gate suite завершается:
+Acceptance run expects:
 
 ```text
 0 failed
 0 errors
-0 unexpected xfail/xpass
+0 unexplained xfail/xpass
 ```
 
-Known intentional skips разрешены только с documented reason/environment condition.
+Skips allowed only with documented intentional environment/scope reason.
 
-Нельзя принимать version с «два теста иногда падают, но rerun зелёный».
-
----
-
-# 25. Flaky policy
-
-Known flaky test является открытым quality defect.
-
-Release gate требует:
-
-- устранить race/flakiness;
-- либо доказать, что test неверен и удалить/переписать его;
-- не скрывать бесконечным retry.
-
-CI может повторять тест для диагностики, но original flake учитывается.
+A required acceptance test cannot be permanently skipped.
 
 ---
 
-# 26. Skips
+# G25 — Flaky policy
 
-Skip допустим для:
+Known flaky test = open quality defect until:
 
-- platform-specific optional capability;
-- live billable provider profile без secret;
-- heavy nightly suite в PR tier;
-- feature, явно не входящей в текущую version.
+- race/flakiness fixed;
+- or test proven wrong and corrected/removed.
 
-Обязательный acceptance test реализованного scope не может быть permanently skipped.
+Rerun can diagnose; a green rerun does not erase original flake.
 
 ---
 
-# 27. Live external tests
+# G26 — Live external profile
 
-Live internet/provider smoke полезен, но не является единственным доказательством correctness.
+Default CI does not depend on public websites or billable providers.
 
-Default CI:
+Manual/release live profile:
 
-- не зависит от публичных сайтов;
-- не делает billable calls.
+- bounded budget;
+- recorded date/provider/runtime revision;
+- exact live call count;
+- failures separated from deterministic controlled suites.
 
-Release/manual live profile имеет bounded budget и фиксирует дату/provider revision.
-
----
-
-# 28. Security scan policy
-
-Release artifacts проходят выбранные dependency/container/secret scans.
-
-Результаты классифицируются, а не blindly ignored.
-
-False positive требует documented disposition.
-
-Critical/High policy определяется Gate G6.
+Live smoke is supplementary, not sole correctness evidence.
 
 ---
 
-# 29. Performance regression
+# G27 — No hidden orchestration
 
-После появления baseline version change не должна превышать установленный regression budget без:
-
-- объяснения;
-- нового baseline/design rationale;
-- принятого tradeoff.
-
-Особенно отслеживаются Browser memory/session и Retrieval/Content large payload.
-
----
-
-# 30. Resource leak gate
-
-Любая новая Resource type/capability должна иметь cleanup/reconciliation acceptance.
-
-Нельзя выпустить create operation без проверенного terminal/expiration cleanup path.
-
----
-
-# 31. Retry/cost gate
-
-Billable/provider/network retries проверяются на bounded behavior.
-
-Нельзя выпускать retry loop, способный при outage:
-
-- бесконечно тратить Yandex budget;
-- создавать retry storm;
-- обходить rate limits.
-
----
-
-# 32. No hidden orchestration gate
-
-Integration tests должны доказать отсутствие запрещённых hidden transitions:
+Integration tests prove absence of forbidden automatic transitions unless explicit caller operation exists:
 
 ```text
 Search → Retrieval
 Retrieval → Browser
-Content L1 → OCR/L2
-request-bound → Job
+Content L1 → L2/OCR
+request-bound → durable Job
 ```
 
-если caller явно их не инициировал.
+Structured hint is not execution.
 
 ---
 
-# 33. Release evidence
+# G28 — Release evidence artifact
 
-Для крупной version acceptance желательно сохранять machine-readable/report artifact:
-
-- commit SHA;
-- test counts/results;
-- skipped reasons;
-- schema diffs;
-- migration revision;
-- security scan summary;
-- load/soak summary, если gate применим;
-- live-provider calls = 0/default или explicit budget report.
-
-Это упрощает независимую проверку.
-
----
-
-# 34. Version-specific gates
-
-Каждый `versions/vX.Y/` document обязан перечислить:
+Major version acceptance should preserve report artifact containing at least:
 
 ```text
-Required gates
-Not-applicable gates + reason
-Additional version gates
+commit SHA
+version/patch
+migration head
+test counts/skips
+schema/golden diffs
+security summary
+race/fault summary
+load/soak summary when applicable
+live external call count/budget
+known limitations
 ```
 
-Нельзя просто написать «все тесты проходят» без указания, какие классы проверок требуются.
+Prefer Markdown + machine-readable JSON/CI artifact where project tooling defines it.
 
 ---
 
-# 35. Intermediate implementation patches
+# G29 — Version-specific gate declaration
 
-Не каждый internal patch обязан проходить full production soak/load, но обязан сохранять baseline предыдущего принятого этапа.
+Every version README/implementation plan states:
 
-Version implementation sequence может вводить progressive gates:
+- applicable gates;
+- intentionally not-applicable gates + reason;
+- extra version-specific gates.
+
+No acceptance by vague «all tests pass».
+
+---
+
+# G30 — Intermediate patch gates
+
+Not every patch runs production soak/load, but every patch preserves accepted previous baseline.
+
+Sequence may escalate:
 
 ```text
-patch N
-→ unit/contract
-
-patch M
-→ integration
-
-final version
-→ full applicable release gates
+unit/contract
+→ integration/migration
+→ race/fault/security
+→ final applicable soak/load/release
 ```
 
----
-
-# 36. Coding-agent handoff gate
-
-Большой prompt для Codex/ChatGPT должен содержать:
-
-- canonical docs to read;
-- exact implementation scope;
-- explicit non-goals;
-- files/modules expected;
-- migration rules;
-- required tests/gates;
-- prohibition on silently resolving open architecture questions.
-
-Результат coding agent проверяется фактическими gates, а не его текстовым отчётом.
+Next patch begins only after previous required gate.
 
 ---
 
-# 37. Acceptance criteria Release Gate system
+# G31 — Coding-agent handoff
 
-Gate system считается пригодным, если:
+Large Codex/ChatGPT task includes:
 
-1. Любая версия может однозначно перечислить необходимые проверки.
-2. Critical component имеет отдельный gate.
-3. Race/security/fault/load не спрятаны под «tests pass».
-4. Public schema changes имеют отдельный contract gate.
-5. Deployment/upgrade имеют отдельные gates.
-6. Own-agent integration явно проверяется.
-7. Flaky tests не маскируются retry.
-8. Billable external network не нужен default CI.
-9. Design/docs consistency является release requirement.
-10. Machine-readable evidence можно сохранить для независимого review.
+- canonical docs;
+- exact version/patch scope;
+- non-goals/forbidden shortcuts;
+- expected modules/migrations;
+- exact public contracts;
+- tests/gates;
+- no open architectural choices left to agent.
+
+Coding-agent narrative is not acceptance evidence; repository/test state is.
 
 ---
 
-# 38. Open questions
+# Gate-system acceptance
 
-До первой production release необходимо определить:
+Release gate system is complete enough for current v1 line when:
 
-1. Exact static/type tools и strictness.
-2. Exact security scan policy/tooling.
-3. Baseline hardware/profiles для load.
-4. Soak duration/resource limits после Browser benchmark.
-5. Performance regression budgets после baseline.
-6. Format release evidence (Markdown + JSON report, CI artifacts и т.п.).
-7. Cross-repository Agent integration workflow.
-8. Какие gates required для каждой ранней pre-1.0 version.
-9. Definition production-ready milestone/version.
-
-Эти вопросы будут закрыты roadmap/version planning после завершения design.
+1. each roadmap version can list applicable gates;
+2. all critical runtime/resource classes have dedicated gates;
+3. cost/resource-aware retry is explicit;
+4. Search paid-call, Retrieval Content creation and Browser mutation ambiguity are separately tested;
+5. MCP 28-tool/REST specialized contracts are executable-gated;
+6. dynamic policy/admin self-lockout is tested;
+7. race/fault/security/soak/load are not hidden under unit tests;
+8. upgrade/restore/supply-chain exist before production;
+9. flaky failures cannot be masked;
+10. release evidence supports independent review.
