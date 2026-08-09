@@ -17,7 +17,11 @@
 - `glossary.md` — каноническая терминология;
 - `dependency-rules.md` — направление зависимостей и module boundaries;
 - `system-context.md` — граница системы и внешние actors;
-- `runtime-topology.md` — process topology и runtime boundaries.
+- `runtime-topology.md` — process topology и runtime boundaries;
+- `application-contracts.md` — общий operation/result/error/batch/retry contract;
+- `resource-model.md` — Resource identity, ownership, lifecycle и provenance;
+- `persistence.md` — PostgreSQL/Redis/ContentStore consistency model;
+- `security.md` — trust boundaries и security invariants.
 
 Concept-документы отвечают на вопрос **«что мы строим и в каком направлении»**.
 
@@ -310,30 +314,27 @@ MCP agent-facing descriptions и docstrings преимущественно пи�
 
 ---
 
-## 10. Уже спроектировано
+## 10. Общий foundation завершён
 
-На текущем этапе зафиксированы:
+Зафиксированы:
 
 1. `principles.md`;
 2. `glossary.md`;
 3. `dependency-rules.md`;
 4. `system-context.md`;
-5. `runtime-topology.md`.
+5. `runtime-topology.md`;
+6. `application-contracts.md`;
+7. `resource-model.md`;
+8. `persistence.md`;
+9. `security.md`.
 
-Актуальный статус и открытые вопросы находятся в `current.md`.
+Актуальный status/open questions находятся в `current.md`.
 
 ---
 
 ## 11. Текущий следующий шаг
 
-Следующий общий foundation проектируется в порядке:
-
-1. `application-contracts.md`;
-2. `resource-model.md`;
-3. `persistence.md`;
-4. `security.md`.
-
-После этого можно безопасно переходить к предметным подсистемам:
+Начинается component design:
 
 ```text
 Search
@@ -343,4 +344,6 @@ Search
 → Jobs
 ```
 
-Затем проектируются observability, REST, MCP, deployment, testing и только после полной картины — roadmap и version implementation plans.
+Первым проектируется `search.md`.
+
+После component design проектируются observability, REST, MCP, deployment, testing, release gates и только затем roadmap/version implementation plans.
