@@ -4,620 +4,440 @@
 
 `ready for implementation`
 
-Версия создаёт законченный direct web-reading flow без Browser и без L2 processing.
-
-Подробный порядок: `implementation-sequence.md`.
-
----
-
-# 1. Цель
-
-После v0.3 известный URL проходит:
+v0.3 реализует законченный безопасный flow:
 
 ```text
-safe HTTP(S) Retrieval
+known HTTP(S) URL
+→ Safe Retrieval
 → raw ContentObject
-→ L0 Identification/Inspection
-→ registered L1 Native Parsing when directly available
-→ derived ContentObjects/provenance
-→ bounded REST/MCP access
+→ L0 Inspection
+→ available L1 Native Parsing
+→ bounded REST/MCP result + ContentRefs
 ```
 
-Если L1 невозможно/неподдерживаемо:
-
-```text
-raw ContentObject + diagnostics/hints
-```
-
-без автоматического Browser/OCR/LibreOffice/VLM fallback.
+Implementation order: `implementation-sequence.md`.
 
 ---
 
-# 2. Canonical design / ADR
+# 1. Canonical design/contracts
 
 - `../../retrieval.md`;
 - `../../content.md`;
+- `../../application-contracts.md`;
 - `../../resource-model.md`;
 - `../../persistence.md`;
 - `../../security.md`;
 - `../../rest-api.md`;
 - `../../mcp.md`;
-- ADR-0006 safe Retrieval client/DNS;
+- `../../contracts/rest-api-v1.md`;
+- `../../contracts/mcp-tools.md` (`web_fetch`, `content_get`, `content_parse`);
+- `../../contracts/common-models.md`;
+- ADR-0006 safe DNS/client;
 - ADR-0007 Content staging/finalization;
-- ADR-0008 initial Native Parser stack.
+- ADR-0008 initial parser stack;
+- **ADR-0024 resource-aware retry**.
 
 ---
 
-# 3. Non-goals
+# 2. Non-goals
 
 - Browser fallback;
-- OCR/VLM;
-- LibreOffice conversion;
-- exhaustive file format support;
-- arbitrary HTTP methods/cookies/session proxy;
-- generic downloader to client-selected host path;
-- crawl;
-- durable Jobs (v0.6);
-- S3 ContentStore (v0.5).
+- OCR/VLM/LibreOffice/L2;
+- broad Office/media parser expansion (v0.5);
+- durable retrieval/parse Jobs (v0.6);
+- arbitrary HTTP methods/body/headers/proxy;
+- raw filesystem paths/public storage keys;
+- client-selected parser library;
+- generic file conversion;
+- hidden re-fetch on Content read.
 
 ---
 
-# 4. Retrieval responsibility
+# 3. Retrieval responsibility
 
-Retrieval answers:
+Retrieval owns:
 
-> Что безопасно получил Web Access по известному HTTP(S)-URL?
+```text
+URL parsing/security
+DNS/IP validation
+HTTP(S) GET acquisition
+redirect validation
+streaming/body/decompression limits
+headers/status/final URL
+raw Content creation handoff
+```
 
-It owns:
+Retrieval does not decide semantic page quality and does not launch Browser.
 
-- URL validation;
-- DNS/IP validation;
-- SSRF/egress policy;
-- TLS;
-- redirects;
-- streaming GET;
-- wire/entity size limits;
-- decompression limits;
-- deadlines/cancellation;
-- response metadata;
-- handoff bytes to Content.
-
-It does **not** decide whether page quality is sufficient or Browser should be used.
+Known URL fetch is explicit.
 
 ---
 
-# 5. Safe HTTP client
+# 4. Safe HTTP implementation
 
-ADR-0006 baseline for arbitrary user-controlled URL:
+ADR-0006:
 
-```text
-aiohttp
-+
-custom validating resolver/connection policy
-```
+- arbitrary URL Retrieval uses `aiohttp` with validating resolver/connect strategy;
+- configured Search providers may remain HTTPX because endpoint is trusted config;
+- every DNS/connect/redirect hop revalidated against egress/SSRF policy;
+- TLS verification on;
+- only HTTP(S);
+- private/loopback/link-local/metadata/internal destinations denied by default.
 
-Reason: destination IP actually used for connection must belong to validated public DNS set; separate `getaddrinfo` followed by unrelated client re-resolution is insufficient against DNS rebinding/TOCTOU.
-
-Configured trusted provider clients may continue using HTTPX.
-
----
-
-# 6. URL policy
-
-Baseline:
-
-- schemes: `http`, `https` only;
-- no URL userinfo;
-- normalize/validate hostname/port;
-- default website ports 80/443;
-- private/loopback/link-local/multicast/reserved/special/internal CIDRs denied;
-- cloud metadata denied;
-- DNS A/AAAA full set validated;
-- mixed public/private result fails closed;
-- every redirect target revalidated from scratch;
-- no environment proxy (`trust_env=False`) for arbitrary Retrieval baseline.
-
-Operator allowlist/egress changes require explicit security design.
+No naïve `getaddrinfo validate → separate client re-resolve` window.
 
 ---
 
-# 7. TLS
+# 5. Streaming/decompression
 
-HTTPS:
-
-- certificate verification enabled;
-- hostname validation uses original hostname;
-- SNI/Host preserve original authority even if connection is pinned to validated address;
-- no user-controlled CA/client cert;
-- no silent downgrade on TLS failure.
-
----
-
-# 8. Redirects
-
-Manual/explicit redirect handling.
-
-Initial:
-
-```text
-default max redirects = 10
-hard ceiling = 20
-```
-
-Each hop records bounded provenance and is revalidated through same URL/DNS security policy.
-
-Redirect loop/limit is structured error.
-
----
-
-# 9. Batch Retrieval
-
-Application/REST naturally batch-first.
-
-MCP direct `web_fetch` baseline:
-
-```text
-urls: 1..8
-URL length <= 4096 chars
-```
-
-Application/REST initial hard batch:
-
-```text
-<= 32 URLs
-URL length <= 8192 chars
-```
-
-Input order preserved; per-item result/error; one bad URL does not erase successful independent items.
-
----
-
-# 10. Timeouts/deadlines
-
-Initial defaults:
-
-```text
-connect timeout = 10 s
-read inactivity = 15 s
-item deadline = 45 s
-operation deadline = 60 s
-```
-
-Hard ceilings:
-
-```text
-connect <= 30 s
-read <= 60 s
-item <= 120 s
-operation <= 180 s
-```
-
-Application deadline propagates downward and can only shorten child phases.
-
-No hidden indefinite retries.
-
----
-
-# 11. Concurrency
-
-Initial per Control Plane replica:
-
-```text
-global Retrieval concurrency = 32
-per-host concurrency = 6
-```
-
-Bounded semaphores/admission; saturation returns controlled capacity result rather than unbounded tasks.
-
-Future v0.7 policy can set lower effective principal limits.
-
----
-
-# 12. Wire/decompressed bytes
-
-Initial per response defaults:
-
-```text
-wire bytes <= 64 MiB
-decoded/entity bytes <= 64 MiB
-```
-
-Initial direct batch aggregate decoded budget:
-
-```text
-128 MiB
-```
-
-Hard ceilings:
-
-```text
-wire <= 256 MiB/entity response
-decoded <= 256 MiB/entity response
-batch decoded <= 512 MiB
-```
-
-Limits enforced while streaming, not after full RAM buffer.
-
----
-
-# 13. Content encoding
-
-Request baseline asks:
+Baseline direction:
 
 ```text
 Accept-Encoding: identity
 ```
 
-If upstream still returns supported content encoding (`gzip`, `deflate`, optional `br` if dependency present), Web Access decodes streaming itself under separate wire/decoded limits.
+If server still returns supported compression, service decodes itself under separate:
 
-Unsupported encoding returns explicit error/raw diagnostic; no unbounded implicit client decompression.
+```text
+wire-byte ceiling
+entity/decompressed-byte ceiling
+ratio/safety policy
+absolute deadline
+```
 
-Canonical raw ContentObject represents decoded HTTP entity bytes; Retrieval provenance records wire encoding/bytes.
+Parser never receives unbounded decompression bomb.
+
+Exact limits belong implementation sequence/settings and are contract-tested where public.
 
 ---
 
-# 14. Content creation lifecycle
+# 6. Content resource lifecycle
 
 ADR-0007:
 
 ```text
-ContentObject(state=creating)
-→ stage bytes
-→ compute/persist SHA-256 + size/staging handle
-→ idempotent physical finalize to content-addressed key
-→ DB CAS available
+creating
+→ staged blob
+→ validate hash/size
+→ idempotent physical finalization
+→ DB available
 ```
 
-Crash windows handled by Content reconciler.
+Failure/crash windows produce recoverable states; reconciler cleans orphan staging/final blobs only according reference/state rules.
 
-No DB row says `available` before durable payload exists.
+Public ContentRef never exposes storage key/path.
 
----
-
-# 15. Filesystem ContentStore v0.3
-
-Uses v0.1 storage port matured to production-quality local profile.
-
-Final key content-addressed by SHA-256; logical ContentObject ownership remains separate.
-
-Atomic rename/replace where filesystem semantics permit.
-
-No client filename/path controls storage location.
+Physical dedup by hash does not merge logical owner/resource identity.
 
 ---
 
-# 16. ContentObject model
+# 7. Content persistence/provenance
 
-Durable metadata includes conceptually:
+PostgreSQL stores Content metadata/lifecycle/provenance.
+
+ContentStore stores large immutable payload.
+
+Derived representation records:
 
 ```text
-content_id
-owner_principal_id
-state/revision
-kind/representation
-media type / detected format
-size_bytes
-sha256
-storage handle internal
-source/provenance
-parser/representation revision where derived
-created/available/expiry timestamps
+source ContentObject
+producer capability/revision
+representation kind/media type
+creation metadata
 ```
 
-Payload immutable after `available`.
-
-New representation = new ContentObject linked to source.
+Original raw object remains immutable/available according retention even after derived parse.
 
 ---
 
-# 17. Content L0 Identification/Inspection
+# 8. L0 Inspection
 
-L0 is cheap/deterministic and may identify:
+v0.3 supports deterministic cheap identification/inspection for initial core types.
 
-- declared media type;
-- detected format/signature;
-- byte size/hash;
-- charset where appropriate;
-- document/page/image metadata only where safely/cheaply available;
-- container/basic properties.
-
-Extension is hint, not authority.
-
-No semantic interpretation/OCR.
-
----
-
-# 18. Initial L1 registry
-
-ADR-0008 initial parser set:
+At minimum detect/inspect:
 
 ```text
-HTML
-plain text
+HTML/text
 JSON
 XML
-CSV/tabular text
-PDF native text
+CSV
+PDF
+unknown/binary
 ```
 
-Registry descriptor records:
+Identification uses:
 
 ```text
-parser_id
-parser_revision
-format capability
-execution profile
-supported representation
-limits profile
+declared Content-Type
++ URL/filename hint
++ magic/container/content inspection
 ```
 
-MCP does not expose parser library IDs as required choice.
+Declared MIME is not blindly trusted.
+
+Inspection returns objective facts; no semantic quality score controlling hidden escalation.
 
 ---
 
-# 19. HTML
+# 9. Initial L1 parsers
 
-Use complementary roles:
+ADR-0008 baseline:
 
 ```text
-Trafilatura → main readable content
-lxml/hardened structural parsing → metadata/links/JSON-LD/headings/forms as designed
+HTML → Trafilatura main-content + lxml structural metadata/links
+JSON → stdlib safe parse
+XML → defusedxml/hardened XML path
+CSV → stdlib bounded parser
+text → explicit safe decoding
+PDF → pypdf text-layer parse in isolated parser subprocess
 ```
 
-No JavaScript execution.
+No OCR if PDF has no text layer.
 
-If HTML is only JS shell:
+No Browser if HTML is JS shell.
 
-- static/native result can be empty/sparse;
-- report objective diagnostics;
-- structured hint may recommend Browser;
-- do not auto-launch Browser.
+Instead return diagnostics/hints.
 
 ---
 
-# 20. Text/JSON/XML/CSV
+# 10. Parser isolation
 
-- text: bounded charset detection/normalization to UTF-8 representation;
-- JSON: standard parser under input/output bounds;
-- XML: hardened parser (`defusedxml`/safe lxml profile), no external entity/network expansion;
-- CSV/tabular text: bounded rows/columns/output, explicit dialect handling without arbitrary code.
+Riskier parser (initially PDF) runs through bounded isolated process executor:
+
+- no network;
+- minimal env;
+- hard input/output/time/memory/process constraints as platform supports;
+- kill/reap on timeout/crash;
+- no DB/Redis/provider credentials;
+- structured protocol, no pickle.
+
+Later v0.5 reuses/extents this model.
 
 ---
 
-# 21. PDF native text
+# 11. Content representation reuse
 
-`pypdf` direct text-layer extraction only.
+Canonical parse should avoid duplicate logical derived representations for same compatible parse identity.
 
-Runs in isolated short-lived parser subprocess due untrusted complex input/resource amplification.
-
-If PDF pages contain no native text layer:
+Identity concept:
 
 ```text
-native text unavailable
-→ raw PDF remains available
-→ diagnostic/hint advanced processing may be required
+source content
++ parser capability/revision/profile
++ representation kind
 ```
 
-No OCR.
+Concurrent/replayed parse must converge on existing compatible representation or one logical winner.
 
-Encrypted/password PDF unsupported baseline unless direct metadata safely available; no password argument in MCP v0.3.
-
----
-
-# 22. Isolated parser executor
-
-For riskier parser profiles:
-
-- fresh/spawn process;
-- no shell;
-- no DB/Redis/provider/auth secrets;
-- bounded private input;
-- versioned JSON protocol, no pickle;
-- hard wall timeout;
-- terminate/kill/reap;
-- output size limit;
-- temp cleanup/reaper;
-- parser crash cannot crash Control Plane.
-
-v0.5 extends same executor to more formats.
+This is required before `content_parse` can be trusted as idempotent (ADR-0024).
 
 ---
 
-# 23. Derived representation/provenance
+# 12. `web_fetch`
 
-Example:
+Exact MCP target from `contracts/mcp-tools.md`:
 
 ```text
-raw PDF cnt_A
-→ native text cnt_B
+urls 1..8
 ```
 
-Derived object records:
+For each URL:
 
 ```text
-source_content_id
-representation/schema revision
-parser_id/revision
-parameters/profile revision
-created_at
-warnings/diagnostics
-```
-
-Compatible existing representation can be reused by same owner/application policy.
-
----
-
-# 24. Content read/cursor
-
-Large textual Content read is bounded/chunked.
-
-MCP `content_get` accepts batch items with opaque cursor and common `max_chars` bound.
-
-Cursor is server-generated/versioned/opaque.
-
-Chunk boundaries preserve valid UTF-8/text representation semantics.
-
-Binary raw object without readable representation does not pretend to be text.
-
----
-
-# 25. `content_parse`
-
-Direct request-bound L1 parsing existing ContentObjects.
-
-Freeze baseline later v0.8:
-
-```text
-content_ids: 1..8
-```
-
-No parser library ID; server registry chooses canonical direct parser.
-
-No L2/Job. Durable variant added later as separate `content_parse_job` per ADR-0021.
-
----
-
-# 26. `web_fetch`
-
-Direct MCP tool is intentionally simple:
-
-```text
-urls[]
-```
-
-plus only stable useful retrieval options if design requires them.
-
-Semantics:
-
-```text
-safe HTTP
-→ raw ContentObject
+safe Retrieval
+→ raw Content
 → L0
-→ request-bound default L1 when registered/applicable
+→ available request-bound L1
 ```
 
-No `mode=auto|browser`, no Browser fallback, no `web_fetch_many`.
+Result contains ContentRefs/inspection/representations/preview, not giant raw HTML/PDF.
+
+No Browser, no Job.
 
 ---
 
-# 27. Hints
+# 13. `web_fetch` retry semantics
 
-Trusted service-generated examples:
+Critical ADR-0024:
 
 ```text
-browser_may_be_required
-advanced_processing_may_be_required
-alternative_representation_available
+HTTP GET does not mutate target website
+≠ tool call is safe to blindly replay
 ```
 
-Hints use objective diagnostics/capability state and do not execute next step.
+`web_fetch` creates Web Access resources/provenance and may consume remote/network work.
 
-Recommendation to Browser can be precise because Browser is same-service capability (once v0.4 exists); v0.3 can expose generic capability code forward-compatibly.
+After ambiguous response loss where acquisition/Content creation may have occurred:
+
+```text
+no blind Agent/client replay
+```
+
+Implementation may retry only **inside same Operation** at provably pre-dispatch/safe transient phases.
+
+No generic «GET therefore safe_retry» rule.
 
 ---
 
-# 28. Failure model
+# 14. `content_get`
 
-Normalize:
+Reads existing selected ContentObject.
+
+Exact MCP:
+
+```text
+items 1..8
+max_chars 1..30000 default12000
+opaque cursor
+```
+
+No re-fetch/no parse escalation/no Browser.
+
+Pure read safe retry subject to owner/deadline/capacity.
+
+---
+
+# 15. `content_parse`
+
+Request-bound L1 parse for existing ContentObjects.
+
+Exact MCP:
+
+```text
+content_ids 1..8 unique
+```
+
+No parser library selector.
+
+No L2.
+
+Trusted idempotent retry class is enabled only after canonical representation reuse/concurrency tests prove it.
+
+---
+
+# 16. REST
+
+Exact v1 baseline provides:
+
+```text
+POST /api/v1/retrieval/fetch
+GET  /api/v1/content/{id}
+GET  /api/v1/content/{id}/data
+GET  /api/v1/content/{id}/representations
+POST /api/v1/content/inspect
+POST /api/v1/content/native-parse
+```
+
+Retrieval processing level:
+
+```text
+store_only
+inspect
+native
+```
+
+REST richer than MCP but still no arbitrary HTTP proxy or parser internals.
+
+---
+
+# 17. Structured hints
+
+Examples:
+
+```text
+HTML shell / native text unavailable
+→ browser_may_be_required
+
+PDF no text layer
+→ advanced_processing_may_be_required
+
+unsupported L1 format
+→ native_processing_unsupported
+```
+
+Hint generated from objective inspection/parser facts and does not execute Browser/L2 automatically.
+
+---
+
+# 18. Failure model
+
+Normalize at least:
 
 ```text
 invalid_url
-ssrf/egress denied
-dns resolution denied/failed
-redirect denied/loop/limit
-tls failure
-timeout
-body_limit/decompression_limit
+scheme_not_allowed
+blocked_destination
+dns_resolution_failed
+redirect_blocked
+too_many_redirects
+tls_error
+upstream_timeout
+response_too_large
+decompression_limit
 unsupported_content_encoding
-storage failure
-content integrity failure
-format unsupported
-native_parse_failed
+content_store_error
+content_not_found/content_expired
+format_unsupported
 native_text_unavailable
-parser_timeout/resource_limit
+parser_timeout
+parser_crash
+parser_output_limit
+content_quota/policy rejection when applicable
 ```
 
-Per-item outcome preserved.
+Raw parser/client exception not public.
 
 ---
 
-# 29. Security
-
-Mandatory:
-
-- SSRF/DNS-rebinding fixture tests;
-- redirect revalidation;
-- IPv4/IPv6 private/link-local/metadata deny;
-- no env proxy trust;
-- streaming limits;
-- decompression bombs;
-- XML attacks;
-- parser process isolation;
-- path/storage traversal prevention;
-- Content owner isolation;
-- web content untrusted in agent context.
-
----
-
-# 30. Observability
+# 19. Observability/security
 
 Measure:
 
-- Retrieval latency/wire/decoded bytes/outcomes;
-- redirect/DNS/security denies;
-- per-host/global saturation;
-- Content create/finalize/reconcile;
-- parser type/revision/outcome/time/kill;
-- Content bytes/representation counts.
+- acquisition latency/status/bytes;
+- redirects/security rejects;
+- decompression ratio/limits;
+- Content staging/finalization/reconciler;
+- parser duration/crash/kill;
+- representation reuse;
+- retry phase classification.
 
-No full URLs/content as high-cardinality metric labels.
+Do not log full URLs/content indiscriminately; follow redaction policy.
 
----
-
-# 31. REST
-
-REST adds powerful typed operations for:
-
-- batch Retrieval;
-- Content metadata/data streaming;
-- L0/L1 existing Content parse;
-- representations/provenance.
-
-REST can expose more stable options than MCP but not raw HTTP proxy/library internals.
+No untrusted content as metric label/trusted hint.
 
 ---
 
-# 32. Required tests
+# 20. Required tests
 
-- URL/SSRF/DNS/redirect matrix;
-- TLS;
-- slow stream/deadline/cancel;
-- wire/decompressed limits;
-- batch order/partial;
-- Content crash windows/reconciliation;
-- filesystem store contract;
-- HTML/text/JSON/XML/CSV fixtures;
-- PDF native text/no-text/malformed/timeout;
-- isolated process kill/reap;
-- owner isolation;
-- cursor/chunk;
-- actual REST OpenAPI;
-- actual FastMCP `web_fetch/content_get/content_parse` schemas;
-- no Browser/L2 fallback.
+- URL parser/SSRF/private IPv4/IPv6/metadata;
+- DNS rebinding controlled fixture;
+- redirect chain validation;
+- TLS/timeout/cancellation;
+- streaming wire/entity limits;
+- compression bombs;
+- Content staging crash matrix/reconciliation;
+- hash/dedup logical owner separation;
+- HTML/JSON/XML/CSV/text/PDF fixtures;
+- PDF isolated parser timeout/crash/no text;
+- no OCR/Browser hidden fallback;
+- Content cursor/binary behavior;
+- concurrent/replayed native parse canonical reuse;
+- **web_fetch ambiguous response loss no blind duplicate**;
+- exact REST OpenAPI;
+- actual MCP schemas and retry descriptors.
 
 ---
 
-# 33. Definition of Done
+# 21. Definition of Done
 
-v0.3 complete only if:
+v0.3 accepted only if:
 
-1. Arbitrary URL Retrieval is SSRF/DNS-rebinding safe by design/test.
-2. Streaming/decompression/deadlines are bounded.
-3. Raw Content becomes durable only through staged/finalized lifecycle.
-4. Reconciliation covers crash windows.
-5. L0/L1 model is explicit and L2 remains outside service.
-6. PDF/native parser failures cannot crash Control Plane.
-7. Large data uses ContentRef/cursor rather than giant result.
-8. REST/MCP reuse one application backend.
-9. `web_fetch` remains direct HTTP operation with no hidden Browser/Job.
-10. Applicable Retrieval/Content/security release gates are green.
+1. Arbitrary URL Retrieval closes DNS/redirect SSRF windows.
+2. Content lifecycle survives crash windows/restart.
+3. L0/L1 initial parsers are bounded and riskier parser isolated.
+4. No Browser/L2 hidden fallback.
+5. Public result uses ContentRefs/bounded preview.
+6. `web_fetch` is not mislabeled blind-safe because HTTP GET.
+7. `content_parse` idempotency is proven by canonical representation reuse tests before trusted classification.
+8. REST/MCP reuse same application backend and exact contracts.
+9. Reconciler/storage/parser fault/race/security gates green.
