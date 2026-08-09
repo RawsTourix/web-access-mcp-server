@@ -4,43 +4,40 @@
 
 Обязательный порядок реализации Durable Jobs Runtime.
 
-Ключевой принцип:
-
-> Сначала доказать durable creation/delivery/claim/fencing на synthetic handler. Только затем подключать реальные Retrieval/Content workloads и только после этого REST/MCP.
+> Сначала доказать durable DB/outbox/claim/fencing на synthetic handler. Затем подключить Retrieval/Content typed workloads. REST/MCP — только после backend correctness.
 
 ---
 
-# Patch J0 — Preconditions
+# J0 — Preconditions
 
-1. v0.1/v0.3 Content/persistence tests зелёные;
-2. v0.5 если реализуется roadmap последовательно — parser/S3 gates зелёные;
-3. actual REST/MCP schemas сохранены baseline fixtures;
-4. Redis/PostgreSQL fault test infrastructure готова;
-5. добавить `arq` dependency pinned через `uv.lock` после compatibility test с текущим Redis/Python stack.
+- v0.1/v0.3 persistence/content tests зелёные;
+- v0.5 gates зелёные при последовательном roadmap;
+- Redis/PostgreSQL fault injection готова;
+- actual REST/MCP baseline fixtures сохранены;
+- `arq` dependency выбирается/pin-ится через `uv.lock` после compatibility test.
 
-No public Jobs routes/tools yet.
-
----
-
-# Patch J1 — Job domain/application model
-
-Реализовать:
-
-- JobId/AttemptId/JobItemId;
-- JobState/AttemptState/JobItemState;
-- JobTypeDescriptor/registry;
-- typed Job creation contracts;
-- Job progress/error/result summaries;
-- cancellation semantics;
-- retry policy interfaces.
-
-State-machine unit tests прежде SQL.
-
-No arbitrary payload/function contract.
+No public Jobs surface.
 
 ---
 
-# Patch J2 — Database migration
+# J1 — Domain/application Job model
+
+Implement:
+
+```text
+Job / JobAttempt / JobItem
+state machines
+JobTypeDescriptor registry
+retry/cancellation/progress/result contracts
+```
+
+No arbitrary task payload/function name.
+
+Unit state tests first.
+
+---
+
+# J2 — Database migration
 
 Create:
 
@@ -52,276 +49,217 @@ job_events
 outbox
 ```
 
-Indexes for:
+Indexes/constraints for owner/state/retry/lease/outbox/retention and unique `(job_id,item_index)`.
 
-- owner/state;
-- next_attempt_at;
-- lease expiry;
-- job item job/state/index;
-- outbox state/available_at/lease;
-- retention/reconciler.
-
-Constraints:
-
-- unique public IDs;
-- unique `(job_id,item_index)`;
-- attempt number uniqueness per Job;
-- bounded JSON schemas validated application side.
-
-Migration/reversal/empty DB tests.
+Migration tests.
 
 ---
 
-# Patch J3 — Repository/CAS lifecycle
+# J3 — Repository/CAS lifecycle
 
-Implement repositories and UnitOfWork operations:
+Implement transactionally:
 
-- create Job+Items+Outbox atomically;
-- state transition CAS;
-- attempt claim;
-- lease renewal;
-- item claim/terminal;
+- create Job + ordered Items + Outbox;
+- lifecycle CAS;
+- Attempt claim/lease;
+- Item claim/result;
 - cancellation intent;
 - retry schedule;
-- progress coalescing;
-- terminal result;
-- event append bounded;
-- retention queries.
+- progress summary/event;
+- terminal manifest coordinates.
 
-Race tests directly at DB layer.
+Race tests directly at repository layer.
 
 ---
 
-# Patch J4 — Outbox publisher with fake queue
+# J4 — Outbox Publisher + fake queue
 
-Before Redis/arq implement `JobQueue` fake and real OutboxPublisher algorithm:
+Before Redis:
 
-- bounded claim batch;
+- bounded row claim;
 - publisher lease;
-- no DB transaction during queue I/O;
+- no open DB transaction during queue I/O;
 - publish;
 - CAS published/Job queued;
 - failure/backoff;
-- crash between publish and DB acknowledgement.
+- crash after publish before ack.
 
-Multiple publishers integration test.
-
-**Gate:** committed Job always eventually deliverable with healthy fake queue.
+Multiple publisher test.
 
 ---
 
-# Patch J5 — ArqJobQueue adapter
+# J5 — ArqJobQueue
 
 Implement ADR-0017:
 
-- small JSON-safe payload;
-- fixed internal dispatcher function;
+- lightweight versioned job ID message;
+- fixed dispatcher function;
 - deterministic `_job_id` optimization;
-- normalize Redis/arq errors;
-- no input/content data duplication in Redis;
-- queue message version validation.
+- no full input/result in Redis;
+- normalize queue errors.
 
-Test duplicate enqueue and Redis outage.
+Redis outage/duplicate tests.
 
 ---
 
-# Patch J6 — Synthetic Job Worker/claim runner
+# J6 — Synthetic Job Worker
 
-Create `entrypoints/job_worker.py`.
-
-Worker runtime:
+Create `entrypoints/job_worker.py` with:
 
 - arq consumer;
 - worker identity/generation;
-- DB pool;
-- ContentStore as needed later;
 - JobRunner;
-- background outbox publisher/reconciler loops (or clearly separated tasks in same runtime);
+- OutboxPublisher/reconciler background tasks;
 - graceful shutdown.
 
-First handler `test.synthetic` internal-only.
-
-Prove:
+Internal synthetic handler proves:
 
 ```text
-queue message
-→ DB claim
-→ Attempt
-→ synthetic execution
-→ terminal Job
+message → DB claim → Attempt → execution → terminal Job
 ```
 
-Duplicate message → no duplicate execution.
+Duplicate message no duplicate body.
 
 ---
 
-# Patch J7 — Attempt lease/fencing
+# J7 — Lease/fencing/retry
 
-Implement independent heartbeat task while handler runs.
+Independent attempt heartbeat.
 
-- lease renew CAS;
-- lost attempt detection;
-- stale worker terminal update rejected;
+Implement:
+
+- lost Attempt detection;
+- stale write rejection;
 - worker restart generation;
-- retry_wait scheduling.
+- retry_wait + `next_attempt_at`;
+- due retry outbox wake-up.
 
-Fault injection kills worker at multiple points.
-
-**Gate:** no permanent `running` after lease/reconciler window.
-
----
-
-# Patch J8 — Cancellation foundation
-
-Implement durable cancellation intent and runner context.
-
-Synthetic handler checkpoints cancellation.
-
-Test:
-
-- before publish;
-- queued;
-- running;
-- retry_wait;
-- terminal cancel idempotency;
-- worker lost during cancelling.
-
-Job not `cancelled` until active attempt is gone.
+Kill worker at multiple phases.
 
 ---
 
-# Patch J9 — JobItem checkpoint framework
+# J8 — Cancellation
+
+Durable cancellation intent + execution cancellation context.
+
+Test created/queued/running/retry_wait/terminal/lost-worker cases.
+
+Do not mark cancelled while body still active.
+
+---
+
+# J9 — JobItem checkpoint engine
 
 Implement ADR-0018:
 
 - ordered items;
-- bounded item claim batches;
-- current-attempt ownership;
-- terminal checkpoint;
+- bounded item claims;
+- current Attempt ownership;
+- terminal checkpoints;
 - item retry_wait;
-- lost attempt running-item recovery;
+- lost-attempt running item recovery;
 - aggregate progress.
 
-Synthetic batch handler proves worker crash resumes remaining only.
+Synthetic batch crash after N items must resume remaining only.
 
 ---
 
-# Patch J10 — Result manifest finalizer
-
-Implement common batch finalization:
+# J10 — Result manifest finalization
 
 ```text
-all items terminal
-→ build bounded structured manifest stream
-→ ContentApplication ingest
-→ manifest available
-→ Job terminal aggregate/result_content_id
+all items terminal / cancellation finalization
+→ build structured manifest
+→ ContentApplication ingest/finalize
+→ Job terminal + result_content_id
 ```
 
-Crash/fault tests:
-
-- before manifest create;
-- during Content staging;
-- after Content available before Job terminal;
-- retry finalization without re-running items.
+Crash during manifest creation must not rerun successful items.
 
 ---
 
-# Patch J11 — `retrieval_batch` handler
+# J11 — `retrieval_batch`
 
-Register typed job type.
+Register typed handler reusing normal Retrieval/Content application path.
 
-Creation validates:
+Limits/budgets from v0.6 README.
 
-- URLs;
-- owner/scope;
-- item count;
-- aggregate budgets;
-- common retrieval profile.
+Test:
 
-Handler reuses existing Retrieval/Content application services/ports, not HTTP library directly.
-
-Bounded item concurrency 8 baseline.
-
-Tests:
-
-- per-host/global retrieval limits still apply;
-- partial 404/invalid/upstream failures;
-- worker crash checkpoint;
-- retryable network failure;
-- total byte budget exhaustion.
+- per-host/global limits still apply;
+- partial item failures;
+- retryable network failures;
+- byte budget exhaustion;
+- worker crash checkpoint.
 
 ---
 
-# Patch J12 — `content_parse_batch` handler
+# J12 — `content_parse_batch`
 
-Register typed job type.
+Register typed handler reusing ContentApplication/registry.
 
-Creation validates all ContentRefs owner/policy.
+- owner check;
+- representation reuse;
+- isolated parser global capacity;
+- permanent vs retryable errors.
 
-Handler:
-
-- checks compatible existing representation;
-- invokes normal Content parse service;
-- bounded isolated parser capacity;
-- checkpoints result.
-
-Tests malformed/unsupported/permanent vs retryable infra failure.
+No L2.
 
 ---
 
-# Patch J13 — Progress/events/retry polish
+# J13 — Progress/events
 
-Implement client-visible bounded event model:
+Bounded/coalesced durable events:
 
-- created;
-- queued;
-- attempt started/lost/retried;
-- progress coalesced;
-- cancellation requested;
-- terminal.
+```text
+created
+queued
+attempt_started/lost/retry
+progress
+cancellation_requested
+terminal
+```
 
-Progress update throttle configurable (time/item delta), avoiding row-per-item storm while final item states remain durable.
+No row-per-network-chunk.
 
 ---
 
-# Patch J14 — Reconciler completeness
+# J14 — Reconciler completeness
 
-Reconcile:
+Handle:
 
-- expired publisher lease;
-- stale created no usable outbox;
-- expired attempt leases;
+- outbox lease expiry;
+- stale created no outbox;
+- expired Attempt lease;
 - retry_wait due;
+- stale running JobItems;
 - cancelling with lost worker;
-- manifest finalization pending;
-- terminal expiry;
-- stale running JobItems.
+- manifest-finalization pending;
+- retention expiry.
 
-Run multiple reconciler replicas concurrently.
+Multiple reconciler replicas safe.
 
 ---
 
-# Patch J15 — Admission/backpressure
+# J15 — Admission/backpressure
 
-Add policy limits:
+Add bounded:
 
 - pending Jobs/principal;
-- global pending Jobs;
+- global backlog;
 - items/job;
-- aggregate byte budgets;
-- outbox backlog threshold;
-- worker/type capacity.
+- aggregate bytes;
+- worker/type concurrency;
+- outbox backlog admission threshold.
 
-Redis unavailable + backlog bounded behavior explicit.
+No application-memory backlog.
 
-No unbounded application in-memory queue.
+v0.7 later turns these into dynamic policy/accounting.
 
 ---
 
-# Patch J16 — REST facade
+# J16 — REST facade
 
-Add typed routes only after backend stable:
+Typed endpoints:
 
 ```text
 POST /api/v1/jobs/retrieval-batches
@@ -331,122 +269,139 @@ POST /api/v1/jobs/{id}/cancel
 GET /api/v1/jobs/{id}/events
 ```
 
-Owner/scopes, cursor/event bounds, OpenAPI tests.
-
-No arq/internal details.
+Owner/auth, OpenAPI tests, no arq internals.
 
 ---
 
-# Patch J17 — MCP direct/durable evolution
+# J17 — MCP Job creation tools
 
-Modify existing `web_fetch` and `content_parse` with explicit discriminated execution mode.
-
-Required actual schema:
+Per ADR-0021 add:
 
 ```text
-direct vs durable
-cross-field list limits
-result-kind discrimination
-```
-
-Add:
-
-```text
+web_fetch_job
+content_parse_job
 job_get
 job_cancel
 ```
 
-Russian descriptions explain:
+Keep existing direct:
 
-- durable survives current MCP connection;
-- returns JobRef;
-- caller checks with `job_get`;
-- cancellation is not instant guarantee.
+```text
+web_fetch
+content_parse
+```
 
-Schema tests use actual FastMCP client.
+unchanged as request-bound tools; **no `execution` discriminator**.
+
+Schema requirements:
+
+```text
+web_fetch_job urls 1..256
+content_parse_job content_ids 1..256
+job_get/job_cancel job_ids[] bounded
+```
+
+Russian descriptions must clearly communicate:
+
+- `*_job` creates durable Job Resource;
+- returns JobRef immediately;
+- survives MCP disconnect;
+- use `job_get` for result;
+- uncertain create response must not be blindly retried.
+
+Actual FastMCP schema/annotation tests required.
 
 ---
 
-# Patch J18 — Queue/DB fault roast
+# J18 — Hints/direct overflow
+
+Direct `web_fetch`/`content_parse` validation or request-bound limit condition may return structured:
+
+```text
+processing_requires_job
+related_tool = web_fetch_job | content_parse_job
+```
+
+No automatic invocation/promotion.
+
+---
+
+# J19 — Queue/DB fault roast
 
 Automate:
 
 - Redis stop/start;
 - publisher kill;
-- publish-ack crash;
+- publish success/DB ack crash;
 - Job Worker SIGKILL;
-- Postgres transient disconnect;
-- multiple workers duplicate delivery;
+- DB transient failure;
+- duplicate delivery;
 - stale attempt late completion;
-- reconnect/retry loops.
+- multi-replica reconcilers.
 
-No Job loss/infinite running.
+No lost/infinite-running Jobs.
 
 ---
 
-# Patch J19 — Large batch/load/soak
+# J20 — Large batch/load/soak
 
-Test at ceilings and realistic profiles:
-
-- 256 MCP items;
-- 1000 REST items;
-- many simultaneous Jobs;
-- worker scaling;
+- MCP 256-item jobs;
+- REST 1000-item jobs;
+- concurrent principals;
+- many workers;
 - outbox backlog;
-- DB lock contention;
-- progress/event write volume;
-- result manifest sizes;
-- ContentStore pressure.
-
-Measure p50/p95/p99 queue wait/job duration where meaningful.
+- DB contention;
+- progress write amplification;
+- ContentStore pressure;
+- repeated worker kill/recovery.
 
 ---
 
-# Patch J20 — Security/ownership audit
+# J21 — Security/ownership
 
-- cross-principal Job get/cancel denied;
-- input ContentRefs cross-owner denied;
-- no queue arbitrary function/pickle;
-- Redis payload has no secrets/raw giant data;
-- worker credentials scoped;
+Verify:
+
+- cross-owner get/cancel denied;
+- cross-owner input ContentRef denied;
+- no arbitrary Python/arq function input;
+- queue payload no secrets/giant content/no pickle;
 - result Content owner correct;
-- error/events do not leak other principal data.
+- error/events don't leak other principal.
 
 ---
 
-# Patch J21 — Documentation/acceptance closure
+# J22 — Documentation/acceptance closure
 
-1. actual SQL/migrations match version docs;
-2. actual arq version locked;
-3. current Job types exactly match registry/docs;
-4. actual REST/OpenAPI reviewed;
-5. actual MCP schemas reviewed;
-6. fault matrix evidence recorded;
-7. no crawl/generic task code slipped in;
-8. `current.md` status updated;
-9. release gates green.
+- actual migrations match design;
+- arq version locked;
+- Job registry only typed supported workloads;
+- actual OpenAPI reviewed;
+- actual MCP catalog includes ADR-0021 tools;
+- old mixed direct/durable schema absent;
+- fault evidence recorded;
+- `current.md` updated;
+- gates green.
 
 ---
 
 # Forbidden shortcuts
 
-Implementation must not:
+Do not:
 
-- create DB Job then directly enqueue Redis without outbox;
-- trust deterministic arq `_job_id` as sole exactly-once guarantee;
+- DB commit then direct Redis enqueue without outbox;
+- treat `_job_id` as exactly-once guarantee;
 - execute queue message without DB claim;
-- put full batch payload or result in Redis;
-- restart entire batch after worker crash when item checkpoints exist;
-- let stale attempt write terminal state;
-- mark cancellation complete while active worker still runs;
-- store fake progress percentages;
-- expose arbitrary arq function names/job payload to REST/MCP;
-- add `web_fetch_job` duplicate-intent MCP tool;
-- auto-switch direct request to durable mode;
-- implement crawl as recursive retrieval loop inside generic job.
+- put full payload/result in Redis;
+- rerun succeeded items after worker crash;
+- allow stale Attempt terminal write;
+- fake cancellation/progress;
+- expose generic queue function to clients;
+- use `execution=direct|durable` in existing MCP tools;
+- automatically convert direct request to Job;
+- implement crawl as recursive generic batch loop.
 
 ---
 
 # Final acceptance
 
-v0.6 complete only after Definition of Done from README plus Jobs race/fault/load/recovery gates.
+v0.6 completes only after README Definition of Done plus outbox/lease/checkpoint/cancellation/load/MCP schema gates.
