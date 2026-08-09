@@ -2,26 +2,27 @@
 
 ## Статус
 
-Каноническая public/application-facing модель **dynamic non-secret policy** Web Access v1.
+Каноническая public/application-facing модель **dynamic non-secret task/resource policy** Web Access v1.
 
 Семантика принадлежит:
 
 - `../policy-and-operations.md`;
 - ADR-0019;
-- ADR-0020.
+- ADR-0020;
+- ADR-0023.
 
-Этот документ фиксирует exact typed sections, bounds, defaults/overrides и composition semantics, чтобы v0.7 implementation и REST admin contract не изобретали policy schema самостоятельно.
+Этот документ фиксирует exact typed sections, bounds, defaults/overrides и composition semantics для v0.7 implementation и Admin REST.
 
-Secrets, endpoints, DSN, bearer/API keys, internal worker credentials и software hard safety configuration сюда не входят.
+Secrets, endpoints, DSN, bearer/API keys, internal worker credentials и static software hard safety configuration сюда не входят.
+
+**Admin control-plane authority не является dynamic task capability:** `admin:read/admin:write` принадлежат trusted AuthProvider/deployment boundary согласно ADR-0023.
 
 ---
 
-# 1. Главная модель
-
-Effective policy строится как:
+# 1. Effective policy
 
 ```text
-Authenticated PrincipalContext
+Authenticated PrincipalContext task scopes
 +
 GlobalPolicyDocument
 +
@@ -33,53 +34,54 @@ resource ownership/state
 → EffectivePolicy
 ```
 
-Auth scopes — абсолютная верхняя граница authority.
+Dynamic policy может ограничить task/resource admission, но не создать отсутствующий scope.
 
-Dynamic policy может **ограничить**, но не создать отсутствующий scope.
+Admin REST authorization вычисляется отдельно по ADR-0023 и не может быть self-disabled этим document.
 
 ---
 
-# 2. Почему global policy и principal override разделены в REST
+# 2. Global policy и principal overrides
 
-Persistent ADR-0019 snapshot может materialize полный immutable revision любым выбранным storage representation.
+Persistent ADR-0019 state остаётся одной logical monotonic policy revision.
 
-Но public admin API не требует пересылать все principal overrides при каждом global update.
-
-REST работает с двумя typed views:
+Public Admin REST использует два typed views:
 
 ```text
 GlobalPolicyDocument
 PrincipalPolicyOverride
 ```
 
-Любая mutation всё равно создаёт новую **общую monotonic policy revision** в PostgreSQL и required AuditEvent в той же transaction.
+Это позволяет менять одного principal без гигантского request со всеми overrides.
 
-То есть:
+Любая mutation всё равно создаёт новую общую revision:
 
 ```text
-update одного principal override
-→ revision N+1 всей logical policy state
+update global defaults
+→ revision N+1
+
+update/delete one principal override
+→ revision N+1
 ```
 
-Replica cache инвалидируется top-level revision как и требует ADR-0019.
+Replica cache invalidates by top-level revision.
 
 ---
 
-# 3. Общие serialization rules
+# 3. Serialization rules
 
 - unknown fields rejected;
 - `schema_version` integer, baseline `1`;
 - principal IDs: string `1..128`;
 - provider IDs: regex `^[a-z0-9][a-z0-9-]{0,63}$`;
-- capability lists unique;
-- all integer limits are non-negative/positive exactly as stated;
+- task capability lists unique;
+- integer limits exact as stated;
 - omission in `PrincipalPolicyOverride` means inherit global default;
-- `null` is not used as synonym for omission unless explicitly stated;
-- every override value is validated against the corresponding global maximum and static software hard ceiling.
+- `null` is not synonym for omission unless explicitly stated;
+- every override validated against corresponding global maximum and static software hard ceiling.
 
 ---
 
-# 4. CapabilityCode
+# 4. TaskCapabilityCode
 
 Exact v1 enum:
 
@@ -92,29 +94,30 @@ browser.read
 browser.interact
 jobs.read
 jobs.create
-admin
 ```
 
-Global policy declares which of these capabilities are operationally enabled.
+`admin` намеренно отсутствует.
+
+Global policy declares operationally enabled **task capabilities**.
 
 Principal override may only add extra disables.
 
-Effective capability:
+Effective task capability:
 
 ```text
-principal auth scope exists
+authenticated task scope exists
 AND global capability enabled
 AND capability not disabled by principal override
 AND resource/policy check passes
 ```
 
-No dynamic policy field means «grant scope».
+No dynamic field means «grant scope».
 
 ---
 
 # 5. IntegerLimitPolicy
 
-Reusable typed structure for a per-principal quota/rate where operator wants a normal default and a policy maximum:
+Reusable structure:
 
 ```json
 {
@@ -129,13 +132,13 @@ Invariant:
 0 <= default <= maximum <= field-specific software ceiling
 ```
 
-A principal override sets one effective value, which must be:
+Principal override effective value:
 
 ```text
 0 <= override <= global.maximum
 ```
 
-`0` has field-specific meaning and is allowed only where the field explicitly states that zero disables admission/usage.
+`0` disables corresponding admission/usage only where field semantics below permit zero.
 
 ---
 
@@ -152,7 +155,7 @@ jobs: GlobalJobsPolicy
 audit: GlobalAuditPolicy
 ```
 
-All fields required in a persisted/current global policy document.
+All fields required in current persisted global policy view.
 
 No arbitrary extension dictionary.
 
@@ -161,14 +164,14 @@ No arbitrary extension dictionary.
 # 7. GlobalCapabilityPolicy
 
 ```text
-enabled: array[CapabilityCode] required, unique, 0..9
+enabled: array[TaskCapabilityCode] required, unique, 0..8
 ```
 
-Production bootstrap should explicitly list intended enabled capabilities.
+Production bootstrap explicitly lists intended task capabilities.
 
-Absence from list means globally disabled.
+Absence means dynamically disabled for task principals even if AuthProvider scope exists.
 
-`admin` can be omitted from ordinary task-service principals while still existing for dedicated admin credentials; the dynamic global flag remains an additional operational gate.
+Admin API availability is not controlled here.
 
 ---
 
@@ -185,10 +188,11 @@ provider_budgets: array[ProviderBudgetPolicy] required, 0..32
 
 Cross-field:
 
-- `default_provider` must be in `enabled_providers`;
-- every `provider_budgets[].provider_id` unique;
-- budget entry for unknown/non-billable provider rejected by runtime registry validation;
-- disabling all providers is legal only if `search` capability is globally disabled; otherwise policy invalid.
+- `default_provider` must be in `enabled_providers` when Search task capability enabled;
+- if Search globally disabled, empty provider list is allowed and `default_provider` may use reserved value `none`;
+- if Search enabled, `default_provider="none"` is invalid;
+- `provider_budgets[].provider_id` unique;
+- unknown/non-billable budget entry rejected by runtime provider registry validation.
 
 Software ceilings:
 
@@ -197,7 +201,7 @@ requests_per_minute.maximum <= 1_000_000
 concurrent_queries.maximum <= 10_000
 ```
 
-`default=0` is allowed and means ordinary principals have no Search admission unless overridden, but override still cannot exceed maximum and auth/global capability must permit Search.
+`default=0` means global default admission is zero until principal override chooses value <= maximum.
 
 ---
 
@@ -220,9 +224,9 @@ Units are provider-defined stable accounting units, not currency.
 
 Period boundaries use UTC.
 
-`0` means no billable upstream unit may be admitted for that scope/period.
+`0` means no billable upstream unit admission for that scope/period.
 
-Unknown response/send evidence uses conservative accounting according ADR-0020.
+Unknown send/response evidence follows conservative accounting ADR-0020.
 
 ---
 
@@ -240,7 +244,7 @@ requests_per_minute.maximum <= 1_000_000
 concurrent_items.maximum <= 10_000
 ```
 
-These are per-principal admission values. Global deployment/network concurrency ceilings remain static/runtime limits and can be lower.
+These are per-principal policy limits; deployment/global network ceilings remain independent and may be lower.
 
 ---
 
@@ -260,11 +264,11 @@ retained_bytes.maximum <= 10_995_116_277_760   # 10 TiB logical quota/principal
 retained_objects.maximum <= 10_000_000
 ```
 
-Quota counts **logical owner-visible available ContentObjects**, not physical deduplicated blob bytes.
+Quota counts logical owner-visible available ContentObjects, not physical deduplicated blob bytes.
 
-`retained_bytes.default=0` or `retained_objects.default=0` means new retained Content admission is disabled for ordinary principal unless an override grants a non-zero value within global maximum.
+`default=0` on retained quota disables new retained Content admission for default principal policy.
 
-TTL fields are global defaults, not client authority to request infinite retention.
+TTL fields are global policy defaults; no client infinite-retention authority.
 
 ---
 
@@ -286,7 +290,7 @@ idle_ttl_seconds.default/maximum: 60..900
 max_lifetime_seconds.default/maximum: 300..3600
 ```
 
-Additional invariant:
+Cross-field:
 
 ```text
 idle_ttl_seconds.default <= max_lifetime_seconds.default
@@ -294,8 +298,6 @@ idle_ttl_seconds.maximum <= max_lifetime_seconds.maximum
 ```
 
 Worker physical capacity remains independent and may be lower.
-
-Browser create needs both durable DB quota slot and worker capacity.
 
 ---
 
@@ -326,9 +328,7 @@ job_type: stable registered job type string 1..64
 max_active_attempts_global: integer 0..10_000
 ```
 
-Unique `job_type`.
-
-Unknown job type rejected against registry at policy validation.
+`job_type` unique and runtime-registry validated.
 
 Baseline public types:
 
@@ -345,9 +345,9 @@ content_parse_batch
 browser_mutations: off | metadata
 ```
 
-`metadata` means durable audit may retain trusted action code, actor/resource IDs, timing/outcome and bounded non-secret metadata, but never form values/page content/passwords/raw headers.
+`metadata` permits durable audit of trusted action code, actor/resource IDs, timing/outcome and bounded non-secret metadata only.
 
-Admin policy mutations/maintenance remain audited regardless of this browser-specific setting.
+Admin policy/maintenance mutations remain audited independently of this Browser setting.
 
 ---
 
@@ -355,7 +355,7 @@ Admin policy mutations/maintenance remain audited regardless of this browser-spe
 
 ```text
 principal_id: string 1..128
-disabled_capabilities: array[CapabilityCode] unique, 0..9
+disabled_capabilities: array[TaskCapabilityCode] unique, 0..8
 search: PrincipalSearchOverride | omitted
 retrieval: PrincipalRetrievalOverride | omitted
 content: PrincipalContentOverride | omitted
@@ -363,29 +363,27 @@ browser: PrincipalBrowserOverride | omitted
 jobs: PrincipalJobsOverride | omitted
 ```
 
-No `enabled_capabilities` field.
+No enabled-capabilities field, no admin control field, no arbitrary dict.
 
-No arbitrary metadata/dict.
+Same principal appears at most once in one logical policy state.
 
-The exact same principal must appear at most once in one logical policy state.
-
-Implementation may impose a bounded override-count safety limit for one policy snapshot; baseline software ceiling:
+Software ceiling:
 
 ```text
-10_000 explicit principal overrides
+10_000 explicit principal overrides / logical policy state
 ```
 
-This is not a limit on principals using global defaults; only on exceptions stored in dynamic policy v1.
+This is not a limit on principals using global defaults.
 
 ---
 
 # 16. PrincipalSearchOverride
 
-All fields optional:
+Optional fields:
 
 ```text
-requests_per_minute: integer 0..global.requests_per_minute.maximum
-concurrent_queries: integer 0..global.concurrent_queries.maximum
+requests_per_minute: integer 0..global maximum
+concurrent_queries: integer 0..global maximum
 allowed_providers: array[ProviderId] 0..32 unique
 provider_budgets: array[PrincipalProviderBudget] 0..32
 ```
@@ -394,10 +392,10 @@ Semantics:
 
 - omitted scalar → global default;
 - `allowed_providers` omitted → global enabled providers;
-- provided list is intersected with global enabled providers;
-- empty list disables provider admission for this principal without changing auth scope;
-- provider budget override must be <= matching global `maximum_units`;
-- provider not globally enabled cannot be re-enabled by override.
+- provided list intersected with global enabled providers;
+- empty list disables provider admission for this principal;
+- provider not globally enabled cannot be re-enabled;
+- budget override <= global `maximum_units`.
 
 `PrincipalProviderBudget`:
 
@@ -432,7 +430,7 @@ retained_bytes: integer 0..global maximum
 retained_objects: integer 0..global maximum
 ```
 
-No principal-specific TTL override in v1 baseline. Retention duration remains global policy class semantics to prevent uncontrolled retention complexity.
+No principal-specific retention TTL in v1 baseline.
 
 ---
 
@@ -447,13 +445,13 @@ idle_ttl_seconds: integer 60..global maximum
 max_lifetime_seconds: integer 300..global maximum
 ```
 
-Cross-field effective values still require:
+Effective cross-field:
 
 ```text
 idle_ttl_seconds <= max_lifetime_seconds
 ```
 
-Omitted → global defaults.
+Omitted → global default.
 
 ---
 
@@ -467,20 +465,20 @@ active_attempts: integer 0..global maximum
 create_requests_per_minute: integer 0..global maximum
 ```
 
-Per-job-type global capacity is not raised by a principal override.
+Per-job-type global capacity cannot be raised by principal override.
 
 ---
 
 # 21. EffectivePolicy
 
-Internal/application derived immutable model stores at least:
+Internal/application immutable derived model contains at least:
 
 ```text
 policy_revision
 policy_schema_version
 principal_id
-effective capabilities
-effective Search limits/provider set/budgets
+effective task capabilities
+effective Search provider set/limits/budgets
 effective Retrieval limits
 effective Content quotas/retention
 effective Browser quotas/TTLs
@@ -489,9 +487,9 @@ audit policy
 loaded_at
 ```
 
-It is **not** a public writable DTO.
+It is not public writable DTO.
 
-Operation records revision where correctness/audit requires it.
+Admin control-plane authorization data is not sourced from this model.
 
 ---
 
@@ -506,10 +504,10 @@ created_at: timestamp
 created_by: string 1..128
 reason: string 1..2048
 global_policy: GlobalPolicyDocument
-principal_override_count: integer >=0
+principal_override_count: integer 0..10_000
 ```
 
-Normal `GET /admin/policy` does not inline all principal overrides by default.
+Normal current-policy read does not inline all overrides.
 
 ---
 
@@ -523,7 +521,7 @@ updated_at
 updated_by
 ```
 
-Removing override means future EffectivePolicy uses global defaults after new policy revision.
+Removing override means future task EffectivePolicy inherits global defaults after new revision.
 
 ---
 
@@ -536,61 +534,84 @@ created_at
 created_by
 reason
 changed_sections: array[string] 1..32
-principal_ids_changed: array[string] 0..100, truncated flag if more
+principal_ids_changed: array[string] 0..100
+principal_ids_truncated: bool
 ```
 
-History endpoint returns summaries/cursors, not all snapshot bodies inline.
-
-A separate authorized revision detail endpoint may return `GlobalPolicyDocument` and bounded override metadata; bulk export/backup remains an operator/offline function rather than giant ordinary API response.
+History endpoints return summaries/cursors, not giant full snapshot bundles.
 
 ---
 
-# 25. Validation against runtime registries
+# 25. Runtime validation
 
-Pure JSON Schema cannot prove:
+JSON Schema cannot prove:
 
 - provider exists/is billable;
 - job type registered;
-- policy values are below current static deployment ceiling if deployment is stricter than software ceiling.
+- deployment hard ceiling stricter than software ceiling.
 
-Therefore admin update runs two layers:
+Admin mutation therefore performs:
 
 ```text
-JSON/Pydantic structural validation
-→ runtime registry/static ceiling validation
+structural JSON/Pydantic validation
+→ provider/job registry validation
+→ static hard-ceiling validation
+→ cross-section policy validation
 ```
 
-Failure returns structured field/code details.
+Failure returns structured repairable fields/codes.
 
-Never silently drop unsupported provider/job/capability entry.
+No silent ignoring.
 
 ---
 
-# 26. Bootstrap policy rule
+# 26. Admin authority invariant
 
-Production must provide an explicit valid bootstrap global policy.
+Policy schema must reject task capability value:
 
-Local/dev may use compiled conservative sample.
+```text
+admin
+```
 
-Bootstrap sample must not accidentally enable billable provider with unlimited budget.
+Admin REST remains protected by:
 
-Recommended local sample direction:
+```text
+AuthProvider admin:read/admin:write
++
+deployment/network boundary
+```
+
+Dynamic task policy cannot make authorized policy read/update/rollback unreachable.
+
+Production runbook must define admin credential/network recovery independent of dynamic task policy.
+
+---
+
+# 27. Bootstrap policy
+
+Production requires explicit valid bootstrap global policy.
+
+Local/dev may use conservative compiled sample.
+
+Safe sample direction:
 
 ```text
 SearXNG enabled/default
 Yandex disabled or budget 0 unless explicitly configured
 small Browser/Job/Content defaults
-admin available only dedicated admin principal
+admin credentials managed separately by AuthProvider/deployment
 ```
+
+Bootstrap must not accidentally enable billable provider with unlimited budget.
 
 ---
 
-# 27. Compatibility
+# 28. Compatibility
 
-Policy `schema_version=1` is part of rolling compatibility.
+`schema_version=1` participates in rolling compatibility.
 
-Additive optional fields require software compatibility review.
+Additive optional fields require review.
 
-Changing meaning/default/bounds of existing field is compatibility-sensitive.
+Changing meaning/default/bounds is compatibility-sensitive.
 
-A new schema version cannot become current until all required active software revisions can read it according ADR-0019.
+New schema version cannot become current until required active software revisions can read it according ADR-0019.
