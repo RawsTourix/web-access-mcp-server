@@ -43,6 +43,8 @@ ADR должен содержать:
 | [ADR-0012](ADR-0012-browser-process-per-session.md) | Отдельный Chromium process на BrowserSession; первоначальная direct worker ownership часть заменена ADR-0013 | superseded in part |
 | [ADR-0013](ADR-0013-browser-session-subprocess.md) | Browser Worker — supervisor; каждая BrowserSession живёт в отдельном Python subprocess, который владеет Playwright/Chromium | accepted |
 | [ADR-0014](ADR-0014-browser-egress-proxy.md) | Browser egress идёт через public-only forward proxy/gateway; Browser Worker не имеет direct Internet route | accepted |
+| [ADR-0015](ADR-0015-v0.5-native-content-expansion.md) | v0.5 расширяет только direct L1 readers/inspectors: OOXML, ODF, EPUB/FB2/SVG, image/audio metadata; без LibreOffice/OCR/VLM | accepted |
+| [ADR-0016](ADR-0016-s3-content-store.md) | S3-compatible ContentStore использует boto3 в bounded I/O executor и сохраняет тот же staged/finalized Content lifecycle | accepted |
 
 ## Приоритет при чтении Browser ADR
 
@@ -59,3 +61,14 @@ ADR-0014  browser egress boundary
 ```
 
 При конфликте старой process-management формулировки ADR-0012 с ADR-0013 приоритет имеет ADR-0013.
+
+## Content ADR progression
+
+```text
+ADR-0007  Content staging/finalization + reconciliation
+ADR-0008  initial v0.3 native parser stack/isolation
+ADR-0015  v0.5 direct native format expansion
+ADR-0016  S3-compatible shared ContentStore
+```
+
+Ни ADR-0015, ни ADR-0016 не расширяют Web Access до L2 document/media processing.
