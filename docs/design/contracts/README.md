@@ -23,9 +23,13 @@ Contract spec не может изменить lifecycle/security semantics, о�
 
 - [`common-models.md`](common-models.md) — общие public result/error/resource/cursor модели и сериализация.
 - [`mcp-tools.md`](mcp-tools.md) — exact freeze-candidate MCP input/output contracts, bounds, unions и execution metadata для catalog ADR-0022.
-- [`rest-api-v1.md`](rest-api-v1.md) — exact freeze-candidate REST `/api/v1`: endpoint tree, DTO, bounds, streaming/admin/operational contracts.
+- [`rest-api-v1.md`](rest-api-v1.md) — exact freeze-candidate обычного REST `/api/v1`: Search/Retrieval/Content/Browser/Jobs + базовые operational references.
+- [`policy-models.md`](policy-models.md) — exact dynamic non-secret task policy, global defaults/maxima, principal overrides и PolicySnapshot serialization.
+- [`admin-api-v1.md`](admin-api-v1.md) — exact protected `/api/v1/admin/*`: policy revisions/overrides, provider/usage diagnostics, audit, worker drain и typed maintenance.
 
-Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable contract artifacts и должны соответствовать этим specs.
+`admin-api-v1.md` является более специфичным exact contract для `/api/v1/admin/*`. Если ранняя краткая admin-секция `rest-api-v1.md` не перечисляет более поздний exact endpoint, приоритет для admin namespace имеет `admin-api-v1.md` при сохранении общей REST semantics `../rest-api.md`.
+
+Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable contract artifacts и должны соответствовать совокупности этих specs.
 
 ---
 
@@ -41,6 +45,7 @@ Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable 
 8. Internal provider/Playwright/SQL/Redis fields не попадают сюда.
 9. Contract spec не имеет права самовольно расширять capability beyond canonical component/facade design.
 10. Generated actual FastMCP/OpenAPI contract в v0.8 должен соответствовать этим specs или design меняется явно до freeze.
+11. Dynamic policy не хранит secrets и не может логически отключить собственный admin recovery control plane (ADR-0023).
 
 ---
 
@@ -53,4 +58,5 @@ Generated actual FastMCP schemas и OpenAPI в v0.8 являются executable 
 - additive optional output fields проходят compatibility review;
 - новый MCP tool требует отдельного semantic intent/execution-class review;
 - новый REST endpoint может быть additive, если не меняет существующую semantics;
-- behavioral retry/ownership/security change считается contract change даже без изменения JSON shape.
+- policy schema revision требует rolling-software compatibility;
+- behavioral retry/ownership/security/admin-authority change считается contract change даже без изменения JSON shape.
