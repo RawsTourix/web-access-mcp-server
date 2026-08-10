@@ -51,7 +51,13 @@ Production skeleton без premature web logic.
 
 Search/Retrieval/Browser/Jobs business capability.
 
-**Status:** ready for implementation.
+**Status:** accepted.
+
+Acceptance implementation HEAD:
+
+```text
+3e5df8775f99cf15a30e17b56db740c08b00233c
+```
 
 ---
 
