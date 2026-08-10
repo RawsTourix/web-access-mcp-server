@@ -118,3 +118,43 @@ RawsTourix/kudago-nominatim-mcp-server
 ```
 
 при этом остаётся самостоятельным сервисом без runtime dependency на эти репозитории.
+
+## Локальный запуск v0.1 Service Foundation
+
+Требуются Docker Engine с Compose v2. Скопируйте `.env.example` в `.env` и замените оба placeholder. Например, URL-safe значения можно сгенерировать менеджером секретов или `openssl rand -hex 32`.
+
+Reference stack содержит только Control Plane, PostgreSQL, Redis и one-shot migration:
+
+```bash
+docker compose up --build
+```
+
+После успешного запуска:
+
+```text
+REST liveness   http://127.0.0.1:8000/health/live
+REST readiness  http://127.0.0.1:8000/health/ready
+MCP              http://127.0.0.1:8000/mcp/
+```
+
+Detailed status требует `Authorization: Bearer <token>` и scope `admin:read` либо явно настроенный wildcard `*`. MCP использует тот же bearer registry. В production-каталоге v0.1 нет business tools — это ожидаемое состояние foundation.
+
+Миграции выполняются отдельным one-shot service. Ручной повторный запуск безопасен:
+
+```bash
+docker compose run --rm migration
+```
+
+Остановка:
+
+```bash
+docker compose down
+```
+
+Удаление local development volumes выполняется только явно:
+
+```bash
+docker compose down --volumes
+```
+
+PostgreSQL и Redis по умолчанию не публикуют host ports. Наружу на loopback публикуется только общий REST/MCP Control Plane.

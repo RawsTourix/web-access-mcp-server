@@ -1,0 +1,82 @@
+name: web-access-foundation
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: web_access
+      POSTGRES_USER: web_access
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U web_access -d web_access"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+
+  redis:
+    image: redis:7.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  migration:
+    build:
+      context: .
+      target: runtime
+    image: web-access-mcp-server:0.1
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      WEB_ACCESS_DATABASE__URL: postgresql+asyncpg://web_access:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/web_access
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  api:
+    build:
+      context: .
+      target: runtime
+    image: web-access-mcp-server:0.1
+    init: true
+    environment:
+      WEB_ACCESS_APP__ENVIRONMENT: production
+      WEB_ACCESS_DATABASE__URL: postgresql+asyncpg://web_access:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/web_access
+      WEB_ACCESS_REDIS__URL: redis://redis:6379/0
+      WEB_ACCESS_CONTENT_STORE__ROOT: /var/lib/web-access/content
+      WEB_ACCESS_AUTH__PRINCIPALS: ${WEB_ACCESS_AUTH__PRINCIPALS:?Set WEB_ACCESS_AUTH__PRINCIPALS in .env}
+      WEB_ACCESS_OBSERVABILITY__LOG_FORMAT: json
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${WEB_ACCESS_API_PORT:-8000}:8000"
+    volumes:
+      - content_data:/var/lib/web-access/content
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 15s
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  content_data:
+

@@ -72,12 +72,15 @@ class FilesystemContentStore:
             key = f"sha256/{sha256[:2]}/{sha256}"
             target, _ = self._path_for_key(key)
             await asyncio.to_thread(target.parent.mkdir, mode=0o750, parents=True, exist_ok=True)
-            if await asyncio.to_thread(target.exists):
+            try:
+                # Atomic create-if-absent avoids an overwrite race on Windows and POSIX.
+                await asyncio.to_thread(os.link, staging, target)
+            except FileExistsError:
                 if not await asyncio.to_thread(self._verify_blob, target, sha256, size):
-                    raise OSError("existing content-addressed blob failed integrity verification")
-                await asyncio.to_thread(staging.unlink, missing_ok=True)
-            else:
-                await asyncio.to_thread(os.replace, staging, target)
+                    raise OSError(
+                        "existing content-addressed blob failed integrity verification"
+                    ) from None
+            await asyncio.to_thread(staging.unlink, missing_ok=True)
             return StoredBlob(key=key, sha256=sha256, size=size)
         finally:
             if handle is not None:
