@@ -2,7 +2,13 @@
 
 ## Статус
 
-`implemented, pending acceptance`
+`accepted`
+
+Acceptance implementation HEAD:
+
+```text
+3e5df8775f99cf15a30e17b56db740c08b00233c
+```
 
 Версия создаёт production-oriented фундамент Web Access без преждевременной web capability logic.
 
