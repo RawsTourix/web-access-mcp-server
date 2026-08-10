@@ -21,6 +21,7 @@ from web_access.bootstrap.container import RuntimeContainer
 from web_access.bootstrap.lifespan import runtime_lifespan
 from web_access.core.config import Settings
 from web_access.core.ids import IdPrefix
+from web_access.infrastructure.auth.static_bearer import StaticBearerAuthProvider
 from web_access.infrastructure.observability.context import (
     bind_correlation,
     clear_correlation,
@@ -75,12 +76,15 @@ def _request_id(request: Request, container: RuntimeContainer) -> str:
     return container.ids.new(IdPrefix.OPERATION).replace("op_", "req_", 1)
 
 
-def create_rest_app(settings: Settings | None = None) -> FastAPI:
+def create_rest_app(
+    settings: Settings | None = None,
+    auth_provider: StaticBearerAuthProvider | None = None,
+) -> FastAPI:
     selected_settings = settings or Settings()
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with runtime_lifespan(selected_settings) as container:
+        async with runtime_lifespan(selected_settings, auth_provider) as container:
             app.state.container = container
             yield
 

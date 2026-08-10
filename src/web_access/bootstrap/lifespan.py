@@ -28,7 +28,10 @@ from web_access.infrastructure.redis.client import RedisDependency
 
 
 @asynccontextmanager
-async def runtime_lifespan(settings: Settings) -> AsyncIterator[RuntimeContainer]:
+async def runtime_lifespan(
+    settings: Settings,
+    auth_provider: StaticBearerAuthProvider | None = None,
+) -> AsyncIterator[RuntimeContainer]:
     """Build concrete dependencies on entry and release ownership in reverse order."""
 
     configure_logging(settings.observability)
@@ -45,7 +48,7 @@ async def runtime_lifespan(settings: Settings) -> AsyncIterator[RuntimeContainer
     session_factory = create_session_factory(engine)
     redis = RedisDependency(settings.redis)
     content_store = FilesystemContentStore(settings.content_store)
-    auth = StaticBearerAuthProvider(settings.auth.principals)
+    auth = auth_provider or StaticBearerAuthProvider(settings.auth.principals)
     health = HealthService(
         clock=clock,
         probes=(
