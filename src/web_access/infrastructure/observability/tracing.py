@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+from fastapi import FastAPI
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
@@ -24,10 +26,20 @@ def configure_tracing(
     provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
     selected_exporter = exporter
     if selected_exporter is None and settings.otlp_endpoint:
-        selected_exporter = OTLPSpanExporter(endpoint=settings.otlp_endpoint)
+        try:
+            selected_exporter = OTLPSpanExporter(endpoint=settings.otlp_endpoint)
+        except Exception:  # Telemetry setup must not prevent the service from starting.
+            selected_exporter = None
     if selected_exporter is not None:
         provider.add_span_processor(BatchSpanProcessor(selected_exporter))
     return provider
+
+
+def instrument_fastapi(app: FastAPI, provider: TracerProvider | None) -> None:
+    """Instrument one app instance without installing a process-global provider."""
+
+    if provider is not None:
+        FastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
 
 
 @contextmanager

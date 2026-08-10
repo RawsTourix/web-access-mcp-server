@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import structlog
 from fastapi import Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
+from web_access.application.common.correlation import correlation_context
 from web_access.application.common.errors import (
     AuthorizationError,
     ErrorCategory,
@@ -78,6 +80,15 @@ async def validation_error_handler(_request: Request, error: Exception) -> JSONR
 
 
 async def internal_error_handler(_request: Request, _error: Exception) -> JSONResponse:
+    with correlation_context(
+        operation_id=getattr(_request.state, "operation_id", None),
+        request_id=getattr(_request.state, "request_id", None),
+        trace_id=getattr(_request.state, "trace_id", None),
+    ):
+        structlog.get_logger(__name__).error(
+            "rest_internal_error",
+            error_type=type(_error).__name__,
+        )
     return _response(
         500,
         OperationError(

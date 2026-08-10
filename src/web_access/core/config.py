@@ -13,6 +13,7 @@ from pydantic import (
     Field,
     PostgresDsn,
     RedisDsn,
+    Secret,
     SecretStr,
     field_validator,
     model_validator,
@@ -32,7 +33,7 @@ NonEmptyText = Annotated[str, Field(min_length=1, max_length=128, pattern=r"^[A-
 class PrincipalSettings(BaseModel):
     """One configured service principal and its active rotation credentials."""
 
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     principal_id: NonEmptyText
     tokens: tuple[SecretStr, ...] = Field(min_length=1)
@@ -52,7 +53,7 @@ class PrincipalSettings(BaseModel):
 
 
 class AppSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     environment: Environment = Environment.DEVELOPMENT
     service_name: NonEmptyText = "web-access"
@@ -65,7 +66,7 @@ class AppSettings(BaseModel):
 
 
 class AuthSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     principals: tuple[PrincipalSettings, ...] = ()
     principals_file: Path | None = None
@@ -96,25 +97,35 @@ class AuthSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    url: PostgresDsn = PostgresDsn(
-        "postgresql+asyncpg://web_access:development-only@localhost:5432/web_access"
+    url: Secret[PostgresDsn] = Secret(
+        PostgresDsn("postgresql+asyncpg://web_access:development-only@localhost:5432/web_access")
     )
     pool_size: int = Field(default=5, ge=1, le=100)
     pool_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
 
+    def resolved_url(self) -> PostgresDsn:
+        """Reveal the validated DSN only at an infrastructure adapter boundary."""
+
+        return self.url.get_secret_value()
+
 
 class RedisSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
-    url: RedisDsn = RedisDsn("redis://localhost:6379/0")
+    url: Secret[RedisDsn] = Secret(RedisDsn("redis://localhost:6379/0"))
     namespace: NonEmptyText = "web-access:v1"
     socket_timeout_seconds: float = Field(default=2.0, gt=0, le=30)
 
+    def resolved_url(self) -> RedisDsn:
+        """Reveal the validated DSN only at an infrastructure adapter boundary."""
+
+        return self.url.get_secret_value()
+
 
 class ContentStoreSettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     root: Path = Path(".content")
     chunk_size: int = Field(default=64 * 1024, ge=4096, le=4 * 1024 * 1024)
@@ -128,7 +139,7 @@ class ContentStoreSettings(BaseModel):
 
 
 class ObservabilitySettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     log_format: Literal["json", "console"] = "json"
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
@@ -137,7 +148,7 @@ class ObservabilitySettings(BaseModel):
 
 
 class SecuritySettings(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     request_id_max_length: int = Field(default=128, ge=16, le=512)
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
@@ -151,6 +162,7 @@ class Settings(BaseSettings):
         env_nested_delimiter="__",
         extra="forbid",
         frozen=True,
+        hide_input_in_errors=True,
     )
 
     app: AppSettings = Field(default_factory=AppSettings)
@@ -170,6 +182,10 @@ class Settings(BaseSettings):
                 raise ValueError("debug must be disabled in production")
             if not self.content_store.root.is_absolute():
                 raise ValueError("production ContentStore root must be absolute")
+            if "url" not in self.database.model_fields_set:
+                raise ValueError("production PostgreSQL URL must be explicitly configured")
+            if "url" not in self.redis.model_fields_set:
+                raise ValueError("production Redis URL must be explicitly configured")
         return self
 
     def safe_summary(self) -> dict[str, object]:

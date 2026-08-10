@@ -13,6 +13,7 @@ from web_access.core.config import (
     Environment,
     ObservabilitySettings,
     PrincipalSettings,
+    SecuritySettings,
     Settings,
 )
 
@@ -117,3 +118,42 @@ async def test_failed_startup_releases_created_dependencies(
         async with lifespan.runtime_lifespan(_settings(tmp_path)):
             pytest.fail("failed startup must not yield")
     assert events == ["redis:start:failed", "redis:close", "database:close"]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_uses_configured_bound_and_logs_timeout_without_sleep(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    configured_timeout = 0.25
+    observed: list[float] = []
+    events: list[str] = []
+
+    class RecordingLogger:
+        def info(self, event: str, **_values: object) -> None:
+            events.append(event)
+
+        def error(self, event: str, **_values: object) -> None:
+            events.append(event)
+
+    class SyntheticTimeout:
+        async def __aenter__(self) -> None:
+            return None
+
+        async def __aexit__(self, *_exc: object) -> bool:
+            raise TimeoutError
+
+    def timeout(seconds: float) -> SyntheticTimeout:
+        observed.append(seconds)
+        return SyntheticTimeout()
+
+    monkeypatch.setattr(lifespan.asyncio, "timeout", timeout)
+    monkeypatch.setattr(lifespan.structlog, "get_logger", lambda _name: RecordingLogger())
+    settings = _settings(tmp_path).model_copy(
+        update={"security": SecuritySettings(shutdown_timeout_seconds=configured_timeout)}
+    )
+    async with lifespan.runtime_lifespan(settings):
+        pass
+
+    assert observed == [configured_timeout]
+    assert "runtime_shutdown_timed_out" in events

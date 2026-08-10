@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import structlog
+from opentelemetry.sdk.trace import TracerProvider
 
 from web_access.application.common.health import DependencyProbe, HealthService
 from web_access.bootstrap.container import RuntimeContainer
@@ -31,6 +33,7 @@ from web_access.infrastructure.redis.client import RedisDependency
 async def runtime_lifespan(
     settings: Settings,
     auth_provider: StaticBearerAuthProvider | None = None,
+    tracer_provider: TracerProvider | None = None,
 ) -> AsyncIterator[RuntimeContainer]:
     """Build concrete dependencies on entry and release ownership in reverse order."""
 
@@ -40,9 +43,8 @@ async def runtime_lifespan(
     clock = SystemClock()
     ids = Uuid4IdGenerator()
     metrics = create_metrics()
-    tracer_provider = configure_tracing(
-        settings.observability,
-        settings.app.service_name,
+    selected_tracer_provider = tracer_provider or configure_tracing(
+        settings.observability, settings.app.service_name
     )
     engine = create_engine(settings.database)
     session_factory = create_session_factory(engine)
@@ -80,7 +82,7 @@ async def runtime_lifespan(
         content_store=content_store,
         health=health,
         metrics=metrics,
-        tracer_provider=tracer_provider,
+        tracer_provider=selected_tracer_provider,
     )
     try:
         await content_store.start()
@@ -90,7 +92,23 @@ async def runtime_lifespan(
         yield container
     finally:
         health.begin_shutdown()
-        await redis.close()
-        await close_engine(engine)
-        shutdown_tracing(tracer_provider)
+        try:
+            async with asyncio.timeout(settings.security.shutdown_timeout_seconds):
+                for dependency, close in (
+                    ("redis", redis.close),
+                    ("database", lambda: close_engine(engine)),
+                    (
+                        "tracing",
+                        lambda: asyncio.to_thread(shutdown_tracing, selected_tracer_provider),
+                    ),
+                ):
+                    try:
+                        await close()
+                    except Exception:
+                        logger.error("runtime_dependency_shutdown_failed", dependency=dependency)
+        except TimeoutError:
+            logger.error(
+                "runtime_shutdown_timed_out",
+                timeout_seconds=settings.security.shutdown_timeout_seconds,
+            )
         logger.info("runtime_stopped")

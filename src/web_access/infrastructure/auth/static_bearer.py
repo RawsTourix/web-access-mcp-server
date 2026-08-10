@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import secrets
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from web_access.application.common.context import PrincipalContext
 from web_access.core.config import PrincipalSettings
@@ -12,7 +12,7 @@ from web_access.core.config import PrincipalSettings
 @dataclass(frozen=True, slots=True)
 class _Credential:
     principal: PrincipalContext
-    secret: str
+    secret: str = field(repr=False)
 
 
 class StaticBearerAuthProvider:

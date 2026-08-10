@@ -103,3 +103,4 @@ async def test_tokens_do_not_leak_to_logs_or_repr(caplog: pytest.LogCaptureFixtu
     rendered = json.dumps([record.getMessage() for record in caplog.records])
     assert TOKEN_A1 not in rendered
     assert TOKEN_A1 not in repr(_principals())
+    assert TOKEN_A1 not in repr(provider._credentials)

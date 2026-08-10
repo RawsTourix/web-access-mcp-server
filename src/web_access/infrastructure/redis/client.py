@@ -26,7 +26,7 @@ class RedisDependency:
         if self._client is not None:
             return
         self._client = Redis.from_url(
-            str(self._settings.url),
+            str(self._settings.resolved_url()),
             socket_timeout=self._settings.socket_timeout_seconds,
             socket_connect_timeout=self._settings.socket_timeout_seconds,
             health_check_interval=30,

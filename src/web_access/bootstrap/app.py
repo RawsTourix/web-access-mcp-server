@@ -12,6 +12,7 @@ from fastmcp.utilities.lifespan import combine_lifespans
 from web_access.bootstrap.lifespan import runtime_lifespan
 from web_access.core.config import Settings
 from web_access.infrastructure.auth.static_bearer import StaticBearerAuthProvider
+from web_access.infrastructure.observability.tracing import configure_tracing, instrument_fastapi
 from web_access.transport.mcp.server import create_mcp_server
 from web_access.transport.rest.app import create_rest_app
 
@@ -21,13 +22,18 @@ def assemble_control_plane(
     auth_provider: StaticBearerAuthProvider,
     mcp: FastMCP,
 ) -> FastAPI:
+    tracer_provider = configure_tracing(settings.observability, settings.app.service_name)
+
     @asynccontextmanager
     async def rest_lifespan(app: FastAPI) -> AsyncIterator[None]:
-        async with runtime_lifespan(settings, auth_provider) as container:
+        async with runtime_lifespan(
+            settings, auth_provider, tracer_provider=tracer_provider
+        ) as container:
             app.state.container = container
             yield
 
     app = create_rest_app(rest_lifespan)
+    instrument_fastapi(app, tracer_provider)
     mcp_app = mcp.http_app(path="/", transport="streamable-http")
     app.router.lifespan_context = combine_lifespans(
         app.router.lifespan_context,

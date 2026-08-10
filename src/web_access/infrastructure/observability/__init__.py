@@ -10,6 +10,7 @@ from web_access.infrastructure.observability.logging import configure_logging
 from web_access.infrastructure.observability.metrics import ServiceMetrics, create_metrics
 from web_access.infrastructure.observability.tracing import (
     configure_tracing,
+    instrument_fastapi,
     operation_span,
     shutdown_tracing,
 )
@@ -23,6 +24,7 @@ __all__ = [
     "correlation_context",
     "correlation_values",
     "create_metrics",
+    "instrument_fastapi",
     "operation_span",
     "shutdown_tracing",
 ]

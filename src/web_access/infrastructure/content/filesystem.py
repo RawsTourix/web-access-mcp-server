@@ -34,11 +34,33 @@ class FilesystemContentStore:
 
     def _initialize_directories(self) -> None:
         self._root.mkdir(mode=0o750, parents=True, exist_ok=True)
-        self._blobs.mkdir(mode=0o750, exist_ok=True)
-        (self._blobs / "sha256").mkdir(mode=0o750, exist_ok=True)
-        self._staging.mkdir(mode=0o750, exist_ok=True)
+        self._ensure_managed_directory(self._root)
+        self._ensure_managed_directory(self._blobs)
+        self._ensure_managed_directory(self._blobs / "sha256")
+        self._ensure_managed_directory(self._staging)
+
+    def _ensure_managed_directory(self, path: Path) -> None:
+        if path.is_symlink():
+            raise InvalidStorageKey("managed ContentStore directory cannot be a symbolic link")
+        path.mkdir(mode=0o750, exist_ok=True)
+        try:
+            resolved = path.resolve(strict=True)
+        except OSError as error:
+            raise InvalidStorageKey("managed ContentStore directory is unavailable") from error
+        expected = path.absolute()
+        if resolved != expected or (resolved != self._root and self._root not in resolved.parents):
+            raise InvalidStorageKey("managed ContentStore directory escapes the canonical root")
+        if not resolved.is_dir():
+            raise InvalidStorageKey("managed ContentStore path is not a directory")
+
+    def _validate_managed_directories(self) -> None:
+        self._ensure_managed_directory(self._root)
+        self._ensure_managed_directory(self._blobs)
+        self._ensure_managed_directory(self._blobs / "sha256")
+        self._ensure_managed_directory(self._staging)
 
     def _path_for_key(self, key: str) -> tuple[Path, str]:
+        self._validate_managed_directories()
         match = _KEY_PATTERN.fullmatch(key)
         if match is None or match.group(1) != match.group(2)[:2]:
             raise InvalidStorageKey("storage key is not a canonical SHA-256 key")
@@ -80,12 +102,21 @@ class FilesystemContentStore:
                     raise OSError(
                         "existing content-addressed blob failed integrity verification"
                     ) from None
-            await asyncio.to_thread(staging.unlink, missing_ok=True)
+            await asyncio.to_thread(self._safe_unlink_staging, staging)
             return StoredBlob(key=key, sha256=sha256, size=size)
         finally:
             if handle is not None:
                 await asyncio.to_thread(handle.close)
-            await asyncio.to_thread(staging.unlink, missing_ok=True)
+            await asyncio.to_thread(self._safe_unlink_staging, staging)
+
+    def _safe_unlink_staging(self, path: Path) -> None:
+        """Never follow a replaced staging base while cleaning our temporary file."""
+
+        try:
+            self._validate_managed_directories()
+        except (InvalidStorageKey, OSError):
+            return
+        path.unlink(missing_ok=True)
 
     def _verify_blob(self, path: Path, expected_hash: str, expected_size: int) -> bool:
         if path.is_symlink() or not path.is_file() or path.stat().st_size != expected_size:
@@ -130,8 +161,7 @@ class FilesystemContentStore:
     async def cleanup_staging(self, older_than_seconds: float) -> int:
         if older_than_seconds < 0:
             raise ValueError("staging cleanup age cannot be negative")
-        if not await asyncio.to_thread(self._staging.is_dir):
-            return 0
+        await asyncio.to_thread(self._validate_managed_directories)
         cutoff = time.time() - older_than_seconds
         removed = 0
         for path in await asyncio.to_thread(lambda: list(self._staging.glob("*.part"))):
@@ -146,6 +176,7 @@ class FilesystemContentStore:
         """Check existing root capabilities without a mutating health write."""
 
         try:
+            await asyncio.to_thread(self._validate_managed_directories)
             return bool(
                 await asyncio.to_thread(self._root.is_dir)
                 and await asyncio.to_thread(self._blobs.is_dir)

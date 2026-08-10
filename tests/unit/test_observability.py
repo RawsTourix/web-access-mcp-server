@@ -5,9 +5,13 @@ import logging
 from collections.abc import Sequence
 from io import StringIO
 
+import httpx
+import pytest
 import structlog
-from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
+from fastapi import FastAPI
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
 from web_access.core.config import ObservabilitySettings
 from web_access.infrastructure.observability import (
@@ -17,6 +21,7 @@ from web_access.infrastructure.observability import (
     configure_tracing,
     correlation_values,
     create_metrics,
+    instrument_fastapi,
     operation_span,
     shutdown_tracing,
 )
@@ -82,3 +87,33 @@ def test_tracing_disabled_and_exporter_failure_are_non_fatal() -> None:
         assert span is not None
         span.set_attribute("bounded.kind", "foundation")
     shutdown_tracing(provider)
+
+
+@pytest.mark.asyncio
+async def test_fastapi_instrumentation_is_isolated_per_app_instance() -> None:
+    exporters = (InMemorySpanExporter(), InMemorySpanExporter())
+    providers = (TracerProvider(), TracerProvider())
+    apps = (FastAPI(), FastAPI())
+    for index, (app, provider, exporter) in enumerate(zip(apps, providers, exporters, strict=True)):
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+
+        @app.get(f"/app-{index}")
+        async def endpoint() -> dict[str, bool]:
+            return {"ok": True}
+
+        instrument_fastapi(app, provider)
+
+    for index, app in enumerate(apps):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            assert (await client.get(f"/app-{index}")).status_code == 200
+
+    first_names = {span.name for span in exporters[0].get_finished_spans()}
+    second_names = {span.name for span in exporters[1].get_finished_spans()}
+    assert any("/app-0" in name for name in first_names)
+    assert not any("/app-1" in name for name in first_names)
+    assert any("/app-1" in name for name in second_names)
+    assert not any("/app-0" in name for name in second_names)
+    for provider in providers:
+        shutdown_tracing(provider)

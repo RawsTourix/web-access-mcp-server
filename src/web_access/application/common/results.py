@@ -170,27 +170,27 @@ def automatic_retry_allowed(
 ) -> bool:
     """Apply the most conservative retry evidence; retryable alone is insufficient."""
 
-    if not error_retryable or stage in {
-        ExecutionStage.SIDE_EFFECT_POSSIBLE,
-        ExecutionStage.RESPONSE_LOST,
-    }:
+    if not error_retryable:
         return False
     if retry_class is RetryClass.NEVER_AUTOMATIC:
         return False
-    if retry_class is RetryClass.IDEMPOTENT_RETRY:
-        return idempotency_proven
-    if retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED:
-        return stage is ExecutionStage.BEFORE_DISPATCH and not any(
-            (
-                effects.billable_cost_possible,
-                effects.resource_creation_possible,
-                effects.external_side_effect_possible,
-            )
-        )
-    return not any(
+    ambiguous_effect_stage = stage in {
+        ExecutionStage.DISPATCHED,
+        ExecutionStage.EXECUTING,
+        ExecutionStage.SIDE_EFFECT_POSSIBLE,
+        ExecutionStage.RESPONSE_LOST,
+    }
+    has_possible_effect = any(
         (
             effects.billable_cost_possible,
             effects.resource_creation_possible,
             effects.external_side_effect_possible,
         )
     )
+    if ambiguous_effect_stage and has_possible_effect:
+        return False
+    if retry_class is RetryClass.IDEMPOTENT_RETRY:
+        return idempotency_proven
+    if retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED:
+        return stage is ExecutionStage.BEFORE_DISPATCH
+    return not has_possible_effect

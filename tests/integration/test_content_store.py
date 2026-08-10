@@ -16,6 +16,25 @@ async def _chunks(*chunks: bytes) -> AsyncIterator[bytes]:
         yield chunk
 
 
+async def _redirect_directory(link, target) -> None:
+    if os.name != "nt":
+        link.symlink_to(target, target_is_directory=True)
+        return
+    process = await asyncio.create_subprocess_exec(
+        os.environ["COMSPEC"],
+        "/d",
+        "/c",
+        "mklink",
+        "/J",
+        str(link),
+        str(target),
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    assert process.returncode == 0, (stdout, stderr)
+
+
 @pytest.mark.asyncio
 async def test_stream_roundtrip_hash_stat_exists_and_remove(tmp_path) -> None:
     store = FilesystemContentStore(ContentStoreSettings(root=tmp_path, chunk_size=4096))
@@ -151,3 +170,39 @@ async def test_symbolic_link_blob_is_never_followed_or_removed(tmp_path) -> None
     with pytest.raises(OSError, match="integrity"):
         await store.write_stream(_chunks(data))
     assert outside_file.read_bytes() == data
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed_base", ["blobs", "sha256", "staging"])
+@pytest.mark.parametrize("operation", ["write", "open", "stat", "remove", "cleanup"])
+async def test_managed_directory_redirects_are_never_followed(
+    tmp_path, managed_base: str, operation: str
+) -> None:
+    root = tmp_path / "managed"
+    outside = tmp_path / f"outside-{managed_base}-{operation}"
+    root.mkdir()
+    outside.mkdir()
+    if managed_base == "blobs":
+        link = root / "blobs"
+    elif managed_base == "sha256":
+        (root / "blobs").mkdir()
+        link = root / "blobs" / "sha256"
+    else:
+        (root / "blobs" / "sha256").mkdir(parents=True)
+        link = root / "staging"
+    await _redirect_directory(link, outside)
+
+    store = FilesystemContentStore(ContentStoreSettings(root=root))
+    key = f"sha256/00/{'0' * 64}"
+    with pytest.raises(InvalidStorageKey, match="managed ContentStore"):
+        if operation == "write":
+            await store.write_stream(_chunks(b"must-not-escape"))
+        elif operation == "open":
+            _ = [chunk async for chunk in store.open_stream(key)]
+        elif operation == "stat":
+            await store.stat(key)
+        elif operation == "remove":
+            await store.remove(key)
+        else:
+            await store.cleanup_staging(0)
+    assert list(outside.iterdir()) == []

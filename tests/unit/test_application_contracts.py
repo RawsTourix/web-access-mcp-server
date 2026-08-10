@@ -164,8 +164,66 @@ def test_retryable_does_not_override_cost_or_resource_effects() -> None:
     )
     assert automatic_retry_allowed(
         retry_class=RetryClass.IDEMPOTENT_RETRY,
-        stage=ExecutionStage.DISPATCHED,
+        stage=ExecutionStage.TERMINAL_KNOWN,
         effects=OperationEffects(resource_creation_possible=True),
         error_retryable=True,
         idempotency_proven=True,
     )
+
+
+def test_phase_evidence_allows_pre_dispatch_retry_despite_future_effects() -> None:
+    assert automatic_retry_allowed(
+        retry_class=RetryClass.PHASE_EVIDENCE_REQUIRED,
+        stage=ExecutionStage.BEFORE_DISPATCH,
+        effects=OperationEffects(
+            billable_cost_possible=True,
+            resource_creation_possible=True,
+            external_side_effect_possible=True,
+        ),
+        error_retryable=True,
+    )
+
+
+def test_retry_policy_exhaustive_decision_table() -> None:
+    ambiguous_stages = {
+        ExecutionStage.DISPATCHED,
+        ExecutionStage.EXECUTING,
+        ExecutionStage.SIDE_EFFECT_POSSIBLE,
+        ExecutionStage.RESPONSE_LOST,
+    }
+    cases = 0
+    for retry_class, stage, effect_values, error_retryable, idempotency_proven in product(
+        RetryClass,
+        ExecutionStage,
+        product((False, True), repeat=3),
+        (False, True),
+        (False, True),
+    ):
+        effects = OperationEffects(
+            billable_cost_possible=effect_values[0],
+            resource_creation_possible=effect_values[1],
+            external_side_effect_possible=effect_values[2],
+        )
+        has_effect = any(effect_values)
+        if not error_retryable or retry_class is RetryClass.NEVER_AUTOMATIC:
+            expected = False
+        elif stage in ambiguous_stages and has_effect:
+            expected = False
+        elif retry_class is RetryClass.IDEMPOTENT_RETRY:
+            expected = idempotency_proven
+        elif retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED:
+            expected = stage is ExecutionStage.BEFORE_DISPATCH
+        else:
+            expected = not has_effect
+        assert (
+            automatic_retry_allowed(
+                retry_class=retry_class,
+                stage=stage,
+                effects=effects,
+                error_retryable=error_retryable,
+                idempotency_proven=idempotency_proven,
+            )
+            is expected
+        )
+        cases += 1
+    assert cases == 768

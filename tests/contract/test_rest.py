@@ -1,10 +1,15 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Literal
 
 import httpx
 import pytest
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+from opentelemetry.trace import SpanKind
 from pydantic import SecretStr
 
 from web_access.bootstrap.app import create_control_plane
@@ -13,6 +18,7 @@ from web_access.core.config import (
     AuthSettings,
     ContentStoreSettings,
     Environment,
+    ObservabilitySettings,
     PrincipalSettings,
     Settings,
 )
@@ -24,7 +30,12 @@ NO_SCOPE_TOKEN = "b" * 32
 DependencyName = Literal["postgres", "redis", "content_store"]
 
 
-def _settings(tmp_path: Path, mandatory: frozenset[DependencyName] = frozenset()) -> Settings:
+def _settings(
+    tmp_path: Path,
+    mandatory: frozenset[DependencyName] = frozenset(),
+    *,
+    tracing_enabled: bool = False,
+) -> Settings:
     return Settings(
         app=AppSettings(
             environment=Environment.TEST,
@@ -45,6 +56,7 @@ def _settings(tmp_path: Path, mandatory: frozenset[DependencyName] = frozenset()
             )
         ),
         content_store=ContentStoreSettings(root=tmp_path),
+        observability=ObservabilitySettings(tracing_enabled=tracing_enabled),
     )
 
 
@@ -132,3 +144,89 @@ def test_openapi_has_only_foundation_routes_and_bearer_security(tmp_path: Path) 
     rendered = str(schema).lower()
     for forbidden in ("search", "retrieval", "browser", "jobs", "sqlalchemy", "redis_url"):
         assert f'"/{forbidden}' not in rendered
+
+
+@pytest.mark.asyncio
+async def test_internal_error_is_safe_and_structurally_logged(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    canary = "internal-exception-bearer-canary-secret"
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(InMemorySpanExporter()))
+    monkeypatch.setattr(
+        "web_access.bootstrap.app.configure_tracing",
+        lambda _settings, _service_name: provider,
+    )
+    app = create_control_plane(_settings(tmp_path, tracing_enabled=True))
+    trace_id = "fedcba0987654321fedcba0987654321"
+
+    async def fail() -> None:
+        raise RuntimeError(canary)
+
+    app.add_api_route("/_test/fail", fail, methods=["GET"], include_in_schema=False)
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app, raise_app_exceptions=False),
+            base_url="http://test",
+        ) as client:
+            response = await client.get(
+                "/_test/fail",
+                headers={
+                    "X-Request-ID": "req-canary",
+                    "traceparent": f"00-{trace_id}-1234567890abcdef-01",
+                },
+            )
+
+    assert response.status_code == 500
+    assert response.json()["error"]["code"] == "internal_error"
+    assert canary not in response.text
+    events = [
+        json.loads(line) for line in capsys.readouterr().out.splitlines() if line.startswith("{")
+    ]
+    error_event = next(event for event in events if event.get("event") == "rest_internal_error")
+    assert error_event["operation_id"].startswith("op_")
+    assert error_event["request_id"] == "req-canary"
+    assert error_event["trace_id"] == trace_id
+    assert canary not in json.dumps(error_event)
+
+
+@pytest.mark.asyncio
+async def test_fastapi_request_span_uses_local_provider_and_w3c_context(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    exporter = InMemorySpanExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(SimpleSpanProcessor(exporter))
+    monkeypatch.setattr(
+        "web_access.bootstrap.app.configure_tracing",
+        lambda _settings, _service_name: provider,
+    )
+    app = create_control_plane(_settings(tmp_path, tracing_enabled=True))
+    trace_id = int("1234567890abcdef1234567890abcdef", 16)
+    parent_span_id = "1234567890abcdef"
+    traceparent = f"00-{trace_id:032x}-{parent_span_id}-01"
+    canary = "request-body-bearer-canary-secret"
+
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.request(
+                "GET",
+                "/health/live",
+                headers={
+                    "traceparent": traceparent,
+                    "authorization": f"Bearer {canary}",
+                },
+                content=canary.encode(),
+            )
+        spans = exporter.get_finished_spans()
+        server_spans = [span for span in spans if span.kind is SpanKind.SERVER]
+        assert response.status_code == 200
+        assert server_spans
+        assert any(
+            span.context is not None and span.context.trace_id == trace_id for span in server_spans
+        )
+        assert canary not in repr([span.attributes for span in spans])

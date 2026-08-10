@@ -9,6 +9,7 @@ from fastapi import Depends, FastAPI, Request, Response, Security
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from opentelemetry.trace import get_current_span
 from prometheus_client import CONTENT_TYPE_LATEST
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import Lifespan
@@ -79,8 +80,13 @@ def create_rest_app(lifespan: Lifespan[FastAPI]) -> FastAPI:
         dependencies = dependencies_from_request(request)
         operation_id = dependencies.ids.new(IdPrefix.OPERATION)
         request_id = _request_id(request, dependencies)
+        span_context = get_current_span().get_span_context()
+        trace_id = f"{span_context.trace_id:032x}" if span_context.is_valid else None
+        request.state.operation_id = operation_id
+        request.state.request_id = request_id
+        request.state.trace_id = trace_id
         clear_correlation()
-        bind_correlation(operation_id=operation_id, request_id=request_id)
+        bind_correlation(operation_id=operation_id, request_id=request_id, trace_id=trace_id)
         started = monotonic()
         try:
             response = await call_next(request)

@@ -26,5 +26,10 @@ def test_no_identity_header_or_auth_bypass_exists_in_production_source() -> None
 def test_example_credentials_remain_explicit_placeholders() -> None:
     example = Path(".env.example").read_text(encoding="utf-8")
     assert "<generated-" in example
-    assert "WEB_ACCESS_AUTH__PRINCIPALS=" in example
-    assert "POSTGRES_PASSWORD=" in example
+    assignments = {
+        line.split("=", 1)[0]: line.split("=", 1)[1]
+        for line in example.splitlines()
+        if line and not line.startswith("#") and "=" in line
+    }
+    assert assignments["WEB_ACCESS_AUTH__PRINCIPALS"] == ""
+    assert assignments["POSTGRES_PASSWORD"] == ""

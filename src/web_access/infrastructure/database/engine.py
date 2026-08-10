@@ -15,7 +15,7 @@ from web_access.core.config import DatabaseSettings
 
 def create_engine(settings: DatabaseSettings) -> AsyncEngine:
     return create_async_engine(
-        str(settings.url),
+        str(settings.resolved_url()),
         pool_pre_ping=True,
         pool_size=settings.pool_size,
         pool_timeout=settings.pool_timeout_seconds,
