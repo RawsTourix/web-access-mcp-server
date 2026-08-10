@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
 import pytest
@@ -121,13 +122,14 @@ async def test_failed_startup_releases_created_dependencies(
 
 
 @pytest.mark.asyncio
-async def test_shutdown_uses_configured_bound_and_logs_timeout_without_sleep(
+async def test_shutdown_timeout_cancels_blocked_closer_and_completes_lifespan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    configured_timeout = 0.25
-    observed: list[float] = []
+    configured_timeout = 0.05
     events: list[str] = []
+    closer_started = asyncio.Event()
+    closer_cancelled = asyncio.Event()
 
     class RecordingLogger:
         def info(self, event: str, **_values: object) -> None:
@@ -136,24 +138,31 @@ async def test_shutdown_uses_configured_bound_and_logs_timeout_without_sleep(
         def error(self, event: str, **_values: object) -> None:
             events.append(event)
 
-    class SyntheticTimeout:
-        async def __aenter__(self) -> None:
-            return None
+    async def blocked_close(_redis: lifespan.RedisDependency) -> None:
+        closer_started.set()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            closer_cancelled.set()
+            raise
 
-        async def __aexit__(self, *_exc: object) -> bool:
-            raise TimeoutError
-
-    def timeout(seconds: float) -> SyntheticTimeout:
-        observed.append(seconds)
-        return SyntheticTimeout()
-
-    monkeypatch.setattr(lifespan.asyncio, "timeout", timeout)
+    monkeypatch.setattr(lifespan.RedisDependency, "close", blocked_close)
     monkeypatch.setattr(lifespan.structlog, "get_logger", lambda _name: RecordingLogger())
     settings = _settings(tmp_path).model_copy(
         update={"security": SecuritySettings(shutdown_timeout_seconds=configured_timeout)}
     )
-    async with lifespan.runtime_lifespan(settings):
-        pass
 
-    assert observed == [configured_timeout]
+    async def run_lifespan() -> None:
+        async with lifespan.runtime_lifespan(settings):
+            pass
+
+    loop = asyncio.get_running_loop()
+    started_at = loop.time()
+    await asyncio.wait_for(run_lifespan(), timeout=1)
+    elapsed = loop.time() - started_at
+
+    assert closer_started.is_set()
+    assert closer_cancelled.is_set()
+    assert configured_timeout <= elapsed < 0.5
     assert "runtime_shutdown_timed_out" in events
+    assert "runtime_stopped" in events

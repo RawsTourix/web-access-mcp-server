@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 from pathlib import Path
 from typing import Literal
 
@@ -114,6 +115,34 @@ async def test_liveness_survives_mandatory_dependency_outage(tmp_path: Path) -> 
             ready = await client.get("/health/ready")
             assert ready.status_code == 503
             assert ready.json() == {"status": "unavailable"}
+
+
+@pytest.mark.asyncio
+async def test_unavailable_content_store_is_reported_without_health_500(tmp_path: Path) -> None:
+    app = create_control_plane(_settings(tmp_path, frozenset({"content_store"})))
+    async with app.router.lifespan_context(app):
+        staging = tmp_path / "staging"
+        shutil.rmtree(staging)
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            live = await client.get("/health/live")
+            ready = await client.get("/health/ready")
+            status = await client.get(
+                "/health/status", headers={"Authorization": f"Bearer {TOKEN}"}
+            )
+
+        assert live.status_code == 200
+        assert ready.status_code == 503
+        assert status.status_code == 200
+        content_store = next(
+            dependency
+            for dependency in status.json()["service"]["dependencies"]
+            if dependency["name"] == "content_store"
+        )
+        assert content_store["status"] == "unavailable"
+        assert content_store["code"] == "probe_failed"
+        assert not staging.exists()
 
 
 @pytest.mark.asyncio

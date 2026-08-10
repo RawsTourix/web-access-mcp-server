@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import os
+import shutil
 from collections.abc import AsyncIterator
 
 import pytest
@@ -91,6 +92,38 @@ async def test_cleanup_abandoned_staging_and_non_mutating_probe(tmp_path) -> Non
     assert set(tmp_path.rglob("*")) == before
     assert await store.cleanup_staging(0) == 1
     assert not abandoned.exists()
+
+
+@pytest.mark.asyncio
+async def test_probe_does_not_recreate_missing_managed_directory(tmp_path) -> None:
+    store = FilesystemContentStore(ContentStoreSettings(root=tmp_path))
+    await store.start()
+    staging = tmp_path / "staging"
+    shutil.rmtree(staging)
+
+    assert not await store.probe()
+    assert not staging.exists()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("managed_base", ["blobs", "sha256", "staging"])
+async def test_probe_rejects_managed_directory_redirects(tmp_path, managed_base: str) -> None:
+    root = tmp_path / "managed"
+    outside = tmp_path / f"outside-{managed_base}"
+    store = FilesystemContentStore(ContentStoreSettings(root=root))
+    await store.start()
+    outside.mkdir()
+    if managed_base == "blobs":
+        link = root / "blobs"
+    elif managed_base == "sha256":
+        link = root / "blobs" / "sha256"
+    else:
+        link = root / "staging"
+    shutil.rmtree(link)
+    await _redirect_directory(link, outside)
+
+    assert not await store.probe()
+    assert list(outside.iterdir()) == []
 
 
 @pytest.mark.asyncio

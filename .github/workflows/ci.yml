@@ -84,6 +84,7 @@ jobs:
       - run: uv sync --locked
       - run: docker compose up --build --detach --wait --wait-timeout 180
       - run: uv run python tests/e2e/compose_smoke.py
+      - run: uv run python tests/e2e/compose_recovery.py
       - run: docker compose run --rm migration
       - run: test "$(docker compose exec -T api id -u)" = "10001"
       - if: always()

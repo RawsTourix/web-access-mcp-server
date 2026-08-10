@@ -184,13 +184,43 @@ def test_phase_evidence_allows_pre_dispatch_retry_despite_future_effects() -> No
     )
 
 
+@pytest.mark.parametrize(
+    "stage",
+    [ExecutionStage.DISPATCHED, ExecutionStage.RESPONSE_LOST],
+)
+def test_proven_idempotency_allows_resource_replay_after_dispatch(
+    stage: ExecutionStage,
+) -> None:
+    assert automatic_retry_allowed(
+        retry_class=RetryClass.IDEMPOTENT_RETRY,
+        stage=stage,
+        effects=OperationEffects(resource_creation_possible=True),
+        error_retryable=True,
+        idempotency_proven=True,
+    )
+
+
+def test_idempotency_proof_does_not_prove_duplicate_billing_is_impossible() -> None:
+    assert not automatic_retry_allowed(
+        retry_class=RetryClass.IDEMPOTENT_RETRY,
+        stage=ExecutionStage.RESPONSE_LOST,
+        effects=OperationEffects(billable_cost_possible=True),
+        error_retryable=True,
+        idempotency_proven=True,
+    )
+
+
+def test_idempotent_retry_requires_proof() -> None:
+    assert not automatic_retry_allowed(
+        retry_class=RetryClass.IDEMPOTENT_RETRY,
+        stage=ExecutionStage.DISPATCHED,
+        effects=OperationEffects(resource_creation_possible=True),
+        error_retryable=True,
+        idempotency_proven=False,
+    )
+
+
 def test_retry_policy_exhaustive_decision_table() -> None:
-    ambiguous_stages = {
-        ExecutionStage.DISPATCHED,
-        ExecutionStage.EXECUTING,
-        ExecutionStage.SIDE_EFFECT_POSSIBLE,
-        ExecutionStage.RESPONSE_LOST,
-    }
     cases = 0
     for retry_class, stage, effect_values, error_retryable, idempotency_proven in product(
         RetryClass,
@@ -204,17 +234,14 @@ def test_retry_policy_exhaustive_decision_table() -> None:
             resource_creation_possible=effect_values[1],
             external_side_effect_possible=effect_values[2],
         )
-        has_effect = any(effect_values)
-        if not error_retryable or retry_class is RetryClass.NEVER_AUTOMATIC:
-            expected = False
-        elif stage in ambiguous_stages and has_effect:
-            expected = False
-        elif retry_class is RetryClass.IDEMPOTENT_RETRY:
-            expected = idempotency_proven
-        elif retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED:
-            expected = stage is ExecutionStage.BEFORE_DISPATCH
-        else:
-            expected = not has_effect
+        billable, resource, external = effect_values
+        class_permission = {
+            RetryClass.SAFE_RETRY: not (billable or resource or external),
+            RetryClass.IDEMPOTENT_RETRY: idempotency_proven and not billable,
+            RetryClass.NEVER_AUTOMATIC: False,
+            RetryClass.PHASE_EVIDENCE_REQUIRED: stage is ExecutionStage.BEFORE_DISPATCH,
+        }
+        expected = error_retryable and class_permission[retry_class]
         assert (
             automatic_retry_allowed(
                 retry_class=retry_class,

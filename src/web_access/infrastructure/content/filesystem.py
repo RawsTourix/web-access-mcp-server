@@ -54,10 +54,20 @@ class FilesystemContentStore:
             raise InvalidStorageKey("managed ContentStore path is not a directory")
 
     def _validate_managed_directories(self) -> None:
-        self._ensure_managed_directory(self._root)
-        self._ensure_managed_directory(self._blobs)
-        self._ensure_managed_directory(self._blobs / "sha256")
-        self._ensure_managed_directory(self._staging)
+        for path in (self._root, self._blobs, self._blobs / "sha256", self._staging):
+            if path.is_symlink():
+                raise InvalidStorageKey("managed ContentStore directory cannot be a symbolic link")
+            try:
+                resolved = path.resolve(strict=True)
+            except OSError as error:
+                raise InvalidStorageKey("managed ContentStore directory is unavailable") from error
+            expected = path.absolute()
+            if resolved != expected or (
+                resolved != self._root and self._root not in resolved.parents
+            ):
+                raise InvalidStorageKey("managed ContentStore directory escapes the canonical root")
+            if not resolved.is_dir():
+                raise InvalidStorageKey("managed ContentStore path is not a directory")
 
     def _path_for_key(self, key: str) -> tuple[Path, str]:
         self._validate_managed_directories()
@@ -173,15 +183,22 @@ class FilesystemContentStore:
         return removed
 
     async def probe(self) -> bool:
-        """Check existing root capabilities without a mutating health write."""
+        """Check existing managed directories without creating or repairing them."""
 
         try:
             await asyncio.to_thread(self._validate_managed_directories)
-            return bool(
-                await asyncio.to_thread(self._root.is_dir)
-                and await asyncio.to_thread(self._blobs.is_dir)
-                and await asyncio.to_thread(self._staging.is_dir)
-                and os.access(self._root, os.R_OK | os.W_OK | os.X_OK)
+            return await asyncio.to_thread(
+                lambda: all(
+                    os.access(path, os.R_OK | os.W_OK | os.X_OK)
+                    for path in (
+                        self._root,
+                        self._blobs,
+                        self._blobs / "sha256",
+                        self._staging,
+                    )
+                )
             )
-        except OSError:
+        except Exception:
+            # A health check is a total fail-closed query. Cancellation remains
+            # observable because asyncio.CancelledError is a BaseException.
             return False

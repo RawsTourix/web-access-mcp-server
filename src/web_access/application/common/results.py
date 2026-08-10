@@ -174,23 +174,17 @@ def automatic_retry_allowed(
         return False
     if retry_class is RetryClass.NEVER_AUTOMATIC:
         return False
-    ambiguous_effect_stage = stage in {
-        ExecutionStage.DISPATCHED,
-        ExecutionStage.EXECUTING,
-        ExecutionStage.SIDE_EFFECT_POSSIBLE,
-        ExecutionStage.RESPONSE_LOST,
-    }
-    has_possible_effect = any(
+    if retry_class is RetryClass.IDEMPOTENT_RETRY:
+        # Canonical replay proof covers logical/resource effects, including an
+        # ambiguous dispatch or lost response.  It does not by itself prove
+        # that a second provider call cannot incur a second billable charge.
+        return idempotency_proven and not effects.billable_cost_possible
+    if retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED:
+        return stage is ExecutionStage.BEFORE_DISPATCH
+    return not any(
         (
             effects.billable_cost_possible,
             effects.resource_creation_possible,
             effects.external_side_effect_possible,
         )
     )
-    if ambiguous_effect_stage and has_possible_effect:
-        return False
-    if retry_class is RetryClass.IDEMPOTENT_RETRY:
-        return idempotency_proven
-    if retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED:
-        return stage is ExecutionStage.BEFORE_DISPATCH
-    return not has_possible_effect
