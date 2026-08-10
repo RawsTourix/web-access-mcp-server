@@ -199,20 +199,27 @@ class SearchApplicationService:
                 provider_revision=provider.descriptor.configuration_revision,
             )
 
-            cached = await _bounded_await(context, self._cache.get(identity))
-            if cached.state is CacheLookupState.HIT and cached.value is not None:
-                return self._cache_hit(index, cached.value)
-
-            while self._policy.cache_mode != "disabled":
+            if self._policy.cache_mode != "disabled":
+                cached = await _bounded_await(context, self._cache.get(identity))
+                if cached.state is CacheLookupState.HIT and cached.value is not None:
+                    return self._cache_hit(index, cached.value)
                 lease = await _bounded_await(
                     context,
                     self._single_flight.acquire(identity, wait_seconds=context.remaining_seconds()),
                 )
-                if lease.holder:
-                    break
-                cached = await _bounded_await(context, self._cache.get(identity))
-                if cached.state is CacheLookupState.HIT and cached.value is not None:
-                    return self._cache_hit(index, cached.value)
+                if not lease.holder:
+                    cached = await _bounded_await(context, self._cache.get(identity))
+                    if cached.state is CacheLookupState.HIT and cached.value is not None:
+                        return self._cache_hit(index, cached.value)
+                    raise ProviderAttemptError(
+                        OperationError(
+                            category=ErrorCategory.CAPACITY,
+                            code="single_flight_wait_exhausted",
+                            message="Search single-flight wait was exhausted.",
+                            retryable=True,
+                        ),
+                        stage=ExecutionStage.BEFORE_DISPATCH,
+                    )
 
             result, attempts = await self._execute_attempts(
                 context=context,

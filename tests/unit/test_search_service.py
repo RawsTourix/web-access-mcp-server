@@ -90,6 +90,7 @@ class FakeCache:
         self.values: dict[str, SearchQueryData] = {}
         self.write_ok = True
         self.gets = 0
+        self.puts = 0
 
     async def get(self, identity: str) -> CacheLookup:
         self.gets += 1
@@ -100,6 +101,7 @@ class FakeCache:
 
     async def put(self, identity: str, value: SearchQueryData, ttl_seconds: int) -> bool:
         _ = ttl_seconds
+        self.puts += 1
         if self.write_ok:
             self.values[identity] = value
         return self.write_ok
@@ -163,11 +165,15 @@ class FakeUsage:
         self.stages.append(str(values["stage"]))
 
 
-def context(*, scopes: frozenset[str] = frozenset({"search:read"})) -> ExecutionContext:
+def context(
+    *,
+    scopes: frozenset[str] = frozenset({"search:read"}),
+    principal_id: str = "principal",
+) -> ExecutionContext:
     clock = FakeClock(NOW)
     return ExecutionContext(
         operation_id="op_test",
-        principal=PrincipalContext("principal", scopes),
+        principal=PrincipalContext(principal_id, scopes),
         clock=clock,
         cancellation=CancellationToken(),
         deadline=Deadline.after(clock, 30),
@@ -254,6 +260,51 @@ async def test_cache_write_failure_keeps_success_and_adds_warning() -> None:
     result = await service.search(context(), SearchBatchRequest(queries=(SearchQuery(query="q"),)))
     assert result.outcome is OperationOutcome.SUCCEEDED
     assert result.data and result.data.items[0].warnings[0].code == "cache_write_failed"
+
+
+@pytest.mark.asyncio
+async def test_cache_scope_principal_shared_and_disabled_modes() -> None:
+    principal_service, principal_provider, _, principal_cache, *_ = build()
+    request = SearchBatchRequest(queries=(SearchQuery(query="scope"),))
+    await principal_service.search(context(principal_id="one"), request)
+    await principal_service.search(context(principal_id="two"), request)
+    assert len(principal_provider.calls) == 2
+    assert len(principal_cache.values) == 2
+
+    shared_service, shared_provider, *_ = build(
+        policy=SearchServicePolicy(cache_mode="shared_public")
+    )
+    await shared_service.search(context(principal_id="one"), request)
+    shared_result = await shared_service.search(context(principal_id="two"), request)
+    assert len(shared_provider.calls) == 1
+    assert shared_result.data and shared_result.data.items[0].data
+    assert shared_result.data.items[0].data.cache.cached
+
+    disabled_service, disabled_provider, _, disabled_cache, *_ = build(
+        policy=SearchServicePolicy(cache_mode="disabled")
+    )
+    await disabled_service.search(context(), request)
+    await disabled_service.search(context(), request)
+    assert len(disabled_provider.calls) == 2
+    assert disabled_cache.gets == disabled_cache.puts == 0
+
+
+@pytest.mark.asyncio
+async def test_provider_configuration_revision_invalidates_cache_identity() -> None:
+    cache = FakeCache()
+    first_provider = FakeProvider(SearchProviderId.SEARXNG)
+    first_service, *_ = build(searxng=first_provider, cache=cache)
+    request = SearchBatchRequest(queries=(SearchQuery(query="revision"),))
+    await first_service.search(context(), request)
+
+    second_provider = FakeProvider(SearchProviderId.SEARXNG)
+    second_provider.descriptor = second_provider.descriptor.model_copy(
+        update={"configuration_revision": "revision-searxng-changed"}
+    )
+    second_service, *_ = build(searxng=second_provider, cache=cache)
+    await second_service.search(context(), request)
+    assert len(first_provider.calls) == len(second_provider.calls) == 1
+    assert len(cache.values) == 2
 
 
 @pytest.mark.asyncio

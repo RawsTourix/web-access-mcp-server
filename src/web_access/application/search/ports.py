@@ -32,6 +32,7 @@ class SearchProvider(Protocol):
 class CacheLookupState(StrEnum):
     HIT = "hit"
     MISS = "miss"
+    CORRUPT = "corrupt"
     UNAVAILABLE = "unavailable"
 
 
