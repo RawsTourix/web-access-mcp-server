@@ -14,12 +14,14 @@ from web_access.application.search.models import (
     SearchUsageMetadata,
 )
 from web_access.application.search.registry import SearchProviderRegistry, SearchRegionRegistry
+from web_access.application.search.service import SearchApplicationService, SearchServicePolicy
 
 __all__ = [
     "CacheMetadata",
     "PaginationMetadata",
     "ProviderCapabilities",
     "ProviderDescriptor",
+    "SearchApplicationService",
     "SearchBatchRequest",
     "SearchBatchResult",
     "SearchProviderRegistry",
@@ -28,5 +30,6 @@ __all__ = [
     "SearchRegionEntry",
     "SearchRegionMapping",
     "SearchRegionRegistry",
+    "SearchServicePolicy",
     "SearchUsageMetadata",
 ]
