@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Annotated, Literal, Self
 
 from pydantic import (
+    AnyHttpUrl,
     BaseModel,
     ConfigDict,
     Field,
@@ -154,6 +155,162 @@ class SecuritySettings(BaseModel):
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
 
 
+class SearxngSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    enabled: bool = True
+    endpoint: AnyHttpUrl = AnyHttpUrl("http://localhost:8080")
+    request_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
+    max_results: int = Field(default=50, ge=1, le=50)
+
+
+class YandexSearchSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    enabled: bool = False
+    endpoint: AnyHttpUrl = AnyHttpUrl("https://searchapi.api.cloud.yandex.net/v2/web/search")
+    folder_id: str | None = Field(default=None, min_length=1, max_length=128)
+    api_key: SecretStr | None = None
+    request_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
+    max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
+    max_results: int = Field(default=50, ge=1, le=50)
+
+    @model_validator(mode="after")
+    def validate_enabled_credentials(self) -> Self:
+        if self.enabled and (self.folder_id is None or self.api_key is None):
+            raise ValueError("enabled Yandex Search requires folder_id and api_key")
+        return self
+
+
+class SearchRegionProviderSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    provider_id: Literal["searxng", "yandex"]
+    provider_region: str = Field(min_length=1, max_length=128)
+
+
+class SearchRegionSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    region_id: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,63}$")
+    label: str = Field(min_length=1, max_length=128)
+    mappings: tuple[SearchRegionProviderSettings, ...] = Field(default=(), max_length=16)
+
+    @model_validator(mode="after")
+    def validate_mapping_uniqueness(self) -> Self:
+        providers = [mapping.provider_id for mapping in self.mappings]
+        if len(providers) != len(set(providers)):
+            raise ValueError("duplicate provider mapping for Search region")
+        return self
+
+
+class SearchCacheSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    mode: Literal["principal", "shared_public", "disabled"] = "principal"
+    searxng_ttl_seconds: int = Field(default=300, ge=1, le=86400)
+    yandex_ttl_seconds: int = Field(default=300, ge=1, le=86400)
+    single_flight_ttl_seconds: int = Field(default=30, ge=2, le=300)
+    waiter_poll_seconds: float = Field(default=0.05, gt=0, le=1)
+
+
+class SearchRateBucketSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    capacity: int = Field(default=20, ge=1, le=10000)
+    refill_per_second: float = Field(default=5.0, gt=0, le=10000)
+
+
+class SearchProviderRateSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    principal: SearchRateBucketSettings = Field(default_factory=SearchRateBucketSettings)
+    global_: SearchRateBucketSettings = Field(
+        default_factory=lambda: SearchRateBucketSettings(capacity=100, refill_per_second=20),
+        alias="global",
+    )
+
+
+class SearchRateLimitSettings(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, hide_input_in_errors=True, populate_by_name=True
+    )
+
+    mandatory: bool = True
+    searxng: SearchProviderRateSettings = Field(default_factory=SearchProviderRateSettings)
+    yandex: SearchProviderRateSettings = Field(default_factory=SearchProviderRateSettings)
+
+
+class SearchProviderConcurrencySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    local_limit: int = Field(default=10, ge=1, le=1000)
+    global_limit: int = Field(default=20, ge=1, le=1000)
+    lease_seconds: int = Field(default=65, ge=2, le=600)
+    admission_timeout_seconds: float = Field(default=2.0, gt=0, le=60)
+
+
+class SearchConcurrencySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    searxng: SearchProviderConcurrencySettings = Field(
+        default_factory=SearchProviderConcurrencySettings
+    )
+    yandex: SearchProviderConcurrencySettings = Field(
+        default_factory=lambda: SearchProviderConcurrencySettings(local_limit=5, global_limit=10)
+    )
+
+
+class SearchRetrySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    searxng_max_attempts: int = Field(default=2, ge=1, le=3)
+    yandex_max_attempts: int = Field(default=1, ge=1, le=2)
+    backoff_seconds: float = Field(default=0.05, ge=0, le=5)
+
+
+class SearchSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    default_provider: Literal["searxng", "yandex"] = "searxng"
+    provider_order: tuple[Literal["searxng", "yandex"], ...] = ("searxng", "yandex")
+    max_batch_size: int = Field(default=32, ge=1, le=32)
+    max_query_length: int = Field(default=4096, ge=1, le=4096)
+    max_results: int = Field(default=50, ge=1, le=50)
+    max_page: int = Field(default=100, ge=1, le=100)
+    batch_concurrency: int = Field(default=8, ge=1, le=32)
+    searxng: SearxngSettings = Field(default_factory=SearxngSettings)
+    yandex: YandexSearchSettings = Field(default_factory=YandexSearchSettings)
+    cache: SearchCacheSettings = Field(default_factory=SearchCacheSettings)
+    rate_limit: SearchRateLimitSettings = Field(default_factory=SearchRateLimitSettings)
+    concurrency: SearchConcurrencySettings = Field(default_factory=SearchConcurrencySettings)
+    retry: SearchRetrySettings = Field(default_factory=SearchRetrySettings)
+    regions: tuple[SearchRegionSettings, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_search_graph(self) -> Self:
+        if len(self.provider_order) != len(set(self.provider_order)):
+            raise ValueError("duplicate Search provider")
+        if self.default_provider not in self.provider_order:
+            raise ValueError("default Search provider is not configured")
+        selected = self.searxng if self.default_provider == "searxng" else self.yandex
+        if not selected.enabled:
+            raise ValueError("default Search provider is disabled")
+        region_ids = [region.region_id for region in self.regions]
+        if len(region_ids) != len(set(region_ids)):
+            raise ValueError("duplicate Search region ID")
+        return self
+
+    def provider_revision(self, provider_id: Literal["searxng", "yandex"]) -> str:
+        provider = self.searxng if provider_id == "searxng" else self.yandex
+        payload = provider.model_dump(mode="json", exclude={"api_key"})
+        canonical = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        import hashlib
+
+        return hashlib.sha256(canonical.encode()).hexdigest()
+
+
 class Settings(BaseSettings):
     """Single environment-owned settings graph."""
 
@@ -172,6 +329,7 @@ class Settings(BaseSettings):
     content_store: ContentStoreSettings = Field(default_factory=ContentStoreSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    search: SearchSettings = Field(default_factory=SearchSettings)
 
     @model_validator(mode="after")
     def validate_profile(self) -> Self:
@@ -186,6 +344,13 @@ class Settings(BaseSettings):
                 raise ValueError("production PostgreSQL URL must be explicitly configured")
             if "url" not in self.redis.model_fields_set:
                 raise ValueError("production Redis URL must be explicitly configured")
+            if (
+                self.search.searxng.enabled
+                and "endpoint" not in self.search.searxng.model_fields_set
+            ):
+                raise ValueError("production SearXNG endpoint must be explicitly configured")
+            if self.search.yandex.enabled and self.search.yandex.endpoint.scheme != "https":
+                raise ValueError("production Yandex Search endpoint must use TLS")
         return self
 
     def safe_summary(self) -> dict[str, object]:

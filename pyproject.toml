@@ -14,6 +14,7 @@ dependencies = [
   "asyncpg>=0.30,<1",
   "fastapi>=0.116,<1",
   "fastmcp>=3,<4",
+  "langcodes>=3.5,<4",
   "opentelemetry-api>=1.35,<2",
   "opentelemetry-instrumentation-fastapi>=0.56b0,<1",
   "opentelemetry-exporter-otlp-proto-http>=1.35,<2",

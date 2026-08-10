@@ -49,6 +49,28 @@ class ProviderDescriptor(BaseModel):
         return self.capabilities.billable
 
 
+class SearchRegionMapping(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    provider_id: SearchProviderId
+    provider_region: str = Field(min_length=1, max_length=128)
+
+
+class SearchRegionEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+    region_id: SearchRegionId
+    label: str = Field(min_length=1, max_length=128)
+    mappings: tuple[SearchRegionMapping, ...] = Field(default=(), max_length=16)
+
+    @model_validator(mode="after")
+    def unique_provider_mappings(self) -> SearchRegionEntry:
+        provider_ids = [mapping.provider_id for mapping in self.mappings]
+        if len(provider_ids) != len(set(provider_ids)):
+            raise ValueError("duplicate provider mapping for Search region")
+        return self
+
+
 class SearchQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
 
@@ -64,8 +86,14 @@ class SearchQuery(BaseModel):
     @model_validator(mode="before")
     @classmethod
     def normalize_query(cls, value: object) -> object:
-        if isinstance(value, dict) and isinstance(value.get("query"), str):
-            value = {**value, "query": value["query"].strip()}
+        if isinstance(value, dict):
+            value = dict(value)
+            if isinstance(value.get("query"), str):
+                value["query"] = value["query"].strip()
+            if isinstance(value.get("language"), str):
+                value["language"] = SearchLanguage.parse(value["language"])
+            if isinstance(value.get("region"), str):
+                value["region"] = SearchRegionId(value["region"])
         return value
 
 

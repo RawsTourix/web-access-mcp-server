@@ -2,7 +2,14 @@
 
 from __future__ import annotations
 
-from web_access.application.search.models import ProviderDescriptor, SearchQuery
+import hashlib
+import json
+
+from web_access.application.search.models import (
+    ProviderDescriptor,
+    SearchQuery,
+    SearchRegionEntry,
+)
 from web_access.application.search.ports import SearchProvider
 from web_access.domain.search import SearchProviderId, SearchProviderSelection
 
@@ -11,6 +18,45 @@ class ProviderResolutionError(ValueError):
     def __init__(self, code: str, message: str) -> None:
         self.code = code
         super().__init__(message)
+
+
+class SearchRegionRegistry:
+    def __init__(self, entries: tuple[SearchRegionEntry, ...]) -> None:
+        by_id = {str(entry.region_id): entry for entry in entries}
+        if len(by_id) != len(entries):
+            raise ValueError("duplicate Search region ID")
+        self._entries = by_id
+        canonical = [
+            {
+                "region_id": str(entry.region_id),
+                "label": entry.label,
+                "mappings": [
+                    {
+                        "provider_id": mapping.provider_id.value,
+                        "provider_region": mapping.provider_region,
+                    }
+                    for mapping in sorted(entry.mappings, key=lambda item: item.provider_id.value)
+                ],
+            }
+            for entry in sorted(entries, key=lambda item: str(item.region_id))
+        ]
+        payload = json.dumps(canonical, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        self._revision = hashlib.sha256(payload.encode()).hexdigest()
+
+    @property
+    def revision(self) -> str:
+        return self._revision
+
+    def provider_region(self, region_id: str, provider_id: SearchProviderId) -> str:
+        entry = self._entries.get(region_id)
+        if entry is None:
+            raise ProviderResolutionError("unknown_region", "Search region is not configured.")
+        mapping = next((item for item in entry.mappings if item.provider_id is provider_id), None)
+        if mapping is None:
+            raise ProviderResolutionError(
+                "unsupported_region", "Search region is unsupported by this provider."
+            )
+        return mapping.provider_region
 
 
 class SearchProviderRegistry:

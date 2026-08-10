@@ -7,7 +7,10 @@ from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
+import langcodes
+
 _REGION_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
+_LANGUAGE_TAG = re.compile(r"^[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*$")
 
 
 class SearchProviderId(StrEnum):
@@ -42,6 +45,22 @@ class SearchLanguage:
     def __post_init__(self) -> None:
         if not 1 <= len(self.value) <= 64:
             raise ValueError("language tag length must be between 1 and 64")
+        if _LANGUAGE_TAG.fullmatch(self.value) is None or not langcodes.tag_is_valid(self.value):
+            raise ValueError("invalid language tag")
+        normalized = langcodes.Language.get(self.value).to_tag()
+        if normalized != self.value:
+            raise ValueError("language tag must be normalized")
+
+    @classmethod
+    def parse(cls, value: str) -> SearchLanguage:
+        raw = value.strip()
+        if (
+            not 1 <= len(raw) <= 64
+            or _LANGUAGE_TAG.fullmatch(raw) is None
+            or not langcodes.tag_is_valid(raw)
+        ):
+            raise ValueError("invalid language tag")
+        return cls(langcodes.Language.get(raw).to_tag())
 
     def __str__(self) -> str:
         return self.value

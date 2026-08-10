@@ -9,9 +9,11 @@ from web_access.application.search.models import (
     SearchBatchResult,
     SearchQuery,
     SearchQueryData,
+    SearchRegionEntry,
+    SearchRegionMapping,
     SearchUsageMetadata,
 )
-from web_access.application.search.registry import SearchProviderRegistry
+from web_access.application.search.registry import SearchProviderRegistry, SearchRegionRegistry
 
 __all__ = [
     "CacheMetadata",
@@ -23,5 +25,8 @@ __all__ = [
     "SearchProviderRegistry",
     "SearchQuery",
     "SearchQueryData",
+    "SearchRegionEntry",
+    "SearchRegionMapping",
+    "SearchRegionRegistry",
     "SearchUsageMetadata",
 ]
