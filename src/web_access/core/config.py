@@ -300,6 +300,14 @@ class SearchSettings(BaseModel):
         region_ids = [region.region_id for region in self.regions]
         if len(region_ids) != len(set(region_ids)):
             raise ValueError("duplicate Search region ID")
+        for provider, concurrency, timeout in (
+            ("searxng", self.concurrency.searxng, self.searxng.request_timeout_seconds),
+            ("yandex", self.concurrency.yandex, self.yandex.request_timeout_seconds),
+        ):
+            if concurrency.lease_seconds <= timeout + 1:
+                raise ValueError(
+                    f"{provider} concurrency lease must exceed provider timeout and safety margin"
+                )
         return self
 
     def provider_revision(self, provider_id: Literal["searxng", "yandex"]) -> str:
