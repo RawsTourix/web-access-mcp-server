@@ -1,12 +1,17 @@
 from pathlib import Path
 
 
-def test_compose_contains_only_foundation_services_and_one_public_port() -> None:
+def test_compose_contains_v02_control_plane_and_one_public_port() -> None:
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
-    for required in ("  postgres:\n", "  redis:\n", "  migration:\n", "  api:\n"):
+    for required in (
+        "  postgres:\n",
+        "  redis:\n",
+        "  searxng:\n",
+        "  migration:\n",
+        "  api:\n",
+    ):
         assert required in compose
     for forbidden in (
-        "searxng:",
         "job-worker:",
         "browser-worker:",
         "playwright:",
@@ -16,6 +21,10 @@ def test_compose_contains_only_foundation_services_and_one_public_port() -> None
         assert forbidden not in compose.lower()
     assert compose.count("ports:") == 1
     assert "127.0.0.1:${WEB_ACCESS_API_PORT:-8000}:8000" in compose
+    assert "searxng/searxng:2026.7.28-c01178d03@sha256:" in compose
+    searxng_service = compose.split("  searxng:\n", 1)[1].split("\n  migration:", 1)[0]
+    assert "ports:" not in searxng_service
+    assert "settings.yml:/etc/searxng/settings.yml:ro" in searxng_service
 
 
 def test_runtime_image_is_non_root_and_locked() -> None:
@@ -24,3 +33,10 @@ def test_runtime_image_is_non_root_and_locked() -> None:
     assert "USER 10001:10001" in dockerfile
     assert "pip install" not in dockerfile
     assert "latest" not in dockerfile.lower()
+
+
+def test_searxng_profile_enables_json_without_stored_secrets() -> None:
+    profile = Path("deployment/searxng/settings.yml").read_text(encoding="utf-8")
+    assert "    - json" in profile
+    assert "secret_key:" not in profile
+    assert "SEARXNG_SECRET:" not in profile

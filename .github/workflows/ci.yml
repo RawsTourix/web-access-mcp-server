@@ -75,6 +75,7 @@ jobs:
       POSTGRES_PASSWORD: compose-postgres-password-123456
       WEB_ACCESS_AUTH__PRINCIPALS: '[{"principal_id":"compose-agent","tokens":["compose-bearer-token-123456789012345"],"scopes":["*"]}]'
       WEB_ACCESS_SMOKE_TOKEN: compose-bearer-token-123456789012345
+      SEARXNG_SECRET: compose-searxng-secret-123456789012345
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6
@@ -84,6 +85,7 @@ jobs:
       - run: uv sync --locked
       - run: docker compose up --build --detach --wait --wait-timeout 180
       - run: uv run python tests/e2e/compose_smoke.py
+      - run: uv run python tests/e2e/searxng_smoke.py
       - run: uv run python tests/e2e/compose_recovery.py
       - run: docker compose run --rm migration
       - run: test "$(docker compose exec -T api id -u)" = "10001"

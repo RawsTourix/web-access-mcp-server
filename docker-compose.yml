@@ -26,6 +26,23 @@ services:
       retries: 30
     restart: unless-stopped
 
+  searxng:
+    image: searxng/searxng:2026.7.28-c01178d03@sha256:5d6d903ab82afa56ee32792d477f36bc63d3e5ca04fcb6947e28a5cfd987fad3
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Set SEARXNG_SECRET in .env}
+      SEARXNG_LIMITER: "false"
+      SEARXNG_PUBLIC_INSTANCE: "false"
+    volumes:
+      - ./deployment/searxng/settings.yml:/etc/searxng/settings.yml:ro
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/healthz"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+    stop_grace_period: 35s
+    restart: unless-stopped
+
   migration:
     build:
       context: .
@@ -52,10 +69,14 @@ services:
       WEB_ACCESS_CONTENT_STORE__ROOT: /var/lib/web-access/content
       WEB_ACCESS_AUTH__PRINCIPALS: ${WEB_ACCESS_AUTH__PRINCIPALS:?Set WEB_ACCESS_AUTH__PRINCIPALS in .env}
       WEB_ACCESS_OBSERVABILITY__LOG_FORMAT: json
+      WEB_ACCESS_SEARCH__SEARXNG__ENDPOINT: http://searxng:8080
+      WEB_ACCESS_SEARCH__SEARXNG__PROFILE_REVISION: searxng-2026.7.28-c01178d03-v1
     depends_on:
       postgres:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      searxng:
         condition: service_healthy
       migration:
         condition: service_completed_successfully
@@ -79,4 +100,3 @@ services:
 volumes:
   postgres_data:
   content_data:
-
