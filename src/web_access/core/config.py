@@ -59,6 +59,9 @@ class AppSettings(BaseModel):
     debug: bool = False
     host: str = "0.0.0.0"  # noqa: S104 -- container listener is an explicit deployment setting.
     port: int = Field(default=8000, ge=1, le=65535)
+    mandatory_dependencies: frozenset[Literal["postgres", "redis", "content_store"]] = frozenset(
+        {"postgres", "redis", "content_store"}
+    )
 
 
 class AuthSettings(BaseModel):
