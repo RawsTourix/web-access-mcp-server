@@ -1,0 +1,1 @@
+"""Content storage adapters."""
