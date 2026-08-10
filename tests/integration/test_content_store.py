@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import os
 from collections.abc import AsyncIterator
 
 import pytest
@@ -65,6 +66,7 @@ async def test_cleanup_abandoned_staging_and_non_mutating_probe(tmp_path) -> Non
     await store.start()
     abandoned = tmp_path / "staging" / "abandoned.part"
     abandoned.write_bytes(b"partial")
+    os.utime(abandoned, (1, 1))
     before = set(tmp_path.rglob("*"))
     assert await store.probe()
     assert set(tmp_path.rglob("*")) == before
