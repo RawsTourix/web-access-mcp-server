@@ -8,6 +8,7 @@ from web_access.infrastructure.search.admission import (
     TokenBucketPolicy,
 )
 from web_access.infrastructure.search.cache import RedisSearchCache, RedisSearchSingleFlight
+from web_access.infrastructure.search.searxng import SearxngSearchProvider
 
 __all__ = [
     "ProviderConcurrencyPolicy",
@@ -16,5 +17,6 @@ __all__ = [
     "RedisProviderRateLimiter",
     "RedisSearchCache",
     "RedisSearchSingleFlight",
+    "SearxngSearchProvider",
     "TokenBucketPolicy",
 ]

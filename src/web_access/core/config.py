@@ -160,6 +160,7 @@ class SearxngSettings(BaseModel):
 
     enabled: bool = True
     endpoint: AnyHttpUrl = AnyHttpUrl("http://localhost:8080")
+    profile_revision: str = Field(default="searxng-default-v1", min_length=8, max_length=128)
     request_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
     max_results: int = Field(default=50, ge=1, le=50)
