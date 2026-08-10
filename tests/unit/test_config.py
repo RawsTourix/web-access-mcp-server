@@ -22,7 +22,7 @@ def _clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_nested_environment_and_secret_redaction(monkeypatch: pytest.MonkeyPatch) -> None:
     _clear_settings_env(monkeypatch)
-    token = "high-entropy-token-value"
+    token = "high-entropy-token-value-123456789"
     monkeypatch.setenv("WEB_ACCESS_APP__ENVIRONMENT", "development")
     monkeypatch.setenv(
         "WEB_ACCESS_AUTH__PRINCIPALS",
@@ -39,7 +39,7 @@ def test_principals_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     _clear_settings_env(monkeypatch)
     path = tmp_path / "principals.json"
     path.write_text(
-        json.dumps([{"principal_id": "agent-a", "tokens": ["token-a"], "scopes": ["read"]}]),
+        json.dumps([{"principal_id": "agent-a", "tokens": ["a" * 32], "scopes": ["read"]}]),
         encoding="utf-8",
     )
     monkeypatch.setenv("WEB_ACCESS_AUTH__PRINCIPALS_FILE", str(path))
@@ -50,12 +50,12 @@ def test_principals_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     "principals",
     [
         [
-            {"principal_id": "duplicate", "tokens": ["token-a"], "scopes": ["read"]},
-            {"principal_id": "duplicate", "tokens": ["token-b"], "scopes": ["read"]},
+            {"principal_id": "duplicate", "tokens": ["a" * 32], "scopes": ["read"]},
+            {"principal_id": "duplicate", "tokens": ["b" * 32], "scopes": ["read"]},
         ],
         [
-            {"principal_id": "agent-a", "tokens": ["same"], "scopes": ["read"]},
-            {"principal_id": "agent-b", "tokens": ["same"], "scopes": ["read"]},
+            {"principal_id": "agent-a", "tokens": ["same" * 8], "scopes": ["read"]},
+            {"principal_id": "agent-b", "tokens": ["same" * 8], "scopes": ["read"]},
         ],
     ],
 )
@@ -73,7 +73,7 @@ def test_rejects_both_principal_sources(monkeypatch: pytest.MonkeyPatch, tmp_pat
     monkeypatch.setenv("WEB_ACCESS_AUTH__PRINCIPALS_FILE", str(path))
     monkeypatch.setenv(
         "WEB_ACCESS_AUTH__PRINCIPALS",
-        '[{"principal_id":"agent","tokens":["token"],"scopes":["*"]}]',
+        f"[{json.dumps({'principal_id': 'agent', 'tokens': ['a' * 32], 'scopes': ['*']})}]",
     )
     with pytest.raises(ValidationError, match="mutually exclusive"):
         Settings()

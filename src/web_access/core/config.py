@@ -44,6 +44,8 @@ class PrincipalSettings(BaseModel):
         raw = [token.get_secret_value() for token in tokens]
         if any(not token.strip() for token in raw):
             raise ValueError("bearer tokens must not be empty")
+        if any(len(token) < 16 for token in raw):
+            raise ValueError("bearer tokens must contain at least 16 characters")
         if len(set(raw)) != len(raw):
             raise ValueError("duplicate bearer token within principal")
         return tokens

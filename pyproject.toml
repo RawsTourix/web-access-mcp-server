@@ -60,6 +60,7 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
 "tests/**/*.py" = ["S101", "S105", "S106"]
 # Canonical application messages are intentionally Russian and contain homoglyphs.
 "src/web_access/application/common/auth.py" = ["RUF001"]
+"src/web_access/transport/rest/auth.py" = ["RUF001"]
 
 [tool.pyright]
 pythonVersion = "3.11"
