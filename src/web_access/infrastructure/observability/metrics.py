@@ -14,6 +14,15 @@ class ServiceMetrics:
     request_duration: Histogram
     readiness: Gauge
 
+    def observe_http_request(
+        self, *, method: str, route: str, status_class: str, duration_seconds: float
+    ) -> None:
+        self.requests.labels(method=method, route=route, status_class=status_class).inc()
+        self.request_duration.labels(method=method, route=route).observe(duration_seconds)
+
+    def set_readiness(self, ready: bool) -> None:
+        self.readiness.set(1 if ready else 0)
+
     def render(self) -> bytes:
         return generate_latest(self.registry)
 

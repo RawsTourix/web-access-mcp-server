@@ -104,3 +104,50 @@ async def test_existing_corrupt_blob_is_not_silently_reused(tmp_path) -> None:
         await store.write_stream(_chunks(data))
     assert target.read_bytes() == b"corrupt"
     assert list((tmp_path / "staging").iterdir()) == []
+
+
+@pytest.mark.asyncio
+async def test_symbolic_link_blob_is_never_followed_or_removed(tmp_path) -> None:
+    store = FilesystemContentStore(ContentStoreSettings(root=tmp_path))
+    await store.start()
+    data = b"outside-content"
+    digest = hashlib.sha256(data).hexdigest()
+    key = f"sha256/{digest[:2]}/{digest}"
+    shard = tmp_path / "blobs" / "sha256" / digest[:2]
+
+    if os.name == "nt":
+        outside_directory = tmp_path / "outside-directory"
+        outside_directory.mkdir()
+        process = await asyncio.create_subprocess_exec(
+            os.environ["COMSPEC"],
+            "/d",
+            "/c",
+            "mklink",
+            "/J",
+            str(shard),
+            str(outside_directory),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await process.communicate()
+        assert process.returncode == 0, (stdout, stderr)
+        with pytest.raises(InvalidStorageKey, match="escapes"):
+            await store.write_stream(_chunks(data))
+        assert list(outside_directory.iterdir()) == []
+        assert list((tmp_path / "staging").iterdir()) == []
+        return
+
+    target = shard / digest
+    shard.mkdir(parents=True)
+    outside_file = tmp_path / "outside"
+    outside_file.write_bytes(data)
+    target.symlink_to(outside_file)
+
+    assert await store.stat(key) is None
+    with pytest.raises(FileNotFoundError):
+        _ = [chunk async for chunk in store.open_stream(key)]
+    with pytest.raises(InvalidStorageKey, match="symbolic-link"):
+        await store.remove(key)
+    with pytest.raises(OSError, match="integrity"):
+        await store.write_stream(_chunks(data))
+    assert outside_file.read_bytes() == data

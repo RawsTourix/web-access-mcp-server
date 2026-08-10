@@ -9,6 +9,7 @@ from fastmcp.client.transports import StreamableHttpTransport
 from fastmcp.server.dependencies import get_access_token
 from pydantic import SecretStr
 
+from web_access.bootstrap.app import assemble_control_plane, create_control_plane
 from web_access.core.config import (
     AppSettings,
     AuthSettings,
@@ -19,11 +20,7 @@ from web_access.core.config import (
 )
 from web_access.infrastructure.auth.static_bearer import StaticBearerAuthProvider
 from web_access.transport.mcp.auth import FastMcpAuthAdapter
-from web_access.transport.mcp.server import (
-    assemble_control_plane,
-    create_control_plane,
-    create_mcp_server,
-)
+from web_access.transport.mcp.server import create_mcp_server
 
 TOKEN = "m" * 32
 

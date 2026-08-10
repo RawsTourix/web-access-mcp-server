@@ -8,7 +8,7 @@
 
 # 1. Общий статус
 
-**Архитектурный design первой stable line v1.0 сформирован. Production-код Web Access ещё не реализован.**
+**Архитектурный design первой stable line v1.0 сформирован. v0.1 Service Foundation реализован и ожидает factual acceptance.**
 
 Закрыты:
 
@@ -25,10 +25,10 @@ Concept
 → testing/release/operational gates
 ```
 
-Следующий implementation milestone:
+Следующий implementation milestone после acceptance v0.1:
 
 ```text
-v0.1 Service Foundation
+v0.2 Search Runtime
 ```
 
 Version-by-version order обязателен; design readiness поздней версии не разрешает перепрыгнуть acceptance prerequisites.
@@ -217,10 +217,10 @@ Exact Admin REST covers policy revisions/rollback, overrides, usage/providers, a
 
 ---
 
-# 9. Version design status
+# 9. Version status
 
 ```text
-v0.1 Service Foundation                         ready for implementation
+v0.1 Service Foundation                         implemented, pending acceptance
 v0.2 Search Runtime                             ready for implementation
 v0.3 Retrieval & Content Core                   ready for implementation
 v0.4 Managed Browser Runtime                    ready for implementation
@@ -232,7 +232,7 @@ v0.9 Production Hardening                       ready for implementation
 v1.0 Stable Web Access                          release contract defined
 ```
 
-Это design status, не implementation status.
+Это factual design/implementation status; acceptance фиксируется только после проверки gates.
 
 ---
 
@@ -272,15 +272,15 @@ v1 baseline намеренно не обещает:
 
 Design-phase feature expansion **остановлен**. Новые capability не следует добавлять без новой реальной requirement/review.
 
-Перед coding v0.1:
+Перед coding v0.2 после factual acceptance v0.1:
 
 ```text
 docs/AGENTS.md
 → this current.md
-→ v0.1 foundation Design/ADR
-→ versions/v0.1/README.md
-→ versions/v0.1/implementation-sequence.md
+→ v0.2 Search Design/ADR
+→ versions/v0.2/README.md
+→ versions/v0.2/implementation-sequence.md
 → testing/release gates
 ```
 
-Дальше реализация идёт только по v0.1 scope до factual acceptance.
+До factual acceptance v0.1 реализация v0.2 не начинается.

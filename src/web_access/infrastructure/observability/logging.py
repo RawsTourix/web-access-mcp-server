@@ -9,6 +9,7 @@ from typing import TextIO
 
 import structlog
 
+from web_access.application.common.correlation import correlation_values
 from web_access.core.config import ObservabilitySettings
 
 _REDACTED = "[REDACTED]"
@@ -57,6 +58,16 @@ def redact_processor(
     }
 
 
+def merge_correlation_processor(
+    _logger: object,
+    _method_name: str,
+    event_dict: MutableMapping[str, object],
+) -> MutableMapping[str, object]:
+    for key, value in correlation_values().items():
+        event_dict.setdefault(key, value)
+    return event_dict
+
+
 def configure_logging(settings: ObservabilitySettings, stream: TextIO | None = None) -> None:
     """Configure one process-wide pipeline; safe to call repeatedly in tests."""
 
@@ -66,7 +77,7 @@ def configure_logging(settings: ObservabilitySettings, stream: TextIO | None = N
         else structlog.dev.ConsoleRenderer(colors=False)
     )
     shared_processors = [
-        structlog.contextvars.merge_contextvars,
+        merge_correlation_processor,
         structlog.stdlib.add_log_level,
         structlog.processors.TimeStamper(fmt="iso", utc=True),
         redact_processor,

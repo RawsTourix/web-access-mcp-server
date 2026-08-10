@@ -2,7 +2,7 @@
 
 ## Статус
 
-`ready for implementation`
+`implemented, pending acceptance`
 
 Версия создаёт production-oriented фундамент Web Access без преждевременной web capability logic.
 

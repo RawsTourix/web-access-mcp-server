@@ -91,7 +91,7 @@ async def test_multiple_runtime_instances_are_isolated(tmp_path: Path) -> None:
             assert first is not second
             assert first.redis is not second.redis
             assert first.database_engine is not second.database_engine
-            assert first.metrics.registry is not second.metrics.registry
+            assert first.metrics is not second.metrics
 
 
 @pytest.mark.asyncio

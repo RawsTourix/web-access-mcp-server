@@ -10,9 +10,9 @@ Version docs не создают новую архитектуру без отд
 
 # 1. Версии
 
-| Версия | Название | Design status |
+| Версия | Название | Status |
 |---|---|---|
-| `v0.1` | Service Foundation | ready for implementation |
+| `v0.1` | Service Foundation | implemented, pending acceptance |
 | `v0.2` | Search Runtime | ready for implementation |
 | `v0.3` | Retrieval & Content Core | ready for implementation |
 | `v0.4` | Managed Browser Runtime | ready for implementation |
@@ -23,7 +23,7 @@ Version docs не создают новую архитектуру без отд
 | `v0.9` | Production Hardening | ready for implementation |
 | `v1.0` | Stable Web Access | release contract defined |
 
-Design status не означает implemented/accepted code.
+`implemented, pending acceptance` означает наличие кода, но не принятую версию.
 
 ---
 

@@ -19,7 +19,9 @@ jobs:
       - run: uv run ruff format --check .
       - run: uv run pyright
 
-  test:
+      - run: uv run pytest -q tests/architecture tests/security
+
+  unit-contract:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -28,4 +30,61 @@ jobs:
           python-version: "3.11"
           enable-cache: true
       - run: uv sync --locked
-      - run: uv run pytest
+      - run: uv run pytest -q tests/unit tests/contract tests/architecture tests/security tests/test_package.py
+
+  integration:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: web_access_test
+          POSTGRES_USER: web_access
+          POSTGRES_PASSWORD: integration-postgres-password
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U web_access -d web_access_test"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+      redis:
+        image: redis:7.4-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 2s
+          --health-timeout 2s
+          --health-retries 30
+    env:
+      WEB_ACCESS_TEST_DATABASE_URL: postgresql+asyncpg://web_access:integration-postgres-password@127.0.0.1:5432/web_access_test
+      WEB_ACCESS_TEST_REDIS_URL: redis://127.0.0.1:6379/15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: uv run pytest -q tests/integration
+
+  compose-smoke:
+    runs-on: ubuntu-latest
+    env:
+      POSTGRES_PASSWORD: compose-postgres-password-123456
+      WEB_ACCESS_AUTH__PRINCIPALS: '[{"principal_id":"compose-agent","tokens":["compose-bearer-token-123456789012345"],"scopes":["*"]}]'
+      WEB_ACCESS_SMOKE_TOKEN: compose-bearer-token-123456789012345
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.11"
+          enable-cache: true
+      - run: uv sync --locked
+      - run: docker compose up --build --detach --wait --wait-timeout 180
+      - run: uv run python tests/e2e/compose_smoke.py
+      - run: docker compose run --rm migration
+      - run: test "$(docker compose exec -T api id -u)" = "10001"
+      - if: always()
+        run: docker compose down --volumes --remove-orphans

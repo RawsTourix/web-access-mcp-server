@@ -21,15 +21,15 @@ MCP      — компактный LLM-friendly interface
 
 ## Статус
 
-**Design первой stable line v1.0 сформирован. Production implementation ещё не начат.**
+**v0.1 Service Foundation реализован и ожидает factual acceptance.**
 
-Следующий implementation milestone:
+Следующий implementation milestone после acceptance v0.1:
 
 ```text
-v0.1 — Service Foundation
+v0.2 — Search Runtime
 ```
 
-Реализация идёт строго version-by-version с acceptance gates.
+v0.2 готов к реализации по design, но его implementation ещё не начат. Реализация идёт строго version-by-version с acceptance gates.
 
 ## Основные принципы
 

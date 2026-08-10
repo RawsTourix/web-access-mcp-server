@@ -7,6 +7,7 @@ import httpx
 import pytest
 from pydantic import SecretStr
 
+from web_access.bootstrap.app import create_control_plane
 from web_access.core.config import (
     AppSettings,
     AuthSettings,
@@ -15,7 +16,6 @@ from web_access.core.config import (
     PrincipalSettings,
     Settings,
 )
-from web_access.transport.rest import create_rest_app
 
 TOKEN = "a" * 32
 NO_SCOPE_TOKEN = "b" * 32
@@ -50,7 +50,7 @@ def _settings(tmp_path: Path, mandatory: frozenset[DependencyName] = frozenset()
 
 @pytest.mark.asyncio
 async def test_operational_routes_auth_and_safe_status(tmp_path: Path) -> None:
-    app = create_rest_app(_settings(tmp_path))
+    app = create_control_plane(_settings(tmp_path))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -91,7 +91,9 @@ async def test_operational_routes_auth_and_safe_status(tmp_path: Path) -> None:
 
 @pytest.mark.asyncio
 async def test_liveness_survives_mandatory_dependency_outage(tmp_path: Path) -> None:
-    app = create_rest_app(_settings(tmp_path, frozenset({"postgres", "redis", "content_store"})))
+    app = create_control_plane(
+        _settings(tmp_path, frozenset({"postgres", "redis", "content_store"}))
+    )
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -104,7 +106,7 @@ async def test_liveness_survives_mandatory_dependency_outage(tmp_path: Path) -> 
 
 @pytest.mark.asyncio
 async def test_correlation_headers_are_bounded_and_server_owned(tmp_path: Path) -> None:
-    app = create_rest_app(_settings(tmp_path))
+    app = create_control_plane(_settings(tmp_path))
     async with app.router.lifespan_context(app):
         async with httpx.AsyncClient(
             transport=httpx.ASGITransport(app=app), base_url="http://test"
@@ -117,7 +119,7 @@ async def test_correlation_headers_are_bounded_and_server_owned(tmp_path: Path) 
 
 
 def test_openapi_has_only_foundation_routes_and_bearer_security(tmp_path: Path) -> None:
-    schema = create_rest_app(_settings(tmp_path)).openapi()
+    schema = create_control_plane(_settings(tmp_path)).openapi()
     assert set(schema["paths"]) == {
         "/health/live",
         "/health/ready",

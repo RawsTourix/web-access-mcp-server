@@ -2,8 +2,8 @@
 
 from fastapi import FastAPI
 
+from web_access.bootstrap.app import create_control_plane
 from web_access.core.config import Settings
-from web_access.transport.mcp.server import create_control_plane
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
