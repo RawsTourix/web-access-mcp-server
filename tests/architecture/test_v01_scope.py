@@ -1,4 +1,4 @@
-"""Negative scope gates keep future capabilities out of Service Foundation."""
+"""Negative scope gates keep v0.3+ capabilities out of Search Runtime."""
 
 from __future__ import annotations
 
@@ -8,9 +8,8 @@ from pathlib import Path
 SOURCE_ROOT = Path("src/web_access")
 
 
-def test_no_future_capability_packages_exist() -> None:
+def test_no_v03_capability_packages_exist() -> None:
     future_packages = {
-        "search",
         "retrieval",
         "browser",
         "jobs",
@@ -26,7 +25,7 @@ def test_no_future_capability_packages_exist() -> None:
     assert present.isdisjoint(future_packages)
 
 
-def test_no_future_runtime_dependencies_are_declared() -> None:
+def test_no_v03_runtime_dependencies_are_declared() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
     declared = {
         dependency.split("[", 1)[0].split("<", 1)[0].split(">", 1)[0].lower()
