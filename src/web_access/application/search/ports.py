@@ -4,7 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Protocol
+from types import TracebackType
+from typing import Protocol, Self
 
 from web_access.application.common.context import ExecutionContext
 from web_access.application.common.errors import OperationError
@@ -118,8 +119,33 @@ class SearchUsageRepository(Protocol):
         attempt_number: int,
         stage: AttemptStage,
         outcome_code: str | None = None,
+        retry_reason: str | None = None,
         provider_request_id: str | None = None,
     ) -> None: ...
+
+
+class SearchUsageUnitOfWork(Protocol):
+    @property
+    def usage(self) -> SearchUsageRepository: ...
+
+    async def __aenter__(self) -> Self: ...
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None: ...
+
+    async def commit(self) -> None: ...
+
+
+class SearchUsageUnitOfWorkFactory(Protocol):
+    def __call__(self) -> SearchUsageUnitOfWork: ...
+
+
+class SearchUsageUnavailable(RuntimeError):
+    """Durable billable-attempt evidence cannot be persisted."""
 
 
 class ProviderAttemptError(Exception):

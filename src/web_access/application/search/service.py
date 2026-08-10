@@ -41,7 +41,8 @@ from web_access.application.search.ports import (
     SearchCache,
     SearchProvider,
     SearchSingleFlight,
-    SearchUsageRepository,
+    SearchUsageUnavailable,
+    SearchUsageUnitOfWorkFactory,
     SingleFlightLease,
 )
 from web_access.application.search.registry import (
@@ -139,7 +140,7 @@ class SearchApplicationService:
         single_flight: SearchSingleFlight,
         rate_limiter: ProviderRateLimiter,
         concurrency_limiter: ProviderConcurrencyLimiter,
-        usage_repository: SearchUsageRepository | None,
+        usage_uow_factory: SearchUsageUnitOfWorkFactory | None,
         policy: SearchServicePolicy | None = None,
     ) -> None:
         self._providers = providers
@@ -148,7 +149,7 @@ class SearchApplicationService:
         self._single_flight = single_flight
         self._rate = rate_limiter
         self._concurrency = concurrency_limiter
-        self._usage = usage_repository
+        self._usage = usage_uow_factory
         self._policy = policy or SearchServicePolicy()
 
     async def search(
@@ -361,25 +362,18 @@ class SearchApplicationService:
                             ),
                             stage=ExecutionStage.BEFORE_DISPATCH,
                         )
-                    await _bounded_await(
-                        context,
-                        self._usage.start_attempt(
-                            operation_id=context.operation_id,
-                            principal_id=context.principal.principal_id,
-                            provider_id=provider_id,
-                            query_item_index=index,
-                            attempt_number=attempt,
-                        ),
+                    await self._record_attempt_start(
+                        context=context,
+                        provider_id=provider_id,
+                        index=index,
+                        attempt=attempt,
                     )
-                    await _bounded_await(
-                        context,
-                        self._usage.mark_stage(
-                            operation_id=context.operation_id,
-                            provider_id=provider_id,
-                            query_item_index=index,
-                            attempt_number=attempt,
-                            stage=AttemptStage.DISPATCH_POSSIBLE,
-                        ),
+                    await self._record_attempt_stage(
+                        context=context,
+                        provider_id=provider_id,
+                        index=index,
+                        attempt=attempt,
+                        stage=AttemptStage.DISPATCH_POSSIBLE,
                     )
                 request = ProviderSearchRequest(
                     query=query.query,
@@ -395,28 +389,119 @@ class SearchApplicationService:
                 try:
                     result = await _bounded_await(context, provider.search(context, request))
                 except ProviderAttemptError as error:
-                    if attempt < max_attempts and self._retry_allowed(
+                    will_retry = attempt < max_attempts and self._retry_allowed(
                         billable=descriptor.billable, error=error
-                    ):
+                    )
+                    if descriptor.billable and self._usage is not None:
+                        await self._record_attempt_stage(
+                            context=context,
+                            provider_id=provider_id,
+                            index=index,
+                            attempt=attempt,
+                            stage=(
+                                AttemptStage.RESPONSE_RECEIVED
+                                if error.stage is ExecutionStage.TERMINAL_KNOWN
+                                else AttemptStage.DISPATCH_POSSIBLE
+                            ),
+                            outcome_code=error.error.code,
+                            retry_reason=error.error.code if will_retry else None,
+                            provider_request_id=error.provider_request_id,
+                            accounting_failure_stage=ExecutionStage.RESPONSE_LOST,
+                        )
+                    if will_retry:
                         continue
                     raise
                 if descriptor.billable and self._usage is not None:
-                    await _bounded_await(
-                        context,
-                        self._usage.mark_stage(
-                            operation_id=context.operation_id,
-                            provider_id=provider_id,
-                            query_item_index=index,
-                            attempt_number=attempt,
-                            stage=AttemptStage.COMPLETED,
-                            outcome_code="succeeded",
-                            provider_request_id=result.provider_request_id,
-                        ),
+                    await self._record_attempt_stage(
+                        context=context,
+                        provider_id=provider_id,
+                        index=index,
+                        attempt=attempt,
+                        stage=AttemptStage.COMPLETED,
+                        outcome_code="succeeded",
+                        provider_request_id=result.provider_request_id,
+                        accounting_failure_stage=ExecutionStage.RESPONSE_LOST,
                     )
                 return result, attempt
             finally:
                 await self._concurrency.release(concurrency)
         raise RuntimeError("unreachable Search attempt state")
+
+    async def _record_attempt_start(
+        self,
+        *,
+        context: ExecutionContext,
+        provider_id: SearchProviderId,
+        index: int,
+        attempt: int,
+    ) -> None:
+        factory = self._usage
+        if factory is None:
+            raise RuntimeError("Search usage factory is not configured")
+        try:
+            async with factory() as uow:
+                await _bounded_await(
+                    context,
+                    uow.usage.start_attempt(
+                        operation_id=context.operation_id,
+                        principal_id=context.principal.principal_id,
+                        provider_id=provider_id,
+                        query_item_index=index,
+                        attempt_number=attempt,
+                    ),
+                )
+                await _bounded_await(context, uow.commit())
+        except SearchUsageUnavailable as exc:
+            raise self._usage_error() from exc
+
+    async def _record_attempt_stage(
+        self,
+        *,
+        context: ExecutionContext,
+        provider_id: SearchProviderId,
+        index: int,
+        attempt: int,
+        stage: AttemptStage,
+        outcome_code: str | None = None,
+        retry_reason: str | None = None,
+        provider_request_id: str | None = None,
+        accounting_failure_stage: ExecutionStage = ExecutionStage.BEFORE_DISPATCH,
+    ) -> None:
+        factory = self._usage
+        if factory is None:
+            raise RuntimeError("Search usage factory is not configured")
+        try:
+            async with factory() as uow:
+                await _bounded_await(
+                    context,
+                    uow.usage.mark_stage(
+                        operation_id=context.operation_id,
+                        provider_id=provider_id,
+                        query_item_index=index,
+                        attempt_number=attempt,
+                        stage=stage,
+                        outcome_code=outcome_code,
+                        retry_reason=retry_reason,
+                        provider_request_id=provider_request_id,
+                    ),
+                )
+                await _bounded_await(context, uow.commit())
+        except SearchUsageUnavailable as exc:
+            raise self._usage_error(accounting_failure_stage) from exc
+
+    @staticmethod
+    def _usage_error(
+        stage: ExecutionStage = ExecutionStage.BEFORE_DISPATCH,
+    ) -> ProviderAttemptError:
+        return ProviderAttemptError(
+            OperationError(
+                category=ErrorCategory.INFRASTRUCTURE,
+                code="usage_accounting_unavailable",
+                message="Billable Search accounting is unavailable.",
+                retryable=False,
+            ),
+            stage=stage,
+        )
 
     @staticmethod
     def _retry_allowed(*, billable: bool, error: ProviderAttemptError) -> bool:

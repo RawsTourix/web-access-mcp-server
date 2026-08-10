@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from types import TracebackType
+from typing import Self
 
 import pytest
 
@@ -29,6 +31,8 @@ from web_access.application.search.ports import (
     ConcurrencyLease,
     ProviderAttemptError,
     RateAdmission,
+    SearchUsageUnavailable,
+    SearchUsageUnitOfWork,
     SingleFlightLease,
 )
 from web_access.application.search.registry import SearchProviderRegistry, SearchRegionRegistry
@@ -155,6 +159,28 @@ class FakeUsage:
     def __init__(self) -> None:
         self.starts: list[tuple[str, int]] = []
         self.stages: list[str] = []
+        self.commits = 0
+
+    def __call__(self) -> SearchUsageUnitOfWork:
+        return self
+
+    @property
+    def usage(self) -> FakeUsage:
+        return self
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc_value: BaseException | None,
+        traceback: TracebackType | None,
+    ) -> None:
+        _ = exc_type, exc_value, traceback
+
+    async def commit(self) -> None:
+        self.commits += 1
 
     async def start_attempt(self, **values: object) -> None:
         attempt_number = values["attempt_number"]
@@ -163,6 +189,17 @@ class FakeUsage:
 
     async def mark_stage(self, **values: object) -> None:
         self.stages.append(str(values["stage"]))
+
+
+class UnavailableUsage(FakeUsage):
+    async def start_attempt(self, **values: object) -> None:
+        _ = values
+        raise SearchUsageUnavailable("database unavailable")
+
+
+class CommitUnavailableUsage(FakeUsage):
+    async def commit(self) -> None:
+        raise SearchUsageUnavailable("commit unavailable")
 
 
 def context(
@@ -209,7 +246,7 @@ def build(
         single_flight=FakeSingleFlight(),
         rate_limiter=rate,
         concurrency_limiter=concurrency,
-        usage_repository=usage,
+        usage_uow_factory=usage,
         policy=policy or SearchServicePolicy(),
     )
     return service, searxng, yandex, selected_cache, rate, concurrency, usage
@@ -364,6 +401,48 @@ async def test_billable_retry_only_happens_for_proven_pre_dispatch_failure() -> 
     assert result.outcome is OperationOutcome.SUCCEEDED
     assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 2
     assert [attempt for _, attempt in usage.starts] == [1, 2]
+    assert usage.commits == 6
+
+
+@pytest.mark.asyncio
+async def test_billable_provider_fails_closed_before_network_when_usage_db_is_unavailable() -> None:
+    service, _, yandex, *_ = build()
+    service._usage = UnavailableUsage()
+    result = await service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+    assert result.outcome is OperationOutcome.FAILED
+    assert result.data and result.data.items[0].error
+    assert result.data.items[0].error.code == "usage_accounting_unavailable"
+    assert yandex.calls == []
+
+
+@pytest.mark.asyncio
+async def test_billable_provider_fails_closed_when_pre_dispatch_commit_fails() -> None:
+    service, _, yandex, *_ = build()
+    service._usage = CommitUnavailableUsage()
+    result = await service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+    assert result.outcome is OperationOutcome.FAILED
+    assert yandex.calls == []
+
+
+@pytest.mark.asyncio
+async def test_free_provider_does_not_require_usage_database() -> None:
+    service, searxng, *_ = build()
+    service._usage = None
+    result = await service.search(
+        context(), SearchBatchRequest(queries=(SearchQuery(query="free"),))
+    )
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert len(searxng.calls) == 1
 
 
 @pytest.mark.asyncio
