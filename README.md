@@ -21,9 +21,15 @@ MCP      — компактный LLM-friendly interface
 
 ## Статус
 
-**v0.1 Service Foundation реализован и ожидает factual acceptance.**
+**v0.1 Service Foundation принят.**
 
-Следующий implementation milestone после acceptance v0.1:
+Acceptance HEAD:
+
+```text
+3e5df8775f99cf15a30e17b56db740c08b00233c
+```
+
+Следующий разрешённый implementation milestone:
 
 ```text
 v0.2 — Search Runtime
