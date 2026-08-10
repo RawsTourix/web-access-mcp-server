@@ -8,7 +8,13 @@
 
 # 1. Общий статус
 
-**Архитектурный design первой stable line v1.0 сформирован. v0.1 Service Foundation реализован и ожидает factual acceptance.**
+**Архитектурный design первой stable line v1.0 сформирован. v0.1 Service Foundation принят.**
+
+Acceptance HEAD v0.1:
+
+```text
+3e5df8775f99cf15a30e17b56db740c08b00233c
+```
 
 Закрыты:
 
@@ -23,9 +29,10 @@ Concept
 → roadmap v0.1..v1.0
 → implementation sequences
 → testing/release/operational gates
+→ v0.1 Service Foundation implementation and acceptance
 ```
 
-Следующий implementation milestone после acceptance v0.1:
+Следующий разрешённый implementation milestone:
 
 ```text
 v0.2 Search Runtime
@@ -220,7 +227,7 @@ Exact Admin REST covers policy revisions/rollback, overrides, usage/providers, a
 # 9. Version status
 
 ```text
-v0.1 Service Foundation                         implemented, pending acceptance
+v0.1 Service Foundation                         accepted
 v0.2 Search Runtime                             ready for implementation
 v0.3 Retrieval & Content Core                   ready for implementation
 v0.4 Managed Browser Runtime                    ready for implementation
@@ -272,7 +279,7 @@ v1 baseline намеренно не обещает:
 
 Design-phase feature expansion **остановлен**. Новые capability не следует добавлять без новой реальной requirement/review.
 
-Перед coding v0.2 после factual acceptance v0.1:
+Перед coding v0.2:
 
 ```text
 docs/AGENTS.md
@@ -283,4 +290,4 @@ docs/AGENTS.md
 → testing/release gates
 ```
 
-До factual acceptance v0.1 реализация v0.2 не начинается.
+v0.1 accepted; реализация v0.2 теперь является следующим разрешённым implementation milestone.
