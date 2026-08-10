@@ -1,0 +1,45 @@
+"""Optional OpenTelemetry provider and application-operation spans."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from contextlib import contextmanager
+
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import Resource
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SpanExporter
+from opentelemetry.trace import Span
+
+from web_access.core.config import ObservabilitySettings
+
+
+def configure_tracing(
+    settings: ObservabilitySettings,
+    service_name: str,
+    exporter: SpanExporter | None = None,
+) -> TracerProvider | None:
+    if not settings.tracing_enabled:
+        return None
+    provider = TracerProvider(resource=Resource.create({"service.name": service_name}))
+    selected_exporter = exporter
+    if selected_exporter is None and settings.otlp_endpoint:
+        selected_exporter = OTLPSpanExporter(endpoint=settings.otlp_endpoint)
+    if selected_exporter is not None:
+        provider.add_span_processor(BatchSpanProcessor(selected_exporter))
+    return provider
+
+
+@contextmanager
+def operation_span(provider: TracerProvider | None, name: str) -> Iterator[Span | None]:
+    if provider is None:
+        yield None
+        return
+    tracer = provider.get_tracer("web_access.application")
+    with tracer.start_as_current_span(name) as span:
+        yield span
+
+
+def shutdown_tracing(provider: TracerProvider | None) -> None:
+    if provider is not None:
+        provider.shutdown()
