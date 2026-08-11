@@ -54,6 +54,12 @@ def test_domain_is_independent_of_outer_layers_and_frameworks() -> None:
             "redis",
             "opentelemetry",
             "prometheus_client",
+            "aiohttp",
+            "trafilatura",
+            "lxml",
+            "pypdf",
+            "defusedxml",
+            "charset_normalizer",
         ),
     )
 
@@ -93,6 +99,10 @@ def test_application_does_not_depend_on_adapters_or_composition() -> None:
             "redis",
             "opentelemetry",
             "prometheus_client",
+            "aiohttp",
+            "trafilatura",
+            "lxml",
+            "pypdf",
         ),
     )
 

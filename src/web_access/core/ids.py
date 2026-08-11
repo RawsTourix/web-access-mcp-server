@@ -12,6 +12,7 @@ class IdPrefix(StrEnum):
     """Known foundation identifier type guards."""
 
     OPERATION = "op"
+    CONTENT = "cnt"
 
 
 class IdGenerator(Protocol):

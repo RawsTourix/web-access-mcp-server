@@ -1,4 +1,4 @@
-"""Negative scope gates keep v0.3+ capabilities out of Search Runtime."""
+"""Negative scope gates keep v0.4+ capabilities out of the v0.3 line."""
 
 from __future__ import annotations
 
@@ -8,14 +8,11 @@ from pathlib import Path
 SOURCE_ROOT = Path("src/web_access")
 
 
-def test_no_v03_capability_packages_exist() -> None:
+def test_no_v04_capability_packages_exist() -> None:
     future_packages = {
-        "retrieval",
         "browser",
         "jobs",
-        "workers",
         "ocr",
-        "parsing",
     }
     present = {
         path.name.lower()
@@ -25,7 +22,7 @@ def test_no_v03_capability_packages_exist() -> None:
     assert present.isdisjoint(future_packages)
 
 
-def test_no_v03_runtime_dependencies_are_declared() -> None:
+def test_no_v04_runtime_dependencies_are_declared() -> None:
     project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))["project"]
     declared = {
         dependency.split("[", 1)[0].split("<", 1)[0].split(">", 1)[0].lower()
@@ -36,22 +33,18 @@ def test_no_v03_runtime_dependencies_are_declared() -> None:
             "arq",
             "openpyxl",
             "playwright",
-            "pypdf",
             "python-docx",
             "python-pptx",
-            "trafilatura",
         }
     )
 
 
-def test_production_source_has_no_future_business_vocabulary() -> None:
+def test_production_source_has_no_v04_business_vocabulary() -> None:
     forbidden_import_fragments = (
         "import arq",
         "import playwright",
-        "import trafilatura",
         "from arq",
         "from playwright",
-        "from trafilatura",
     )
     for path in SOURCE_ROOT.rglob("*.py"):
         source = path.read_text(encoding="utf-8").lower()
