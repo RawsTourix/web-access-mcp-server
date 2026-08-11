@@ -11,6 +11,8 @@ from collections.abc import Callable, Iterable
 from dataclasses import dataclass
 from pathlib import PurePath
 
+from charset_normalizer import from_bytes
+
 from web_access.application.common.hints import Warning
 from web_access.application.content.models import ContentInspection
 from web_access.domain.content import ContentFormat, ParserAvailability
@@ -107,6 +109,7 @@ class RegistryContentIdentifier:
             declared_media_type=declared_media_type,
             source_filename=source_filename,
         )
+        declared_encoding = _declared_encoding(declared_media_type, data)
         warnings: tuple[Warning, ...] = ()
         declared = _normalize_media_type(declared_media_type)
         declared_format = _MIME_FORMATS.get(declared) if declared is not None else None
@@ -133,7 +136,7 @@ class RegistryContentIdentifier:
             detected_media_type=match.media_type,
             detected_format=match.format,
             source_filename=_safe_filename(source_filename),
-            encoding=match.encoding,
+            encoding=declared_encoding or match.encoding,
             parser_availability=availability,
             warnings=warnings,
         )
@@ -211,6 +214,21 @@ def _decode_text(data: bytes) -> str | None:
         return None
 
 
+def _declared_encoding(value: str | None, data: bytes) -> str | None:
+    if value is None:
+        return None
+    match = re.search(r"(?:^|;)\s*charset\s*=\s*[\"']?([^;\"']+)", value, re.I)
+    if match is None:
+        return None
+    encoding = match.group(1).strip().lower()
+    try:
+        codecs.lookup(encoding)
+        data.decode(encoding)
+    except (LookupError, UnicodeDecodeError):
+        return None
+    return encoding
+
+
 def _observed_encoding(data: bytes) -> str | None:
     if data.startswith(codecs.BOM_UTF8):
         return "utf-8-sig"
@@ -262,7 +280,12 @@ def _is_csv(data: bytes) -> bool:
 def _is_text(data: bytes) -> bool:
     if not data or b"\x00" in data:
         return False
-    text = _decode_text(data[:65536])
+    sample = data[:65536]
+    text = _decode_text(sample)
+    if text is None:
+        match = from_bytes(sample).best()
+        if match is not None and match.percent_chaos <= 20:
+            text = str(match)
     if text is None:
         return False
     printable = sum(character.isprintable() or character in "\r\n\t" for character in text)

@@ -69,3 +69,17 @@ async def test_inspection_sanitizes_filename_and_reports_observed_utf8() -> None
     assert result.source_filename == "_unsafe_name.txt"
     assert result.encoding == "utf-8"
     assert result.parser_availability is ParserAvailability.UNSUPPORTED
+
+
+@pytest.mark.asyncio
+async def test_declared_valid_charset_is_preserved_as_decoding_evidence() -> None:
+    data = "Привет".encode("windows-1251")
+    result = await RegistryContentIdentifier().inspect(
+        data,
+        size_bytes=len(data),
+        sha256="d" * 64,
+        declared_media_type="text/plain; charset=windows-1251",
+        source_filename="message.txt",
+    )
+    assert result.detected_format is ContentFormat.TEXT
+    assert result.encoding == "windows-1251"

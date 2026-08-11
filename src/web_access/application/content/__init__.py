@@ -5,6 +5,8 @@ from web_access.application.content.models import (
     ContentReadResult,
     ContentRef,
     NativeParseResult,
+    NativeParserOutput,
+    ParsedRepresentation,
     ParserDescriptor,
 )
 
@@ -13,5 +15,7 @@ __all__ = [
     "ContentReadResult",
     "ContentRef",
     "NativeParseResult",
+    "NativeParserOutput",
+    "ParsedRepresentation",
     "ParserDescriptor",
 ]

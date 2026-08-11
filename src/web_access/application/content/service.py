@@ -3,18 +3,33 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
-from collections.abc import AsyncIterable
+from collections.abc import AsyncIterable, AsyncIterator
 
 from web_access.application.common.auth import require_owner
 from web_access.application.common.content_store import ContentStore, StagedBlob
 from web_access.application.common.context import ExecutionContext
-from web_access.application.content.models import ContentInspection, ContentRef
-from web_access.application.content.ports import ContentIdentifier, ContentUnitOfWorkFactory
+from web_access.application.common.hints import Warning
+from web_access.application.content.models import (
+    ContentInspection,
+    ContentRef,
+    NativeParseResult,
+    ParsedRepresentation,
+    ParserDescriptor,
+)
+from web_access.application.content.ports import (
+    ContentIdentifier,
+    ContentUnitOfWorkFactory,
+    NativeParserExecutor,
+    NativeParserRegistry,
+)
 from web_access.core.ids import IdGenerator, IdPrefix
 from web_access.domain.content import (
     ContentId,
     ContentObject,
+    ContentRelation,
+    ContentRelationType,
     ContentRepresentationKind,
     ContentState,
 )
@@ -32,17 +47,23 @@ class ContentApplicationService:
         uow_factory: ContentUnitOfWorkFactory,
         store: ContentStore,
         identifier: ContentIdentifier | None = None,
+        parser_registry: NativeParserRegistry | None = None,
+        parser_executor: NativeParserExecutor | None = None,
         inspection_sample_bytes: int = 256 * 1024,
         max_inspection_json_bytes: int = 64 * 1024,
+        parser_input_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         self._ids = ids
         self._uow_factory = uow_factory
         self._store = store
         self._identifier = identifier
+        self._parser_registry = parser_registry
+        self._parser_executor = parser_executor
         self._inspection_sample_bytes = inspection_sample_bytes
         self._max_inspection_json_bytes = max_inspection_json_bytes
-        if inspection_sample_bytes < 1 or max_inspection_json_bytes < 1:
-            raise ValueError("Content inspection limits must be positive")
+        self._parser_input_bytes = parser_input_bytes
+        if min(inspection_sample_bytes, max_inspection_json_bytes, parser_input_bytes) < 1:
+            raise ValueError("Content processing limits must be positive")
 
     async def ingest(
         self,
@@ -64,8 +85,19 @@ class ContentApplicationService:
             media_type=media_type,
             source_filename=source_filename,
         )
+        return await self._publish_created(stream, created)
+
+    async def _publish_created(
+        self,
+        stream: AsyncIterable[bytes],
+        created: ContentObject,
+        relation: ContentRelation | None = None,
+    ) -> ContentRef:
+        content_id = created.content_id
         async with self._uow_factory() as uow:
             await uow.contents.add(created)
+            if relation is not None:
+                await uow.relations.add(relation)
             await uow.commit()
 
         staged: StagedBlob | None = None
@@ -171,22 +203,111 @@ class ContentApplicationService:
             return winner.inspection
         raise ContentLifecycleError("Content inspection CAS failed")
 
+    async def native_parse(self, context: ExecutionContext, content_id: str) -> NativeParseResult:
+        registry = self._parser_registry
+        executor = self._parser_executor
+        if registry is None or executor is None:
+            raise ContentLifecycleError("native parser runtime is not configured")
+        typed_id = ContentId(content_id)
+        inspection = await self.inspect(context, content_id)
+        async with self._uow_factory() as uow:
+            record = await uow.contents.get(typed_id)
+        if (
+            record is None
+            or record.content.state is not ContentState.AVAILABLE
+            or record.storage_key is None
+        ):
+            raise ContentLifecycleError("Content is not available")
+        require_owner(context.principal, record.content.owner_principal_id)
+        source_ref = _content_ref(record.content)
+        parser = registry.select(inspection)
+        if parser is None:
+            return NativeParseResult(
+                source=source_ref,
+                reused=False,
+                warnings=(
+                    Warning(
+                        code="native_parser_unavailable",
+                        message="No registered native parser supports the detected Content format.",
+                    ),
+                ),
+            )
+        data = await self._read_bounded(record.storage_key, self._parser_input_bytes)
+        output = await executor.execute(parser, record.content, inspection, data)
+        representation_refs: list[ContentRef] = []
+        for parsed in output.representations:
+            representation_refs.append(
+                await self._ingest_derived(context, record.content, parser.descriptor, parsed)
+            )
+        return NativeParseResult(
+            source=source_ref,
+            representations=tuple(representation_refs),
+            reused=False,
+            parser_capability=parser.descriptor.capability,
+            warnings=output.warnings,
+            hints=output.hints,
+        )
+
+    async def _ingest_derived(
+        self,
+        context: ExecutionContext,
+        source: ContentObject,
+        descriptor: ParserDescriptor,
+        parsed: ParsedRepresentation,
+    ) -> ContentRef:
+        content_id = ContentId(self._ids.new(IdPrefix.CONTENT))
+        created = ContentObject(
+            content_id=content_id,
+            owner_principal_id=context.principal.principal_id,
+            state=ContentState.CREATING,
+            revision=1,
+            representation_kind=parsed.representation,
+            created_at=context.clock.utc_now(),
+            media_type=parsed.media_type,
+            source_content_id=source.content_id,
+            producer_capability=descriptor.capability,
+            producer_revision=descriptor.revision,
+            representation_schema_revision=parsed.schema_revision,
+            processing_profile_revision=descriptor.profile_revision,
+            parameters_hash=hashlib.sha256(b"{}").hexdigest(),
+        )
+        relation = ContentRelation(
+            source_content_id=source.content_id,
+            target_content_id=content_id,
+            relation_type=ContentRelationType.DERIVED_FROM,
+            created_at=context.clock.utc_now(),
+        )
+        return await self._publish_created(_single_chunk(parsed.data), created, relation)
+
     async def _read_inspection_sample(self, storage_key: str) -> bytes:
+        return await self._read_bounded(storage_key, self._inspection_sample_bytes, strict=False)
+
+    async def _read_bounded(self, storage_key: str, limit: int, *, strict: bool = True) -> bytes:
         result = bytearray()
         stream = self._store.open_stream(storage_key)
         try:
             async for chunk in stream:
-                remaining = self._inspection_sample_bytes - len(result)
+                remaining = limit - len(result)
                 if remaining <= 0:
+                    if strict:
+                        raise ContentLifecycleError("Content exceeds parser input limit")
                     break
-                result.extend(chunk[:remaining])
-                if len(result) >= self._inspection_sample_bytes:
+                result.extend(chunk[: remaining + (1 if strict else 0)])
+                if len(result) > limit:
+                    raise ContentLifecycleError("Content exceeds parser input limit")
+                if len(result) >= limit:
+                    if strict:
+                        continue
                     break
         finally:
             close = getattr(stream, "aclose", None)
             if close is not None:
                 await close()
         return bytes(result)
+
+
+async def _single_chunk(data: bytes) -> AsyncIterator[bytes]:
+    yield data
 
 
 def _content_ref(content: ContentObject) -> ContentRef:

@@ -37,6 +37,12 @@ def _content_from_row(row: ContentObjectRow) -> ContentObject:
         size_bytes=row.size_bytes,
         sha256=row.sha256,
         expires_at=row.expires_at,
+        source_content_id=ContentId(row.source_content_id) if row.source_content_id else None,
+        producer_capability=row.producer_capability,
+        producer_revision=row.producer_revision,
+        representation_schema_revision=row.representation_schema_revision,
+        processing_profile_revision=row.processing_profile_revision,
+        parameters_hash=row.parameters_hash,
     )
 
 
@@ -79,6 +85,14 @@ class PostgresContentRepository:
                 created_at=content.created_at,
                 updated_at=content.created_at,
                 expires_at=content.expires_at,
+                source_content_id=(
+                    str(content.source_content_id) if content.source_content_id else None
+                ),
+                producer_capability=content.producer_capability,
+                producer_revision=content.producer_revision,
+                representation_schema_revision=content.representation_schema_revision,
+                processing_profile_revision=content.processing_profile_revision,
+                parameters_hash=content.parameters_hash,
             )
         )
 

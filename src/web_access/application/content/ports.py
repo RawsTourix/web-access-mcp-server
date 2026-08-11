@@ -16,6 +16,7 @@ from web_access.application.common.content_store import (
 from web_access.application.content.models import (
     ContentInspection,
     NativeParseResult,
+    NativeParserOutput,
     ParserDescriptor,
 )
 from web_access.domain.content import ContentId, ContentObject, ContentRelation
@@ -109,7 +110,9 @@ class NativeParser(Protocol):
     @property
     def descriptor(self) -> ParserDescriptor: ...
 
-    async def parse(self, source: ContentObject, data: bytes) -> NativeParseResult: ...
+    async def parse(
+        self, source: ContentObject, inspection: ContentInspection, data: bytes
+    ) -> NativeParserOutput: ...
 
 
 class NativeParserRegistry(Protocol):
@@ -118,8 +121,12 @@ class NativeParserRegistry(Protocol):
 
 class NativeParserExecutor(Protocol):
     async def execute(
-        self, parser: NativeParser, source: ContentObject, data: bytes
-    ) -> NativeParseResult: ...
+        self,
+        parser: NativeParser,
+        source: ContentObject,
+        inspection: ContentInspection,
+        data: bytes,
+    ) -> NativeParserOutput: ...
 
 
 class IsolatedParserExecutor(Protocol):

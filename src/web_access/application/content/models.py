@@ -68,6 +68,25 @@ class NativeParseResult(BaseModel):
     hints: tuple[StructuredHint, ...] = Field(default=(), max_length=16)
 
 
+class ParsedRepresentation(BaseModel):
+    """Application-owned immutable parser output before durable publication."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    representation: ContentRepresentationKind
+    media_type: str = Field(min_length=1, max_length=255)
+    schema_revision: str = Field(min_length=1, max_length=128)
+    data: bytes = Field(max_length=64 * 1024 * 1024)
+
+
+class NativeParserOutput(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    representations: tuple[ParsedRepresentation, ...] = Field(min_length=1, max_length=8)
+    warnings: tuple[Warning, ...] = Field(default=(), max_length=16)
+    hints: tuple[StructuredHint, ...] = Field(default=(), max_length=16)
+
+
 class ContentReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 

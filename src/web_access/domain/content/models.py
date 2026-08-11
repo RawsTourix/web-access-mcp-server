@@ -86,6 +86,12 @@ class ContentObject:
     size_bytes: int | None = None
     sha256: str | None = None
     expires_at: datetime | None = None
+    source_content_id: ContentId | None = None
+    producer_capability: str | None = None
+    producer_revision: str | None = None
+    representation_schema_revision: str | None = None
+    processing_profile_revision: str | None = None
+    parameters_hash: str | None = None
 
     def __post_init__(self) -> None:
         if not 1 <= len(self.owner_principal_id) <= 128:
@@ -103,6 +109,22 @@ class ContentObject:
             raise ValueError("Content size and hash must be present together")
         if self.state is ContentState.AVAILABLE and self.sha256 is None:
             raise ValueError("available Content requires immutable integrity metadata")
+        provenance = (
+            self.producer_capability,
+            self.producer_revision,
+            self.representation_schema_revision,
+            self.processing_profile_revision,
+            self.parameters_hash,
+        )
+        if self.source_content_id is None:
+            if any(value is not None for value in provenance):
+                raise ValueError("root Content cannot carry derived provenance")
+        elif any(value is None for value in provenance):
+            raise ValueError("derived Content requires complete producer provenance")
+        if self.source_content_id == self.content_id:
+            raise ValueError("Content cannot derive from itself")
+        if self.parameters_hash is not None and _SHA256.fullmatch(self.parameters_hash) is None:
+            raise ValueError("invalid Content parameters hash")
 
 
 @dataclass(frozen=True, slots=True)

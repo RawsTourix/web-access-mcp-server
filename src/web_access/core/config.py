@@ -206,6 +206,19 @@ class RetrievalSettings(BaseModel):
         return self
 
 
+class ParserSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    inline_max_input_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
+    inline_max_output_bytes: int = Field(default=8 * 1024 * 1024, ge=1024, le=64 * 1024 * 1024)
+    structured_max_depth: int = Field(default=64, ge=2, le=256)
+    structured_max_nodes: int = Field(default=100_000, ge=1, le=1_000_000)
+    csv_sample_chars: int = Field(default=64 * 1024, ge=1024, le=1024 * 1024)
+    csv_max_rows: int = Field(default=10_000, ge=1, le=100_000)
+    csv_max_columns: int = Field(default=256, ge=1, le=4096)
+    csv_max_cell_chars: int = Field(default=64 * 1024, ge=1, le=1024 * 1024)
+
+
 class SearxngSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
@@ -408,6 +421,7 @@ class Settings(BaseSettings):
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
+    parser: ParserSettings = Field(default_factory=ParserSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
 
     @model_validator(mode="after")
