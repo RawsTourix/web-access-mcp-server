@@ -28,12 +28,13 @@ from web_access.application.retrieval.ports import (
     TooManyRedirects,
     UnsupportedContentEncoding,
 )
-from web_access.application.retrieval.retry import RetrievalPhase, RetrievalPhaseTracker
+from web_access.application.retrieval.retry import RetrievalPhaseTracker
 from web_access.core.config import RetrievalSettings
 from web_access.core.time import Deadline
 from web_access.domain.content import ContentRepresentationKind
 from web_access.domain.retrieval import (
     RetrievalBatchRequest,
+    RetrievalExecutionPhase,
     RetrievalProcessingLevel,
     RetrievalRequestItem,
 )
@@ -99,16 +100,17 @@ class RetrievalApplicationService:
     ) -> BatchItemResult[RetrievalItemResult]:
         phase = RetrievalPhaseTracker()
         try:
-            phase.advance(RetrievalPhase.VALIDATED)
-            phase.advance(RetrievalPhase.DNS_RESOLVING)
-            phase.advance(RetrievalPhase.CONNECTING)
+            phase.advance(RetrievalExecutionPhase.VALIDATED)
+            phase.advance(RetrievalExecutionPhase.DNS_RESOLVING)
+            phase.advance(RetrievalExecutionPhase.CONNECTING)
             # The aiohttp dispatch boundary is deliberately treated as ambiguous:
             # connection/request failures after this point never trigger a blind retry.
-            phase.advance(RetrievalPhase.REQUEST_DISPATCH_POSSIBLE)
+            phase.advance(RetrievalExecutionPhase.DISPATCH_POSSIBLE)
             response = await self._fetcher.fetch(context, item.url)
-            phase.advance(RetrievalPhase.RESPONSE_HEADERS_RECEIVED)
-            phase.advance(RetrievalPhase.BODY_STREAMING)
-            phase.advance(RetrievalPhase.CONTENT_CREATING_STAGING)
+            phase.advance(RetrievalExecutionPhase.RESPONSE_HEADERS)
+            phase.advance(RetrievalExecutionPhase.BODY_STREAMING)
+            phase.advance(RetrievalExecutionPhase.CONTENT_CREATING)
+            phase.advance(RetrievalExecutionPhase.CONTENT_STAGING)
             raw = await self._content.ingest(
                 context,
                 response.body,
@@ -116,14 +118,14 @@ class RetrievalApplicationService:
                 media_type=response.declared_media_type,
                 source_filename=response.source_filename,
             )
-            phase.advance(RetrievalPhase.CONTENT_FINALIZED)
+            phase.advance(RetrievalExecutionPhase.CONTENT_FINALIZED)
             inspection = None
             native = None
             representations = ()
             warnings = ()
             hints = ()
             if processing_level is not RetrievalProcessingLevel.STORE_ONLY:
-                phase.advance(RetrievalPhase.PROCESSING)
+                phase.advance(RetrievalExecutionPhase.PROCESSING)
                 inspection = await self._content.inspect(context, raw.content_id)
             if processing_level is RetrievalProcessingLevel.NATIVE:
                 parsed = await self._content.native_parse(context, raw.content_id)
@@ -146,7 +148,7 @@ class RetrievalApplicationService:
                 native_content=native,
                 available_representations=representations,
             )
-            phase.advance(RetrievalPhase.TERMINAL)
+            phase.advance(RetrievalExecutionPhase.TERMINAL)
             if 200 <= metadata.http_status < 300:
                 return BatchItemResult(
                     index=index,

@@ -295,7 +295,7 @@ async def test_content_creation_response_loss_is_unknown_and_never_reacquired() 
     assert result.error is not None
     assert result.error.code == "retrieval_resource_outcome_unknown"
     assert result.error.retryable is False
-    assert result.error.details == {"retrieval_phase": "content_creating_staging"}
+    assert result.error.details == {"retrieval_phase": "content_staging"}
     assert fetcher.calls == [url]
     assert content.ingested == [b"body"]
 

@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from enum import StrEnum
 
 from web_access.application.common.results import (
     ExecutionStage,
@@ -11,44 +10,31 @@ from web_access.application.common.results import (
     RetryClass,
     automatic_retry_allowed,
 )
+from web_access.domain.retrieval import RetrievalExecutionPhase
 
-
-class RetrievalPhase(StrEnum):
-    VALIDATED = "validated"
-    DNS_RESOLVING = "dns_resolving"
-    CONNECTING = "connecting"
-    REQUEST_DISPATCH_POSSIBLE = "request_dispatch_possible"
-    RESPONSE_HEADERS_RECEIVED = "response_headers_received"
-    BODY_STREAMING = "body_streaming"
-    CONTENT_CREATING_STAGING = "content_creating_staging"
-    CONTENT_FINALIZED = "content_finalized"
-    PROCESSING = "processing"
-    TERMINAL = "terminal"
-
-
-_ORDER = {phase: index for index, phase in enumerate(RetrievalPhase)}
+_ORDER = {phase: index for index, phase in enumerate(RetrievalExecutionPhase)}
 
 
 @dataclass(slots=True)
 class RetrievalPhaseTracker:
-    phase: RetrievalPhase | None = None
+    phase: RetrievalExecutionPhase | None = None
     dispatch_possible: bool = False
     resource_creation_possible: bool = False
 
-    def advance(self, phase: RetrievalPhase) -> None:
-        if self.phase is RetrievalPhase.TERMINAL:
+    def advance(self, phase: RetrievalExecutionPhase) -> None:
+        if self.phase is RetrievalExecutionPhase.TERMINAL:
             raise ValueError("terminal Retrieval phase cannot advance")
         if self.phase is not None and _ORDER[phase] < _ORDER[self.phase]:
             raise ValueError("Retrieval phase cannot move backwards")
         self.phase = phase
-        if _ORDER[phase] >= _ORDER[RetrievalPhase.REQUEST_DISPATCH_POSSIBLE]:
+        if _ORDER[phase] >= _ORDER[RetrievalExecutionPhase.DISPATCH_POSSIBLE]:
             self.dispatch_possible = True
-        if _ORDER[phase] >= _ORDER[RetrievalPhase.CONTENT_CREATING_STAGING]:
+        if _ORDER[phase] >= _ORDER[RetrievalExecutionPhase.CONTENT_CREATING]:
             self.resource_creation_possible = True
 
     @property
     def execution_stage(self) -> ExecutionStage:
-        if self.phase is RetrievalPhase.TERMINAL:
+        if self.phase is RetrievalExecutionPhase.TERMINAL:
             return ExecutionStage.TERMINAL_KNOWN
         if self.resource_creation_possible:
             return ExecutionStage.SIDE_EFFECT_POSSIBLE
@@ -62,7 +48,9 @@ class RetrievalPhaseTracker:
 
     @property
     def phase_value(self) -> str:
-        return self.phase.value if self.phase is not None else RetrievalPhase.VALIDATED.value
+        return (
+            self.phase.value if self.phase is not None else RetrievalExecutionPhase.VALIDATED.value
+        )
 
 
 def internal_fetch_retry_allowed(tracker: RetrievalPhaseTracker, *, error_retryable: bool) -> bool:

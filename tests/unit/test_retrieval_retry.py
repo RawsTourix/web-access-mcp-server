@@ -7,35 +7,35 @@ from web_access.application.common.results import (
     automatic_retry_allowed,
 )
 from web_access.application.retrieval.retry import (
-    RetrievalPhase,
     RetrievalPhaseTracker,
     internal_fetch_retry_allowed,
 )
+from web_access.domain.retrieval import RetrievalExecutionPhase
 from web_access.transport.mcp.retry import trusted_retry_descriptor
 
 
 def test_retrieval_phase_model_covers_dispatch_resource_and_terminal_boundaries() -> None:
     tracker = RetrievalPhaseTracker()
-    phases = tuple(RetrievalPhase)
+    phases = tuple(RetrievalExecutionPhase)
 
     for phase in phases:
         tracker.advance(phase)
         if phase in {
-            RetrievalPhase.VALIDATED,
-            RetrievalPhase.DNS_RESOLVING,
-            RetrievalPhase.CONNECTING,
+            RetrievalExecutionPhase.VALIDATED,
+            RetrievalExecutionPhase.DNS_RESOLVING,
+            RetrievalExecutionPhase.CONNECTING,
         }:
             assert tracker.execution_stage is ExecutionStage.BEFORE_DISPATCH
-        elif phase is RetrievalPhase.TERMINAL:
+        elif phase is RetrievalExecutionPhase.TERMINAL:
             assert tracker.execution_stage is ExecutionStage.TERMINAL_KNOWN
-        elif phase.value.startswith("content_") or phase is RetrievalPhase.PROCESSING:
+        elif phase.value.startswith("content_") or phase is RetrievalExecutionPhase.PROCESSING:
             assert tracker.execution_stage is ExecutionStage.SIDE_EFFECT_POSSIBLE
         else:
             assert tracker.execution_stage is ExecutionStage.DISPATCHED
 
     assert tracker.effects.resource_creation_possible is True
     with pytest.raises(ValueError, match="terminal"):
-        tracker.advance(RetrievalPhase.VALIDATED)
+        tracker.advance(RetrievalExecutionPhase.VALIDATED)
 
 
 def test_web_fetch_retry_requires_proven_pre_dispatch_phase() -> None:
@@ -61,9 +61,9 @@ def test_web_fetch_retry_requires_proven_pre_dispatch_phase() -> None:
     assert descriptor.blind_retry_after_possible_dispatch is False
 
     tracker = RetrievalPhaseTracker()
-    tracker.advance(RetrievalPhase.CONNECTING)
+    tracker.advance(RetrievalExecutionPhase.CONNECTING)
     assert internal_fetch_retry_allowed(tracker, error_retryable=True)
-    tracker.advance(RetrievalPhase.REQUEST_DISPATCH_POSSIBLE)
+    tracker.advance(RetrievalExecutionPhase.DISPATCH_POSSIBLE)
     assert not internal_fetch_retry_allowed(tracker, error_retryable=True)
 
 
