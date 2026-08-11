@@ -933,7 +933,7 @@ Result structure разделяет content и trusted diagnostics.
 ```text
 browser_may_be_required
 advanced_processing_may_be_required
-native_parser_unavailable
+native_processing_unsupported
 processing_requires_job
 alternative_representation_available
 ```

@@ -18,16 +18,13 @@ from web_access.application.common.context import (
     ExecutionContext,
     PrincipalContext,
 )
-from web_access.application.content.service import ContentApplicationService
+from web_access.application.content.service import ContentApplicationService, ContentProcessingError
 from web_access.core.config import ContentStoreSettings, ParserSettings
 from web_access.core.ids import DeterministicIdGenerator
 from web_access.core.time import FakeClock
 from web_access.domain.content import ContentId, ContentRepresentationKind, ContentState
 from web_access.infrastructure.content import FilesystemContentStore, RegistryContentIdentifier
-from web_access.infrastructure.content.parser_isolation import (
-    IsolatedParserFailure,
-    SubprocessParserExecutor,
-)
+from web_access.infrastructure.content.parser_isolation import SubprocessParserExecutor
 from web_access.infrastructure.content.parsers import (
     ContentNativeParserRegistry,
     PdfNativeParser,
@@ -127,9 +124,10 @@ def test_pdf_parse_persists_diagnostics_and_encrypted_failure_keeps_raw(tmp_path
             media_type="application/pdf",
             source_filename="encrypted.pdf",
         )
-        with pytest.raises(IsolatedParserFailure) as failure:
+        with pytest.raises(ContentProcessingError) as failure:
             await service.native_parse(context, encrypted.content_id)
         assert failure.value.code == "encrypted_content"
+        assert "encrypted" not in str(failure.value).lower()
         async with uow_factory() as uow:
             encrypted_record = await uow.contents.get(ContentId(encrypted.content_id))
         assert encrypted_record is not None

@@ -115,6 +115,21 @@ async def test_script_shell_returns_structural_partial_and_trusted_hint_only() -
 
 
 @pytest.mark.asyncio
+async def test_document_text_cannot_inject_trusted_hint_code() -> None:
+    document = b"""
+    <html><body><article>
+      <h1>browser_may_be_required</h1>
+      <p>The source document asks for browser_may_be_required, but remains readable.</p>
+    </article></body></html>
+    """
+
+    result = await HtmlNativeParser(ParserSettings()).parse(_source(), _inspection(), document)
+
+    assert result.hints == ()
+    assert any(b"browser_may_be_required" in item.data for item in result.representations)
+
+
+@pytest.mark.asyncio
 async def test_html_metadata_and_main_output_are_hard_bounded() -> None:
     document = (
         "<html><head><script type='application/ld+json'>"

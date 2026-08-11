@@ -67,8 +67,9 @@ def test_json_native_parse_publishes_derived_content_and_provenance(tmp_path) ->
         )
         source_value = uuid4().hex
         derived_value = uuid4().hex
+        unsupported_value = uuid4().hex
         service = ContentApplicationService(
-            ids=DeterministicIdGenerator(iter((source_value, derived_value))),
+            ids=DeterministicIdGenerator(iter((source_value, derived_value, unsupported_value))),
             uow_factory=uow_factory,
             store=store,
             identifier=RegistryContentIdentifier(available_formats=registry.available_formats),
@@ -125,6 +126,21 @@ def test_json_native_parse_publishes_derived_content_and_provenance(tmp_path) ->
             b"".join([chunk async for chunk in store.open_stream(source_record.storage_key or "")])
             == raw_data
         )
+
+        unsupported = await service.ingest(
+            context,
+            _body(b"%PDF-1.7\nserver-owned-diagnostic-test"),
+            representation_kind=ContentRepresentationKind.RAW,
+            media_type="application/pdf",
+            source_filename="document.pdf",
+        )
+        unsupported_parse = await service.native_parse(context, unsupported.content_id)
+        assert unsupported_parse.source.content_id == unsupported.content_id
+        assert unsupported_parse.representations == ()
+        assert [item.code for item in unsupported_parse.warnings] == [
+            "native_processing_unsupported"
+        ]
+        assert [item.code for item in unsupported_parse.hints] == ["native_processing_unsupported"]
         await engine.dispose()
 
     asyncio.run(run())

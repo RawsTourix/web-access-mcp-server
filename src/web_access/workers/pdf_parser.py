@@ -10,7 +10,11 @@ from pypdf import PdfReader
 from pypdf.errors import PdfReadError
 from pypdf.generic import ArrayObject, DictionaryObject, IndirectObject, StreamObject
 
-from web_access.application.common.hints import StructuredHint, Warning
+from web_access.application.common.hints import (
+    StructuredHint,
+    Warning,
+    advanced_processing_may_be_required,
+)
 from web_access.application.content.isolation import (
     IsolatedParserResult,
     IsolatedRepresentation,
@@ -109,16 +113,10 @@ def parse_pdf(data: bytes, parameters: dict[str, object]) -> IsolatedParserResul
             warnings.append(
                 Warning(
                     code="pdf_native_text_unavailable",
-                    message="The PDF has no extractable native text layer.",
+                    message="PDF не содержит извлекаемого нативного текстового слоя.",
                 )
             )
-            hints = (
-                StructuredHint(
-                    code="advanced_processing_may_be_required",
-                    message="Image-only PDF Content may require separately authorized processing.",
-                    related_capability="advanced_content_processing",
-                ),
-            )
+            hints = (advanced_processing_may_be_required(),)
         return IsolatedParserResult(
             ok=True,
             representations=tuple(representations),

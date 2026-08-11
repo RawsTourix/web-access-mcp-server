@@ -9,7 +9,11 @@ import trafilatura
 from lxml import html
 from lxml.etree import ParserError
 
-from web_access.application.common.hints import StructuredHint, Warning
+from web_access.application.common.hints import (
+    StructuredHint,
+    Warning,
+    browser_may_be_required,
+)
 from web_access.application.content.models import (
     ContentInspection,
     NativeParserOutput,
@@ -90,7 +94,7 @@ class HtmlNativeParser:
                 warnings.append(
                     Warning(
                         code="html_main_content_truncated",
-                        message="HTML main-content output reached its configured bound.",
+                        message="Основной текст HTML достиг настроенного ограничения.",
                     )
                 )
             main = main[: self._settings.html_max_text_chars]
@@ -102,7 +106,7 @@ class HtmlNativeParser:
                     warnings.append(
                         Warning(
                             code="html_main_content_truncated",
-                            message="HTML main-content output reached its configured bound.",
+                            message="Основной текст HTML достиг настроенного ограничения.",
                         )
                     )
             representations.append(
@@ -117,7 +121,7 @@ class HtmlNativeParser:
             warnings.append(
                 Warning(
                     code="html_main_content_unavailable",
-                    message="No readable main-content representation was extracted.",
+                    message="Читаемое представление основного текста HTML извлечь не удалось.",
                 )
             )
 
@@ -134,15 +138,7 @@ class HtmlNativeParser:
             )
         )
         if script_shell:
-            hints.append(
-                StructuredHint(
-                    code="browser_may_be_required",
-                    message=(
-                        "Strong script-shell structure suggests that rendered content may differ."
-                    ),
-                    related_capability="browser",
-                )
-            )
+            hints.append(browser_may_be_required())
         return NativeParserOutput(
             representations=tuple(representations),
             warnings=tuple(warnings),
@@ -201,7 +197,7 @@ def _extract_structure(
                 warnings.append(
                     Warning(
                         code="html_jsonld_oversized",
-                        message="An oversized JSON-LD block was ignored.",
+                        message="Слишком большой блок JSON-LD был пропущен.",
                     )
                 )
             continue
@@ -214,7 +210,7 @@ def _extract_structure(
                 warnings.append(
                     Warning(
                         code="html_jsonld_invalid",
-                        message="An invalid or over-deep JSON-LD block was ignored.",
+                        message="Некорректный или слишком глубокий блок JSON-LD был пропущен.",
                     )
                 )
     return {

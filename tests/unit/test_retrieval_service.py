@@ -12,8 +12,10 @@ from web_access.application.common.context import (
     PrincipalContext,
 )
 from web_access.application.common.errors import AuthorizationError, ErrorCategory
+from web_access.application.common.hints import Warning, native_processing_unsupported
 from web_access.application.common.results import LeafOutcome, OperationOutcome
 from web_access.application.content.models import ContentInspection, ContentRef, NativeParseResult
+from web_access.application.content.service import ContentParserTimeoutError
 from web_access.application.retrieval.ports import (
     FetchCounters,
     RetrievalConnectionError,
@@ -109,8 +111,16 @@ class FakeFetcher:
 
 
 class FakeContentPipeline:
-    def __init__(self, *, lose_ingest_result: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        lose_ingest_result: bool = False,
+        parse_failure: Exception | None = None,
+        native_unsupported: bool = False,
+    ) -> None:
         self.lose_ingest_result = lose_ingest_result
+        self.parse_failure = parse_failure
+        self.native_unsupported = native_unsupported
         self.ingested: list[bytes] = []
         self.inspected: list[str] = []
         self.parsed: list[str] = []
@@ -149,6 +159,20 @@ class FakeContentPipeline:
     async def native_parse(self, context: ExecutionContext, content_id: str) -> NativeParseResult:
         del context
         self.parsed.append(content_id)
+        if self.parse_failure is not None:
+            raise self.parse_failure
+        if self.native_unsupported:
+            return NativeParseResult(
+                source=_ref(content_id),
+                reused=False,
+                warnings=(
+                    Warning(
+                        code="native_processing_unsupported",
+                        message="Формат не поддерживается L1 parsers.",
+                    ),
+                ),
+                hints=(native_processing_unsupported(),),
+            )
         return NativeParseResult(
             source=_ref(content_id),
             representations=(
@@ -262,6 +286,75 @@ async def test_non_success_http_status_keeps_body_metadata_and_raw_content() -> 
     assert item.data.raw_content.content_id.startswith("cnt_")
     assert item.data.inspection is not None
     assert content.ingested == [b"body"]
+
+
+@pytest.mark.asyncio
+async def test_unsupported_native_processing_keeps_raw_as_success_with_trusted_hint() -> None:
+    fetcher = FakeFetcher()
+    content = FakeContentPipeline(native_unsupported=True)
+
+    result = await _service(fetcher, content).fetch(
+        _context(),
+        RetrievalBatchRequest(
+            (RetrievalRequestItem("https://example.com/unsupported"),),
+            RetrievalProcessingLevel.NATIVE,
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert result.data is not None
+    item = result.data.items[0]
+    assert item.outcome is LeafOutcome.SUCCEEDED
+    assert item.data is not None
+    assert item.data.raw_content.content_id.startswith("cnt_")
+    assert item.data.native_content is None
+    assert item.data.available_representations == ()
+    assert [warning.code for warning in item.warnings] == ["native_processing_unsupported"]
+    assert [hint.code for hint in item.hints] == ["native_processing_unsupported"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("failure", "expected_code", "expected_category"),
+    [
+        (
+            RuntimeError("raw internal parser detail"),
+            "native_processing_failed",
+            ErrorCategory.INTERNAL,
+        ),
+        (ContentParserTimeoutError("raw timeout detail"), "parser_timeout", ErrorCategory.TIMEOUT),
+    ],
+)
+async def test_native_failure_keeps_confirmed_raw_and_hides_exception_detail(
+    failure: Exception,
+    expected_code: str,
+    expected_category: ErrorCategory,
+) -> None:
+    fetcher = FakeFetcher()
+    content = FakeContentPipeline(parse_failure=failure)
+
+    result = await _service(fetcher, content).fetch(
+        _context(),
+        RetrievalBatchRequest(
+            (RetrievalRequestItem("https://example.com/document"),),
+            RetrievalProcessingLevel.NATIVE,
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.FAILED
+    assert result.data is not None
+    item = result.data.items[0]
+    assert item.outcome is LeafOutcome.FAILED
+    assert item.data is not None
+    assert item.data.raw_content.content_id.startswith("cnt_")
+    assert item.data.inspection is not None
+    assert item.error is not None
+    assert item.error.code == expected_code
+    assert item.error.category is expected_category
+    assert "raw" not in item.error.message
+    assert [warning.code for warning in item.warnings] == [expected_code]
+    assert fetcher.calls == ["https://example.com/document"]
+    assert len(content.ingested) == 1
 
 
 @pytest.mark.asyncio

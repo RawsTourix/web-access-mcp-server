@@ -10,6 +10,7 @@ from pydantic import JsonValue
 from web_access.application.common.auth import require_scope
 from web_access.application.common.context import ExecutionContext, PrincipalContext
 from web_access.application.common.errors import ErrorCategory, OperationError, PublicError
+from web_access.application.common.hints import Warning
 from web_access.application.common.results import (
     BatchItemResult,
     LeafOutcome,
@@ -17,6 +18,8 @@ from web_access.application.common.results import (
     OperationResult,
     aggregate_batch_outcome,
 )
+from web_access.application.content.models import ContentInspection, ContentRef
+from web_access.application.content.service import ContentParserTimeoutError, ContentProcessingError
 from web_access.application.retrieval.models import RetrievalBatchResult, RetrievalItemResult
 from web_access.application.retrieval.ports import (
     DecompressionLimitExceeded,
@@ -37,6 +40,7 @@ from web_access.domain.retrieval import (
     RetrievalExecutionPhase,
     RetrievalProcessingLevel,
     RetrievalRequestItem,
+    RetrievedResource,
 )
 
 
@@ -80,7 +84,7 @@ class RetrievalApplicationService:
                         LeafOutcome.CANCELLED,
                         ErrorCategory.CANCELLED,
                         "retrieval_cancelled",
-                        "Retrieval item was cancelled before dispatch.",
+                        "Retrieval item отменён до отправки запроса.",
                     )
                 return await self._fetch_item(context, index, item, request.processing_level)
 
@@ -131,29 +135,51 @@ class RetrievalApplicationService:
             representations = ()
             warnings = ()
             hints = ()
-            if processing_level is not RetrievalProcessingLevel.STORE_ONLY:
-                phase.advance(RetrievalExecutionPhase.PROCESSING)
-                inspection = await self._content.inspect(context, raw.content_id)
-            if processing_level is RetrievalProcessingLevel.NATIVE:
-                parsed = await self._content.native_parse(context, raw.content_id)
-                representations = parsed.representations
-                native = representations[0] if representations else None
-                warnings = parsed.warnings
-                hints = parsed.hints
+            processing_code = "content_inspection_failed"
+            try:
+                if processing_level is not RetrievalProcessingLevel.STORE_ONLY:
+                    phase.advance(RetrievalExecutionPhase.PROCESSING)
+                    inspection = await self._content.inspect(context, raw.content_id)
+                if processing_level is RetrievalProcessingLevel.NATIVE:
+                    processing_code = "native_processing_failed"
+                    parsed = await self._content.native_parse(context, raw.content_id)
+                    representations = parsed.representations
+                    native = representations[0] if representations else None
+                    warnings = parsed.warnings
+                    hints = parsed.hints
+            except Exception as error:
+                metadata = response.metadata()
+                phase.advance(RetrievalExecutionPhase.TERMINAL)
+                code = processing_code
+                category = ErrorCategory.INTERNAL
+                message = "Запрошенную нативную обработку Content завершить не удалось."
+                if isinstance(error, ContentParserTimeoutError):
+                    code = error.code
+                    category = ErrorCategory.TIMEOUT
+                    message = "L1 Native Parser не завершил обработку вовремя."
+                elif isinstance(error, ContentProcessingError):
+                    code = error.code
+                return BatchItemResult(
+                    index=index,
+                    outcome=LeafOutcome.FAILED,
+                    data=_retrieval_data(
+                        metadata,
+                        raw,
+                        inspection=inspection,
+                        native_content=native,
+                        representations=representations,
+                    ),
+                    error=OperationError(category=category, code=code, message=message),
+                    warnings=(Warning(code=code, message=message),),
+                )
 
             metadata = response.metadata()
-            data = RetrievalItemResult(
-                requested_url=metadata.requested_url,
-                final_url=metadata.final_url,
-                http_status=metadata.http_status,
-                redirect_chain=metadata.redirect_chain,
-                wire_bytes=metadata.wire_bytes,
-                entity_bytes=metadata.entity_bytes,
-                content_encoding=metadata.content_encoding,
-                raw_content=raw,
+            data = _retrieval_data(
+                metadata,
+                raw,
                 inspection=inspection,
                 native_content=native,
-                available_representations=representations,
+                representations=representations,
             )
             phase.advance(RetrievalExecutionPhase.TERMINAL)
             if 200 <= metadata.http_status < 300:
@@ -167,7 +193,7 @@ class RetrievalApplicationService:
             error = OperationError(
                 category=ErrorCategory.UPSTREAM,
                 code="upstream_http_status",
-                message="The upstream server returned a non-success HTTP status.",
+                message="Upstream-сервер вернул неуспешный HTTP-статус.",
                 retryable=metadata.http_status >= 500,
                 details={"http_status": metadata.http_status},
             )
@@ -185,7 +211,7 @@ class RetrievalApplicationService:
                 LeafOutcome.REJECTED,
                 ErrorCategory.POLICY,
                 getattr(error, "code", "retrieval_url_blocked"),
-                "The requested Retrieval destination is not allowed.",
+                "Запрошенный адрес Retrieval запрещён политикой безопасности.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except TooManyRedirects:
@@ -194,7 +220,7 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.UPSTREAM,
                 "too_many_redirects",
-                "The upstream redirect limit was exceeded.",
+                "Превышен лимит upstream-перенаправлений.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except ResponseTooLarge:
@@ -203,7 +229,7 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.CAPACITY,
                 "response_too_large",
-                "The retrieved response exceeded its byte limit.",
+                "Полученный ответ превысил допустимый размер.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except DecompressionLimitExceeded:
@@ -212,7 +238,7 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.CAPACITY,
                 "decompression_limit",
-                "The retrieved response exceeded its decompression limit.",
+                "Полученный ответ превысил лимит декомпрессии.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except UnsupportedContentEncoding:
@@ -221,7 +247,7 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.UNSUPPORTED,
                 "unsupported_content_encoding",
-                "The upstream Content-Encoding is unsupported.",
+                "Upstream Content-Encoding не поддерживается.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except TimeoutError:
@@ -230,7 +256,7 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.TIMEOUT,
                 "retrieval_timeout",
-                "The Retrieval operation timed out.",
+                "Время выполнения Retrieval истекло.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except RetrievalConnectionError:
@@ -239,7 +265,7 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.UPSTREAM,
                 "retrieval_transport_error",
-                "The upstream response could not be retrieved.",
+                "Получить upstream-ответ не удалось.",
                 details={"retrieval_phase": phase.phase_value},
             )
         except Exception:
@@ -249,7 +275,7 @@ class RetrievalApplicationService:
                     LeafOutcome.UNKNOWN,
                     ErrorCategory.UNKNOWN_OUTCOME,
                     "retrieval_resource_outcome_unknown",
-                    "Retrieval may have created Content, but its result was not confirmed.",
+                    "Retrieval мог создать Content, но результат создания не подтверждён.",
                     details={"retrieval_phase": phase.phase_value},
                 )
             return _error_item(
@@ -257,9 +283,32 @@ class RetrievalApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.INTERNAL,
                 "retrieval_internal_error",
-                "The Retrieval item could not be completed.",
+                "Завершить Retrieval item не удалось.",
                 details={"retrieval_phase": phase.phase_value},
             )
+
+
+def _retrieval_data(
+    metadata: RetrievedResource,
+    raw: ContentRef,
+    *,
+    inspection: ContentInspection | None,
+    native_content: ContentRef | None,
+    representations: tuple[ContentRef, ...],
+) -> RetrievalItemResult:
+    return RetrievalItemResult(
+        requested_url=metadata.requested_url,
+        final_url=metadata.final_url,
+        http_status=metadata.http_status,
+        redirect_chain=metadata.redirect_chain,
+        wire_bytes=metadata.wire_bytes,
+        entity_bytes=metadata.entity_bytes,
+        content_encoding=metadata.content_encoding,
+        raw_content=raw,
+        inspection=inspection,
+        native_content=native_content,
+        available_representations=representations,
+    )
 
 
 def _error_item(

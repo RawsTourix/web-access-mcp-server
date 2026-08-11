@@ -12,7 +12,7 @@ from web_access.application.common.auth import require_owner, require_scope
 from web_access.application.common.content_store import ContentStore, StagedBlob
 from web_access.application.common.context import ExecutionContext
 from web_access.application.common.errors import AuthorizationError, ErrorCategory, OperationError
-from web_access.application.common.hints import Warning
+from web_access.application.common.hints import Warning, native_processing_unsupported
 from web_access.application.common.results import (
     BatchItemResult,
     LeafOutcome,
@@ -70,7 +70,16 @@ class ContentUnavailableError(ContentLifecycleError):
 
 
 class ContentProcessingError(ContentLifecycleError):
-    pass
+    code = "native_processing_failed"
+
+    def __init__(self, message: str, *, code: str | None = None) -> None:
+        if code is not None:
+            self.code = code
+        super().__init__(message)
+
+
+class ContentParserTimeoutError(ContentProcessingError):
+    code = "parser_timeout"
 
 
 class ContentCursorError(ValueError):
@@ -291,13 +300,35 @@ class ContentApplicationService:
                 reused=False,
                 warnings=(
                     Warning(
-                        code="native_parser_unavailable",
-                        message="No registered native parser supports the detected Content format.",
+                        code="native_processing_unsupported",
+                        message=(
+                            "Обнаруженный формат не поддерживается зарегистрированными L1 parsers."
+                        ),
                     ),
                 ),
+                hints=(native_processing_unsupported(),),
             )
         data = await self._read_bounded(record.storage_key, self._parser_input_bytes)
-        output = await executor.execute(parser, record.content, inspection, data)
+        try:
+            output = await executor.execute(parser, record.content, inspection, data)
+        except Exception as error:
+            source_code = getattr(error, "code", None)
+            if source_code == "parser_child_timeout" or isinstance(error, TimeoutError):
+                raise ContentParserTimeoutError("Native parser timed out") from error
+            public_code = (
+                source_code
+                if source_code
+                in {
+                    "encrypted_content",
+                    "malformed_pdf",
+                    "native_parse_failed",
+                    "parser_depth_limit",
+                    "parser_input_limit",
+                    "parser_output_limit",
+                }
+                else None
+            )
+            raise ContentProcessingError("Native parser failed", code=public_code) from error
         representation_refs: list[ContentRef] = []
         created_any = False
         for parsed in output.representations:
