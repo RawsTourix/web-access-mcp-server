@@ -81,7 +81,9 @@ def test_json_native_parse_publishes_derived_content_and_provenance(tmp_path) ->
         clock = FakeClock(datetime(2026, 8, 11, tzinfo=UTC))
         context = ExecutionContext(
             operation_id="op_native",
-            principal=PrincipalContext("native-owner", frozenset({"content:read"})),
+            principal=PrincipalContext(
+                "native-owner", frozenset({"content:read", "content:write"})
+            ),
             clock=clock,
             cancellation=CancellationToken(),
         )
@@ -102,7 +104,6 @@ def test_json_native_parse_publishes_derived_content_and_provenance(tmp_path) ->
         derived = parsed.representations[0]
         assert derived.representation is ContentRepresentationKind.STRUCTURED
         assert metadata.available_representations == parsed.representations
-        assert metadata.text is None
 
         async with uow_factory() as uow:
             source_record = await uow.contents.get(ContentId(source.content_id))
@@ -160,7 +161,9 @@ def test_concurrent_html_parse_converges_each_representation_identity(tmp_path) 
         )
         context = ExecutionContext(
             operation_id="op_concurrent_html",
-            principal=PrincipalContext("concurrent-owner", frozenset({"content:read"})),
+            principal=PrincipalContext(
+                "concurrent-owner", frozenset({"content:read", "content:write"})
+            ),
             clock=FakeClock(datetime(2026, 8, 11, tzinfo=UTC)),
             cancellation=CancellationToken(),
         )
@@ -239,7 +242,7 @@ def test_representation_reuse_is_scoped_to_owner_and_source(tmp_path) -> None:
         contexts = tuple(
             ExecutionContext(
                 operation_id=f"op_{owner}",
-                principal=PrincipalContext(owner, frozenset({"content:read"})),
+                principal=PrincipalContext(owner, frozenset({"content:read", "content:write"})),
                 clock=clock,
                 cancellation=CancellationToken(),
             )

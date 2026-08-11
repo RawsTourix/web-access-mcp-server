@@ -11,17 +11,35 @@ import structlog
 from opentelemetry.sdk.trace import TracerProvider
 
 from web_access.application.common.health import DependencyProbe, HealthService
+from web_access.application.content.service import ContentApplicationService
+from web_access.application.retrieval.service import RetrievalApplicationService
 from web_access.application.search.models import SearchRegionEntry, SearchRegionMapping
 from web_access.application.search.readiness import SearchProviderReadinessService
 from web_access.application.search.registry import SearchProviderRegistry, SearchRegionRegistry
 from web_access.application.search.service import SearchApplicationService, SearchServicePolicy
 from web_access.bootstrap.container import RuntimeContainer
-from web_access.core.config import Settings
+from web_access.core.config import Environment, Settings
 from web_access.core.ids import Uuid4IdGenerator
 from web_access.core.time import SystemClock
 from web_access.domain.search import SearchProviderId, SearchRegionId
 from web_access.infrastructure.auth.static_bearer import StaticBearerAuthProvider
+from web_access.infrastructure.content import (
+    HmacContentCursorCodec,
+    RegistryContentIdentifier,
+    SubprocessParserExecutor,
+)
 from web_access.infrastructure.content.filesystem import FilesystemContentStore
+from web_access.infrastructure.content.parsers import (
+    ContentNativeParserRegistry,
+    CsvNativeParser,
+    HtmlNativeParser,
+    JsonNativeParser,
+    PdfNativeParser,
+    RoutingNativeParserExecutor,
+    TextNativeParser,
+    XmlNativeParser,
+)
+from web_access.infrastructure.database.content import SqlAlchemyContentUnitOfWorkFactory
 from web_access.infrastructure.database.engine import (
     close_engine,
     create_engine,
@@ -37,6 +55,11 @@ from web_access.infrastructure.observability.search import (
 )
 from web_access.infrastructure.observability.tracing import configure_tracing, shutdown_tracing
 from web_access.infrastructure.redis.client import RedisDependency
+from web_access.infrastructure.retrieval import (
+    RetrievalUrlPolicy,
+    SafeAioHttpClient,
+    SafeHttpFetcher,
+)
 from web_access.infrastructure.search import (
     ProviderConcurrencyPolicy,
     ProviderRatePolicy,
@@ -75,6 +98,58 @@ async def runtime_lifespan(
     session_factory = create_session_factory(engine)
     redis = RedisDependency(settings.redis)
     content_store = FilesystemContentStore(settings.content_store)
+    content_uow_factory = SqlAlchemyContentUnitOfWorkFactory(session_factory)
+    parser_registry = ContentNativeParserRegistry(
+        (
+            TextNativeParser(settings.parser),
+            HtmlNativeParser(settings.parser),
+            JsonNativeParser(settings.parser),
+            XmlNativeParser(settings.parser),
+            CsvNativeParser(settings.parser),
+            PdfNativeParser(),
+        )
+    )
+    isolated_parser = SubprocessParserExecutor(
+        settings.parser,
+        allowed_parser_ids=frozenset({"pdf"}),
+        allow_reduced_isolation=settings.app.environment is not Environment.PRODUCTION,
+        test_mode=settings.app.environment is Environment.TEST,
+    )
+    cursor_secret = settings.security.content_cursor_hmac_secret
+    cursor_codec = HmacContentCursorCodec(
+        cursor_secret.get_secret_value()
+        if cursor_secret is not None
+        else "development-only-content-cursor-secret"
+    )
+    content = ContentApplicationService(
+        ids=ids,
+        uow_factory=content_uow_factory,
+        store=content_store,
+        identifier=RegistryContentIdentifier(available_formats=parser_registry.available_formats),
+        parser_registry=parser_registry,
+        parser_executor=RoutingNativeParserExecutor(
+            settings=settings.parser, isolated=isolated_parser
+        ),
+        cursor_codec=cursor_codec,
+        inspection_sample_bytes=settings.content_store.inspection_sample_bytes,
+        max_inspection_json_bytes=settings.content_store.max_inspection_json_bytes,
+        parser_input_bytes=max(
+            settings.parser.inline_max_input_bytes, settings.parser.pdf_max_bytes
+        ),
+        representation_wait_seconds=settings.parser.representation_wait_seconds,
+        representation_poll_seconds=settings.parser.representation_poll_seconds,
+    )
+    retrieval_policy = RetrievalUrlPolicy(settings.retrieval.security)
+    retrieval_client = SafeAioHttpClient(settings=settings.retrieval, policy=retrieval_policy)
+    retrieval = RetrievalApplicationService(
+        fetcher=SafeHttpFetcher(
+            client=retrieval_client,
+            policy=retrieval_policy,
+            settings=settings.retrieval,
+        ),
+        content=content,
+        settings=settings.retrieval,
+    )
     auth = auth_provider or StaticBearerAuthProvider(settings.auth.principals)
     health = HealthService(
         clock=clock,
@@ -222,6 +297,8 @@ async def runtime_lifespan(
             tracer_provider=selected_tracer_provider,
             search=search,
             search_readiness=search_readiness,
+            content=content,
+            retrieval=retrieval,
         )
         health.mark_bootstrapped()
         logger.info("runtime_started")
@@ -231,6 +308,7 @@ async def runtime_lifespan(
         try:
             async with asyncio.timeout(settings.security.shutdown_timeout_seconds):
                 for dependency, close in (
+                    ("retrieval_http", retrieval_client.close),
                     ("yandex_http", yandex_http.aclose),
                     ("searxng_http", searxng_http.aclose),
                     ("redis", redis.close),

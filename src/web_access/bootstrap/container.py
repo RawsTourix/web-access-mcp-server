@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from web_access.application.common.auth import AuthProvider
 from web_access.application.common.health import HealthService
 from web_access.application.common.observability import Metrics
+from web_access.application.content.service import ContentApplicationService
+from web_access.application.retrieval.service import RetrievalApplicationService
 from web_access.application.search.readiness import SearchProviderReadinessService
 from web_access.application.search.service import SearchApplicationService
 from web_access.core.config import Settings
@@ -35,3 +37,5 @@ class RuntimeContainer:
     tracer_provider: TracerProvider | None
     search: SearchApplicationService
     search_readiness: SearchProviderReadinessService
+    content: ContentApplicationService
+    retrieval: RetrievalApplicationService

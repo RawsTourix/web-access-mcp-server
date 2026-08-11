@@ -73,7 +73,15 @@ def _settings(
                 PrincipalSettings(
                     principal_id="diagnostic-agent",
                     tokens=(SecretStr(TOKEN),),
-                    scopes=frozenset({"admin:read", "search:read"}),
+                    scopes=frozenset(
+                        {
+                            "admin:read",
+                            "search:read",
+                            "retrieval:read",
+                            "content:read",
+                            "content:write",
+                        }
+                    ),
                 ),
                 PrincipalSettings(
                     principal_id="limited-agent",
@@ -185,9 +193,9 @@ async def test_correlation_headers_are_bounded_and_server_owned(tmp_path: Path) 
             assert rejected.headers["X-Request-ID"].startswith("req_")
 
 
-def test_openapi_has_only_v02_routes_and_bearer_security(tmp_path: Path) -> None:
+def test_openapi_has_exact_v03_routes_and_bearer_security(tmp_path: Path) -> None:
     schema = create_control_plane(_settings(tmp_path)).openapi()
-    assert schema["info"]["version"] == "0.2.0"
+    assert schema["info"]["version"] == "0.3.0"
     assert set(schema["paths"]) == {
         "/health/live",
         "/health/ready",
@@ -195,15 +203,48 @@ def test_openapi_has_only_v02_routes_and_bearer_security(tmp_path: Path) -> None
         "/metrics",
         "/api/v1/search",
         "/api/v1/search/providers",
+        "/api/v1/retrieval/fetch",
+        "/api/v1/content/{content_id}",
+        "/api/v1/content/{content_id}/data",
+        "/api/v1/content/{content_id}/representations",
+        "/api/v1/content/inspect",
+        "/api/v1/content/native-parse",
     }
     assert "BearerAuth" in schema["components"]["securitySchemes"]
     status_operation = schema["paths"]["/health/status"]["get"]
     assert status_operation["security"] == [{"BearerAuth": []}]
     assert schema["paths"]["/api/v1/search"]["post"]["security"] == [{"BearerAuth": []}]
     assert schema["paths"]["/api/v1/search/providers"]["get"]["security"] == [{"BearerAuth": []}]
+    for path, method in (
+        ("/api/v1/retrieval/fetch", "post"),
+        ("/api/v1/content/{content_id}", "get"),
+        ("/api/v1/content/{content_id}/data", "get"),
+        ("/api/v1/content/{content_id}/representations", "get"),
+        ("/api/v1/content/inspect", "post"),
+        ("/api/v1/content/native-parse", "post"),
+    ):
+        assert schema["paths"][path][method]["security"] == [{"BearerAuth": []}]
     rendered = str(schema).lower()
-    for forbidden in ("retrieval", "browser", "jobs", "sqlalchemy", "redis_url"):
+    for forbidden in ("browser", "jobs", "upload", "sqlalchemy", "redis_url"):
         assert f'"/{forbidden}' not in rendered
+    components = schema["components"]["schemas"]
+    fetch = components["RestFetchRequest"]
+    assert fetch["properties"]["items"]["minItems"] == 1
+    assert fetch["properties"]["items"]["maxItems"] == 32
+    assert fetch["properties"]["processing_level"]["default"] == "native"
+    assert components["RetrievalProcessingLevel"]["enum"] == [
+        "store_only",
+        "inspect",
+        "native",
+    ]
+    assert components["RestFetchItem"]["properties"]["url"]["maxLength"] == 8192
+    ids = components["RestContentIdsRequest"]["properties"]["content_ids"]
+    assert ids["minItems"] == 1 and ids["maxItems"] == 32
+    assert ids["uniqueItems"] is True
+    assert ids["items"]["maxLength"] == 128
+    native = components["RestNativeParseRequest"]
+    assert native["properties"]["reuse_existing"]["default"] is True
+    assert set(native["properties"]) == {"content_ids", "reuse_existing"}
 
 
 class _FakeSearch:

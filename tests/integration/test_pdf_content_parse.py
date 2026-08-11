@@ -97,7 +97,7 @@ def test_pdf_parse_persists_diagnostics_and_encrypted_failure_keeps_raw(tmp_path
         clock = FakeClock(datetime(2026, 8, 11, tzinfo=UTC))
         context = ExecutionContext(
             operation_id="op_pdf",
-            principal=PrincipalContext("pdf-owner", frozenset({"content:read"})),
+            principal=PrincipalContext("pdf-owner", frozenset({"content:read", "content:write"})),
             clock=clock,
             cancellation=CancellationToken(),
         )

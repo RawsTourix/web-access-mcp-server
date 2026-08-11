@@ -15,6 +15,12 @@ from web_access.application.common.errors import (
     FieldError,
     OperationError,
 )
+from web_access.application.content.service import (
+    ContentCursorError,
+    ContentLifecycleError,
+    ContentNotFoundError,
+    ContentUnavailableError,
+)
 from web_access.transport.rest.auth import RestAuthenticationError
 
 
@@ -73,8 +79,29 @@ async def validation_error_handler(_request: Request, error: Exception) -> JSONR
         OperationError(
             category=ErrorCategory.VALIDATION,
             code="invalid_request",
-            message="Запрос не прошёл проверку.",
+            message="Request validation failed.",
             fields=fields,
+        ),
+    )
+
+
+async def content_error_handler(_request: Request, error: Exception) -> JSONResponse:
+    if isinstance(error, ContentNotFoundError):
+        status, category = 404, ErrorCategory.NOT_FOUND
+    elif isinstance(error, ContentUnavailableError):
+        status, category = 409, ErrorCategory.CONFLICT
+    elif isinstance(error, ContentCursorError):
+        status, category = 422, ErrorCategory.VALIDATION
+    elif isinstance(error, ContentLifecycleError):
+        status, category = 500, ErrorCategory.INTERNAL
+    else:
+        return await internal_error_handler(_request, error)
+    return _response(
+        status,
+        OperationError(
+            category=category,
+            code=getattr(error, "code", "content_processing_failed"),
+            message=str(error),
         ),
     )
 

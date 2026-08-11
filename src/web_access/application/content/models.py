@@ -8,9 +8,12 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from web_access.application.common.hints import StructuredHint, Warning
+from web_access.application.common.results import BatchItemResult
 from web_access.domain.content import (
     ContentFormat,
+    ContentRelationType,
     ContentRepresentationKind,
+    ContentState,
     ParserAvailability,
     ParserExecutionMode,
 )
@@ -109,3 +112,69 @@ class ContentReadResult(BaseModel):
     next_cursor: str | None = Field(default=None, max_length=2048)
     inspection: ContentInspection | None = None
     available_representations: tuple[ContentRef, ...] = Field(default=(), max_length=32)
+
+
+class ContentProvenance(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source_content_id: ContentIdValue
+    producer_capability: str = Field(min_length=1, max_length=64)
+    producer_revision: str = Field(min_length=1, max_length=128)
+    representation_schema_revision: str = Field(min_length=1, max_length=128)
+    processing_profile_revision: str = Field(min_length=1, max_length=128)
+
+
+class ContentRetention(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    expires_at: datetime | None = None
+
+
+class ContentMetadata(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    content: ContentRef
+    state: ContentState
+    representation_kind: ContentRepresentationKind
+    media_type: str | None = Field(default=None, max_length=255)
+    detected_format: ContentFormat | None = None
+    source_filename: str | None = Field(default=None, max_length=255)
+    inspection: ContentInspection | None = None
+    provenance: ContentProvenance | None = None
+    available_representations: tuple[ContentRef, ...] = Field(default=(), max_length=32)
+    retention: ContentRetention
+
+
+class ContentRepresentationSummary(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    content: ContentRef
+    relation_type: ContentRelationType
+    representation_kind: ContentRepresentationKind
+    provenance: ContentProvenance
+
+
+class ContentRepresentationsResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    source: ContentRef
+    representations: tuple[ContentRepresentationSummary, ...] = Field(default=(), max_length=32)
+
+
+class ContentInspectResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    content: ContentRef
+    inspection: ContentInspection
+
+
+class ContentInspectBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: tuple[BatchItemResult[ContentInspectResult], ...] = Field(min_length=1, max_length=32)
+
+
+class ContentNativeParseBatchResult(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    items: tuple[BatchItemResult[NativeParseResult], ...] = Field(min_length=1, max_length=32)

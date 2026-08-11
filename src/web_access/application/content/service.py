@@ -11,11 +11,27 @@ from collections.abc import AsyncIterable, AsyncIterator
 from web_access.application.common.auth import require_owner, require_scope
 from web_access.application.common.content_store import ContentStore, StagedBlob
 from web_access.application.common.context import ExecutionContext
+from web_access.application.common.errors import AuthorizationError, ErrorCategory, OperationError
 from web_access.application.common.hints import Warning
+from web_access.application.common.results import (
+    BatchItemResult,
+    LeafOutcome,
+    OperationOutcome,
+    OperationResult,
+    aggregate_batch_outcome,
+)
 from web_access.application.content.models import (
+    ContentInspectBatchResult,
     ContentInspection,
+    ContentInspectResult,
+    ContentMetadata,
+    ContentNativeParseBatchResult,
+    ContentProvenance,
     ContentReadResult,
     ContentRef,
+    ContentRepresentationsResult,
+    ContentRepresentationSummary,
+    ContentRetention,
     NativeParseResult,
     ParsedRepresentation,
     ParserDescriptor,
@@ -42,6 +58,18 @@ from web_access.domain.content import (
 
 
 class ContentLifecycleError(RuntimeError):
+    code = "content_processing_failed"
+
+
+class ContentNotFoundError(ContentLifecycleError):
+    code = "content_not_found"
+
+
+class ContentUnavailableError(ContentLifecycleError):
+    code = "content_unavailable"
+
+
+class ContentProcessingError(ContentLifecycleError):
     pass
 
 
@@ -195,14 +223,14 @@ class ContentApplicationService:
         identifier = self._identifier
         if identifier is None:
             raise ContentLifecycleError("Content identifier is not configured")
-        typed_id = ContentId(content_id)
+        typed_id = _typed_content_id(content_id)
         async with self._uow_factory() as uow:
             record = await uow.contents.get(typed_id)
         if record is None:
-            raise ContentLifecycleError("Content was not found")
+            raise ContentNotFoundError("Content was not found")
         require_owner(context.principal, record.content.owner_principal_id)
         if record.content.state is not ContentState.AVAILABLE or record.storage_key is None:
-            raise ContentLifecycleError("Content is not available")
+            raise ContentUnavailableError("Content is not available")
         if record.inspection is not None:
             return record.inspection
         if record.content.size_bytes is None or record.content.sha256 is None:
@@ -238,12 +266,13 @@ class ContentApplicationService:
         raise ContentLifecycleError("Content inspection CAS failed")
 
     async def native_parse(self, context: ExecutionContext, content_id: str) -> NativeParseResult:
+        require_scope(context.principal, "content:write")
         require_scope(context.principal, "content:read")
         registry = self._parser_registry
         executor = self._parser_executor
         if registry is None or executor is None:
             raise ContentLifecycleError("native parser runtime is not configured")
-        typed_id = ContentId(content_id)
+        typed_id = _typed_content_id(content_id)
         inspection = await self.inspect(context, content_id)
         async with self._uow_factory() as uow:
             record = await uow.contents.get(typed_id)
@@ -252,7 +281,7 @@ class ContentApplicationService:
             or record.content.state is not ContentState.AVAILABLE
             or record.storage_key is None
         ):
-            raise ContentLifecycleError("Content is not available")
+            raise ContentUnavailableError("Content is not available")
         require_owner(context.principal, record.content.owner_principal_id)
         source_ref = _content_ref(record.content)
         parser = registry.select(inspection)
@@ -341,13 +370,83 @@ class ContentApplicationService:
                 raise ContentLifecycleError("compatible Content representation wait expired")
             await asyncio.sleep(min(self._representation_poll_seconds, remaining_wait))
 
-    async def metadata(self, context: ExecutionContext, content_id: str) -> ContentReadResult:
-        record, representations = await self._load_authorized(context, content_id)
-        return ContentReadResult(
+    async def metadata(self, context: ExecutionContext, content_id: str) -> ContentMetadata:
+        record, targets = await self._load_authorized(context, content_id)
+        return ContentMetadata(
             content=_content_ref(record.content),
-            returned_chars=0,
+            state=record.content.state,
+            representation_kind=record.content.representation_kind,
+            media_type=record.content.media_type,
+            detected_format=record.content.detected_format,
+            source_filename=record.content.source_filename,
             inspection=record.inspection,
-            available_representations=representations,
+            provenance=_provenance(record.content),
+            available_representations=tuple(_content_ref(item.content) for item in targets),
+            retention=ContentRetention(expires_at=record.content.expires_at),
+        )
+
+    async def inspect_many(
+        self, context: ExecutionContext, content_ids: tuple[str, ...]
+    ) -> OperationResult[ContentInspectBatchResult]:
+        require_scope(context.principal, "content:read")
+        items: list[BatchItemResult[ContentInspectResult]] = []
+        for index, content_id in enumerate(content_ids):
+            try:
+                inspection = await self.inspect(context, content_id)
+                metadata = await self.metadata(context, content_id)
+                items.append(
+                    BatchItemResult(
+                        index=index,
+                        outcome=LeafOutcome.SUCCEEDED,
+                        data=ContentInspectResult(content=metadata.content, inspection=inspection),
+                    )
+                )
+            except Exception as error:
+                items.append(_content_batch_error(index, error))
+        return _content_batch_result(
+            context.operation_id, ContentInspectBatchResult(items=tuple(items)), items
+        )
+
+    async def native_parse_many(
+        self, context: ExecutionContext, content_ids: tuple[str, ...]
+    ) -> OperationResult[ContentNativeParseBatchResult]:
+        require_scope(context.principal, "content:read")
+        require_scope(context.principal, "content:write")
+        items: list[BatchItemResult[NativeParseResult]] = []
+        for index, content_id in enumerate(content_ids):
+            try:
+                items.append(
+                    BatchItemResult(
+                        index=index,
+                        outcome=LeafOutcome.SUCCEEDED,
+                        data=await self.native_parse(context, content_id),
+                    )
+                )
+            except Exception as error:
+                items.append(_content_batch_error(index, error))
+        return _content_batch_result(
+            context.operation_id, ContentNativeParseBatchResult(items=tuple(items)), items
+        )
+
+    async def representations(
+        self, context: ExecutionContext, content_id: str
+    ) -> ContentRepresentationsResult:
+        record, targets = await self._load_authorized(context, content_id)
+        summaries = []
+        for target in targets:
+            provenance = _provenance(target.content)
+            if provenance is None:
+                raise ContentLifecycleError("derived Content provenance is missing")
+            summaries.append(
+                ContentRepresentationSummary(
+                    content=_content_ref(target.content),
+                    relation_type=ContentRelationType.DERIVED_FROM,
+                    representation_kind=target.content.representation_kind,
+                    provenance=provenance,
+                )
+            )
+        return ContentRepresentationsResult(
+            source=_content_ref(record.content), representations=tuple(summaries)
         )
 
     async def read(
@@ -360,7 +459,8 @@ class ContentApplicationService:
     ) -> ContentReadResult:
         if not 1 <= max_chars <= 30000:
             raise ValueError("max_chars must be between 1 and 30000")
-        record, representations = await self._load_authorized(context, content_id)
+        record, targets = await self._load_authorized(context, content_id)
+        representations = tuple(_content_ref(item.content) for item in targets)
         reference = _content_ref(record.content)
         if record.content.representation_kind not in {
             ContentRepresentationKind.TEXT,
@@ -439,13 +539,13 @@ class ContentApplicationService:
 
     async def _load_authorized(
         self, context: ExecutionContext, content_id: str
-    ) -> tuple[ContentRecord, tuple[ContentRef, ...]]:
+    ) -> tuple[ContentRecord, tuple[ContentRecord, ...]]:
         require_scope(context.principal, "content:read")
-        typed_id = ContentId(content_id)
+        typed_id = _typed_content_id(content_id)
         async with self._uow_factory() as uow:
             record = await uow.contents.get(typed_id)
             if record is None:
-                raise ContentLifecycleError("Content was not found")
+                raise ContentNotFoundError("Content was not found")
             require_owner(context.principal, record.content.owner_principal_id)
             if (
                 record.content.state is not ContentState.AVAILABLE
@@ -455,9 +555,9 @@ class ContentApplicationService:
                     and record.content.expires_at <= context.clock.utc_now()
                 )
             ):
-                raise ContentLifecycleError("Content is not available")
+                raise ContentUnavailableError("Content is not available")
             relations = await uow.relations.for_source(typed_id, limit=32)
-            available: list[ContentRef] = []
+            available: list[ContentRecord] = []
             for relation in relations:
                 target = await uow.contents.get(relation.target_content_id)
                 if (
@@ -469,7 +569,7 @@ class ContentApplicationService:
                         or target.content.expires_at > context.clock.utc_now()
                     )
                 ):
-                    available.append(_content_ref(target.content))
+                    available.append(target)
         return record, tuple(available)
 
     async def _read_utf8_chunk(
@@ -553,3 +653,72 @@ def _content_ref(content: ContentObject) -> ContentRef:
         created_at=content.created_at,
         expires_at=content.expires_at,
     )
+
+
+def _provenance(content: ContentObject) -> ContentProvenance | None:
+    if content.source_content_id is None:
+        return None
+    if any(
+        value is None
+        for value in (
+            content.producer_capability,
+            content.producer_revision,
+            content.representation_schema_revision,
+            content.processing_profile_revision,
+        )
+    ):
+        raise ContentLifecycleError("derived Content provenance is incomplete")
+    return ContentProvenance(
+        source_content_id=str(content.source_content_id),
+        producer_capability=content.producer_capability or "",
+        producer_revision=content.producer_revision or "",
+        representation_schema_revision=content.representation_schema_revision or "",
+        processing_profile_revision=content.processing_profile_revision or "",
+    )
+
+
+def _typed_content_id(value: str) -> ContentId:
+    try:
+        return ContentId(value)
+    except ValueError as error:
+        raise ContentNotFoundError("Content was not found") from error
+
+
+def _content_batch_error(index: int, error: Exception) -> BatchItemResult:
+    if isinstance(error, AuthorizationError):
+        category = ErrorCategory.PERMISSION
+        code = error.code.value
+        outcome = LeafOutcome.REJECTED
+        message = str(error)
+    elif isinstance(error, ContentNotFoundError):
+        category = ErrorCategory.NOT_FOUND
+        code = error.code
+        outcome = LeafOutcome.FAILED
+        message = "Content was not found."
+    elif isinstance(error, ContentUnavailableError):
+        category = ErrorCategory.CONFLICT
+        code = error.code
+        outcome = LeafOutcome.FAILED
+        message = "Content is not available."
+    else:
+        category = ErrorCategory.INTERNAL
+        code = getattr(error, "code", "content_processing_failed")
+        outcome = LeafOutcome.FAILED
+        message = "Content processing failed."
+    return BatchItemResult(
+        index=index,
+        outcome=outcome,
+        error=OperationError(category=category, code=code, message=message),
+    )
+
+
+def _content_batch_result(
+    operation_id: str,
+    data: ContentInspectBatchResult | ContentNativeParseBatchResult,
+    items: list[BatchItemResult],
+) -> OperationResult:
+    outcome = aggregate_batch_outcome([item.outcome for item in items])
+    primary = None
+    if outcome not in {OperationOutcome.SUCCEEDED, OperationOutcome.PARTIAL_SUCCESS}:
+        primary = next(item.error for item in items if item.error is not None)
+    return OperationResult(operation_id=operation_id, outcome=outcome, data=data, error=primary)

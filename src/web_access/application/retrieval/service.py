@@ -8,7 +8,7 @@ from dataclasses import replace
 from pydantic import JsonValue
 
 from web_access.application.common.auth import require_scope
-from web_access.application.common.context import ExecutionContext
+from web_access.application.common.context import ExecutionContext, PrincipalContext
 from web_access.application.common.errors import ErrorCategory, OperationError, PublicError
 from web_access.application.common.results import (
     BatchItemResult,
@@ -56,6 +56,13 @@ class RetrievalApplicationService:
         self, context: ExecutionContext, request: RetrievalBatchRequest
     ) -> OperationResult[RetrievalBatchResult]:
         require_scope(context.principal, "retrieval:read")
+        context = replace(
+            context,
+            principal=PrincipalContext(
+                context.principal.principal_id,
+                context.principal.scopes | frozenset({"content:read", "content:write"}),
+            ),
+        )
         if context.deadline is None:
             context = replace(
                 context,
