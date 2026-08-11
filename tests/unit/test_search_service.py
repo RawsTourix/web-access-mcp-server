@@ -16,7 +16,12 @@ from web_access.application.common.context import (
     PrincipalContext,
 )
 from web_access.application.common.errors import ErrorCategory, OperationError
-from web_access.application.common.results import ExecutionStage, LeafOutcome, OperationOutcome
+from web_access.application.common.results import (
+    ExecutionStage,
+    LeafOutcome,
+    OperationOutcome,
+    automatic_retry_allowed,
+)
 from web_access.application.search.models import (
     ProviderCapabilities,
     ProviderDescriptor,
@@ -33,6 +38,7 @@ from web_access.application.search.ports import (
     ConcurrencyLease,
     ProviderAttemptError,
     RateAdmission,
+    SearchSingleFlight,
     SearchTelemetry,
     SearchUsageUnavailable,
     SearchUsageUnitOfWork,
@@ -43,6 +49,7 @@ from web_access.application.search.service import SearchApplicationService, Sear
 from web_access.core.time import Deadline, FakeClock
 from web_access.domain.search import SearchProviderId, SearchProviderSelection, SearchResultItem
 from web_access.infrastructure.observability import SearchTelemetryAdapter, create_metrics
+from web_access.transport.mcp.retry import trusted_retry_descriptor
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -131,6 +138,31 @@ class FakeSingleFlight:
         self.releases += 1
 
 
+class CoordinatedSingleFlight:
+    """Deterministically holds waiters behind one active cache identity."""
+
+    def __init__(self) -> None:
+        self._lock = asyncio.Lock()
+        self._active: dict[str, asyncio.Event] = {}
+        self.waiter_joined = asyncio.Event()
+
+    async def acquire(self, identity: str, *, wait_seconds: float | None) -> SingleFlightLease:
+        _ = wait_seconds
+        async with self._lock:
+            event = self._active.get(identity)
+            if event is None:
+                self._active[identity] = asyncio.Event()
+                return SingleFlightLease(identity=identity, holder=True, token="holder")
+            self.waiter_joined.set()
+        await event.wait()
+        return SingleFlightLease(identity=identity, holder=False)
+
+    async def release(self, lease: SingleFlightLease) -> None:
+        async with self._lock:
+            event = self._active.pop(lease.identity)
+            event.set()
+
+
 class FakeRateLimiter:
     def __init__(self) -> None:
         self.calls: list[SearchProviderId] = []
@@ -167,6 +199,7 @@ class FakeUsage:
         self.starts: list[tuple[str, int]] = []
         self.stages: list[str] = []
         self.commits = 0
+        self.rows: dict[tuple[str, int, int], dict[str, object]] = {}
 
     def __call__(self) -> SearchUsageUnitOfWork:
         return self
@@ -193,9 +226,27 @@ class FakeUsage:
         attempt_number = values["attempt_number"]
         assert isinstance(attempt_number, int)
         self.starts.append((str(values["operation_id"]), attempt_number))
+        item_index = values["query_item_index"]
+        assert isinstance(item_index, int)
+        self.rows[(str(values["operation_id"]), item_index, attempt_number)] = {
+            "stage": AttemptStage.PRE_DISPATCH,
+            "outcome_code": None,
+            "retry_reason": None,
+        }
 
     async def mark_stage(self, **values: object) -> None:
-        self.stages.append(str(values["stage"]))
+        stage = values["stage"]
+        item_index = values["query_item_index"]
+        attempt_number = values["attempt_number"]
+        assert isinstance(stage, AttemptStage)
+        assert isinstance(item_index, int)
+        assert isinstance(attempt_number, int)
+        self.stages.append(stage.value)
+        self.rows[(str(values["operation_id"]), item_index, attempt_number)] = {
+            "stage": stage,
+            "outcome_code": values.get("outcome_code"),
+            "retry_reason": values.get("retry_reason"),
+        }
 
 
 class UnavailableUsage(FakeUsage):
@@ -213,10 +264,11 @@ def context(
     *,
     scopes: frozenset[str] = frozenset({"search:read"}),
     principal_id: str = "principal",
+    operation_id: str = "op_test",
 ) -> ExecutionContext:
     clock = FakeClock(NOW)
     return ExecutionContext(
-        operation_id="op_test",
+        operation_id=operation_id,
         principal=PrincipalContext(principal_id, scopes),
         clock=clock,
         cancellation=CancellationToken(),
@@ -230,6 +282,7 @@ def build(
     searxng: FakeProvider | None = None,
     yandex: FakeProvider | None = None,
     cache: FakeCache | None = None,
+    single_flight: SearchSingleFlight | None = None,
     policy: SearchServicePolicy | None = None,
     telemetry: SearchTelemetry | None = None,
 ) -> tuple[
@@ -251,7 +304,7 @@ def build(
         providers=SearchProviderRegistry((searxng, yandex), default_provider=default),
         regions=SearchRegionRegistry(()),
         cache=selected_cache,
-        single_flight=FakeSingleFlight(),
+        single_flight=single_flight or FakeSingleFlight(),
         rate_limiter=rate,
         concurrency_limiter=concurrency,
         usage_uow_factory=usage,
@@ -398,8 +451,11 @@ async def test_billable_retry_only_happens_for_proven_pre_dispatch_failure() -> 
             stage=ExecutionStage.BEFORE_DISPATCH,
         )
     )
+    metrics = create_metrics()
     service, _, _, _, rate, concurrency, usage = build(
-        yandex=yandex, policy=SearchServicePolicy(yandex_max_attempts=2)
+        yandex=yandex,
+        policy=SearchServicePolicy(yandex_max_attempts=2),
+        telemetry=SearchTelemetryAdapter(metrics),
     )
     result = await service.search(
         context(),
@@ -411,6 +467,17 @@ async def test_billable_retry_only_happens_for_proven_pre_dispatch_failure() -> 
     assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 2
     assert [attempt for _, attempt in usage.starts] == [1, 2]
     assert usage.commits == 6
+    assert usage.rows[("op_test", 0, 1)] == {
+        "stage": AttemptStage.DISPATCH_POSSIBLE,
+        "outcome_code": "connect_failed",
+        "retry_reason": "connect_failed",
+    }
+    assert usage.rows[("op_test", 0, 2)] == {
+        "stage": AttemptStage.COMPLETED,
+        "outcome_code": "succeeded",
+        "retry_reason": None,
+    }
+    assert 'reason="pre_dispatch_failure"' in metrics.render().decode()
 
 
 @pytest.mark.asyncio
@@ -554,6 +621,130 @@ async def test_possible_billable_dispatch_never_retries_or_falls_back() -> None:
     assert result.outcome is OperationOutcome.UNKNOWN
     assert len(yandex.calls) == len(rate.calls) == len(usage.starts) == 1
     assert searxng.calls == []
+    assert usage.rows == {
+        ("op_test", 0, 1): {
+            "stage": AttemptStage.DISPATCH_POSSIBLE,
+            "outcome_code": "response_lost",
+            "retry_reason": None,
+        }
+    }
+
+
+@pytest.mark.asyncio
+async def test_billable_cache_hit_has_zero_cost_for_second_operation() -> None:
+    service, _, yandex, _, rate, concurrency, usage = build()
+    request = SearchBatchRequest(
+        queries=(SearchQuery(query="paid-cache", provider=SearchProviderSelection.YANDEX),)
+    )
+    first = await service.search(context(operation_id="op_first"), request)
+    second = await service.search(context(operation_id="op_second"), request)
+
+    assert first.outcome is second.outcome is OperationOutcome.SUCCEEDED
+    assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 1
+    assert usage.starts == [("op_first", 1)]
+    assert set(usage.rows) == {("op_first", 0, 1)}
+    assert second.data and second.data.items[0].data
+    assert second.data.items[0].data.cache.cached is True
+    assert second.data.items[0].data.usage.upstream_attempts == 0
+    assert second.data.items[0].data.usage.billable_attempts == 0
+    assert second.data.items[0].data.usage.rate_units == 0
+
+
+@pytest.mark.asyncio
+async def test_explicit_second_operation_is_not_hidden_retry_or_fallback() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    for _ in range(2):
+        yandex.failures.append(
+            ProviderAttemptError(
+                OperationError(
+                    category=ErrorCategory.UNKNOWN_OUTCOME,
+                    code="response_lost",
+                    message="response lost",
+                    retryable=True,
+                ),
+                stage=ExecutionStage.RESPONSE_LOST,
+            )
+        )
+    service, searxng, _, _, rate, _, usage = build(
+        yandex=yandex, policy=SearchServicePolicy(yandex_max_attempts=2)
+    )
+    request = SearchBatchRequest(
+        queries=(SearchQuery(query="explicit", provider=SearchProviderSelection.YANDEX),)
+    )
+
+    first = await service.search(context(operation_id="op_first"), request)
+    second = await service.search(context(operation_id="op_second"), request)
+
+    assert first.outcome is second.outcome is OperationOutcome.UNKNOWN
+    assert len(yandex.calls) == len(rate.calls) == 2
+    assert searxng.calls == []
+    assert usage.starts == [("op_first", 1), ("op_second", 1)]
+    assert set(usage.rows) == {("op_first", 0, 1), ("op_second", 0, 1)}
+    assert all(row["retry_reason"] is None for row in usage.rows.values())
+
+
+def test_mcp_trusted_retry_descriptor_blocks_paid_response_loss_replay() -> None:
+    descriptor = trusted_retry_descriptor("web_search")
+    assert descriptor is not None
+    assert automatic_retry_allowed(
+        retry_class=descriptor.retry_class,
+        stage=ExecutionStage.BEFORE_DISPATCH,
+        effects=descriptor.effects,
+        error_retryable=True,
+    )
+    assert not automatic_retry_allowed(
+        retry_class=descriptor.retry_class,
+        stage=ExecutionStage.RESPONSE_LOST,
+        effects=descriptor.effects,
+        error_retryable=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_single_flight_response_loss_creates_one_tracked_billable_call() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    yandex.wait_event = asyncio.Event()
+    yandex.failures.append(
+        ProviderAttemptError(
+            OperationError(
+                category=ErrorCategory.UNKNOWN_OUTCOME,
+                code="response_lost",
+                message="response lost",
+                retryable=True,
+            ),
+            stage=ExecutionStage.RESPONSE_LOST,
+        )
+    )
+    single_flight = CoordinatedSingleFlight()
+    service, searxng, _, _, rate, concurrency, usage = build(
+        yandex=yandex,
+        single_flight=single_flight,
+        policy=SearchServicePolicy(yandex_max_attempts=2),
+    )
+    request = SearchBatchRequest(
+        queries=(SearchQuery(query="concurrent-paid", provider=SearchProviderSelection.YANDEX),)
+    )
+    holder = asyncio.create_task(service.search(context(operation_id="op_holder"), request))
+    await yandex.called_event.wait()
+    waiter = asyncio.create_task(service.search(context(operation_id="op_waiter"), request))
+    await single_flight.waiter_joined.wait()
+    yandex.wait_event.set()
+    results = await asyncio.gather(holder, waiter)
+
+    assert {result.outcome for result in results} == {
+        OperationOutcome.UNKNOWN,
+        OperationOutcome.FAILED,
+    }
+    assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 1
+    assert searxng.calls == []
+    assert usage.starts == [("op_holder", 1)]
+    assert usage.rows == {
+        ("op_holder", 0, 1): {
+            "stage": AttemptStage.DISPATCH_POSSIBLE,
+            "outcome_code": "response_lost",
+            "retry_reason": None,
+        }
+    }
 
 
 @pytest.mark.asyncio
