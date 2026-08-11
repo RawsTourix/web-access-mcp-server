@@ -55,6 +55,22 @@ async def test_stream_roundtrip_hash_stat_exists_and_remove(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_explicit_stage_finalize_is_idempotent_and_opaque(tmp_path) -> None:
+    store = FilesystemContentStore(ContentStoreSettings(root=tmp_path, chunk_size=4096))
+    identity = "cnt_0123456789abcdef0123456789abcdef"
+    data = b"explicit-staging" * 1000
+    staged = await store.stage_write(identity, _chunks(data[:99], data[99:]))
+    assert staged.handle.startswith(f"staging/{identity}/")
+    assert not os.path.isabs(staged.handle)
+    assert await store.stat_staging(staged.handle) == staged
+    finalized = await store.finalize(staged)
+    assert finalized.sha256 == hashlib.sha256(data).hexdigest()
+    assert await store.stat_staging(staged.handle) is None
+    assert await store.finalize(staged) == finalized
+    assert list((tmp_path / "staging").iterdir()) == []
+
+
+@pytest.mark.asyncio
 async def test_concurrent_same_content_physically_deduplicates(tmp_path) -> None:
     store = FilesystemContentStore(ContentStoreSettings(root=tmp_path, chunk_size=4096))
     data = b"same-content" * 10_000
