@@ -8,7 +8,7 @@ import zlib
 from collections.abc import AsyncIterator
 from email.message import Message
 from typing import Protocol
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from aiohttp import ClientError, ClientPayloadError, ClientResponse
 
@@ -122,7 +122,10 @@ class SafeHttpFetcher:
             redirect_chain=tuple(redirects),
             content_encoding=encoding,
             declared_media_type=_declared_media_type(response.headers.get("Content-Type")),
-            source_filename=_source_filename(response.headers.get("Content-Disposition")),
+            source_filename=(
+                _source_filename(response.headers.get("Content-Disposition"))
+                or _source_filename_from_url(str(response.url))
+            ),
             body=self._body(response, encoding, counters),
             counters=counters,
         )
@@ -230,6 +233,15 @@ def _source_filename(value: str | None) -> str | None:
     filename = message.get_filename()
     if filename is None:
         return None
+    return _safe_filename(filename)
+
+
+def _source_filename_from_url(value: str) -> str | None:
+    path = urlsplit(value).path
+    return _safe_filename(path.rsplit("/", 1)[-1]) if path else None
+
+
+def _safe_filename(filename: str) -> str | None:
     safe = "".join(
         "_" if character in {"/", "\\"} or ord(character) < 32 else character
         for character in filename

@@ -194,6 +194,7 @@ async def test_chunked_body_without_content_length_is_bounded_while_streaming() 
             result = await fetcher.fetch(_context(), f"http://content.test:{port}/chunked")
             assert await _read(result.body) == b"abcde"
             assert result.metadata().wire_bytes == 5
+            assert result.source_filename == "chunked"
         finally:
             await client.close()
 

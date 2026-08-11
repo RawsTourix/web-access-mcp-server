@@ -9,6 +9,7 @@ from typing import Self
 from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from web_access.application.content.models import ContentInspection
 from web_access.application.content.ports import ContentRecord
 from web_access.domain.content import (
     ContentFormat,
@@ -30,7 +31,7 @@ def _content_from_row(row: ContentObjectRow) -> ContentObject:
         revision=row.revision,
         representation_kind=ContentRepresentationKind(row.representation_kind),
         created_at=row.created_at,
-        media_type=row.detected_media_type or row.declared_media_type,
+        media_type=row.declared_media_type,
         detected_format=ContentFormat(row.detected_format) if row.detected_format else None,
         source_filename=row.source_filename,
         size_bytes=row.size_bytes,
@@ -48,6 +49,11 @@ def _record(row: ContentObjectRow) -> ContentRecord:
         available_at=row.available_at,
         updated_at=row.updated_at,
         failure_code=row.failure_code,
+        inspection=(
+            ContentInspection.model_validate(row.inspection_json)
+            if row.inspection_json is not None
+            else None
+        ),
     )
 
 
@@ -158,6 +164,35 @@ class PostgresContentRepository:
             .values(
                 state=ContentState.FAILED.value,
                 failure_code=failure_code,
+                updated_at=now,
+                revision=expected_revision + 1,
+            )
+            .returning(ContentObjectRow.id)
+        )
+        if result.scalar_one_or_none() is None:
+            return None
+        return await self.get(content_id)
+
+    async def save_inspection(
+        self,
+        content_id: ContentId,
+        *,
+        expected_revision: int,
+        inspection: ContentInspection,
+    ) -> ContentRecord | None:
+        now = datetime.now(UTC)
+        result = await self._session.execute(
+            update(ContentObjectRow)
+            .where(
+                ContentObjectRow.content_id == str(content_id),
+                ContentObjectRow.state == ContentState.AVAILABLE.value,
+                ContentObjectRow.revision == expected_revision,
+                ContentObjectRow.inspection_json.is_(None),
+            )
+            .values(
+                detected_media_type=inspection.detected_media_type,
+                detected_format=inspection.detected_format.value,
+                inspection_json=inspection.model_dump(mode="json"),
                 updated_at=now,
                 revision=expected_revision + 1,
             )

@@ -32,6 +32,7 @@ class ContentRecord:
     available_at: datetime | None = None
     updated_at: datetime | None = None
     failure_code: str | None = None
+    inspection: ContentInspection | None = None
 
 
 class ContentRepository(Protocol):
@@ -59,6 +60,14 @@ class ContentRepository(Protocol):
 
     async def mark_failed(
         self, content_id: ContentId, *, expected_revision: int, failure_code: str
+    ) -> ContentRecord | None: ...
+
+    async def save_inspection(
+        self,
+        content_id: ContentId,
+        *,
+        expected_revision: int,
+        inspection: ContentInspection,
     ) -> ContentRecord | None: ...
 
     async def stale_creating(
@@ -89,6 +98,8 @@ class ContentIdentifier(Protocol):
         self,
         data: bytes,
         *,
+        size_bytes: int,
+        sha256: str,
         declared_media_type: str | None,
         source_filename: str | None,
     ) -> ContentInspection: ...

@@ -131,6 +131,8 @@ class ContentStoreSettings(BaseModel):
 
     root: Path = Path(".content")
     chunk_size: int = Field(default=64 * 1024, ge=4096, le=4 * 1024 * 1024)
+    inspection_sample_bytes: int = Field(default=256 * 1024, ge=4096, le=4 * 1024 * 1024)
+    max_inspection_json_bytes: int = Field(default=64 * 1024, ge=4096, le=1024 * 1024)
 
     @field_validator("root")
     @classmethod
