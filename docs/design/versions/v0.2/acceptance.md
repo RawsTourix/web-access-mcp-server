@@ -8,7 +8,8 @@ This is coding-agent handoff evidence, not self-acceptance. An independent revie
 
 ## Candidate identity
 
-- Implementation HEAD: `3c10cde78f8be8b01519d3b577bdee770e893982`.
+- Corrected implementation commit: `07476fb73a90bbf67698bb054d270df587d31ec6`.
+- Original implementation candidate: `3c10cde78f8be8b01519d3b577bdee770e893982`.
 - S0 characterization base: `7a190d5be4e34b001a5e6e6555c032062f0235c3`.
 - Package/service version: `0.2.0`; Python support: `>=3.11,<3.13`; exercised with Python 3.11.
 - Alembic head: `0002_search_attempts` over accepted `0001_foundation`.
@@ -32,6 +33,7 @@ S13 8ab56b5 MCP
 S14 c49e50f response-loss/cost
 S15 8278668 E2E/race/fault
 S16 3c10cde acceptance closure/version/docs
+S17 07476fb acceptance correction: bounded runtime, fail-closed admission, contracts, deterministic E2E
 ```
 
 ## Provider and protocol revisions
@@ -40,7 +42,7 @@ S16 3c10cde acceptance closure/version/docs
 - SearXNG configuration revision: `searxng-2026.7.28-c01178d03-v1`; private Compose service, JSON enabled, no default host port.
 - Yandex official API verification: 2026-08-11; synchronous Search API v2 `POST /v2/web/search`, `Api-Key`, REST CamelCase request, base64 XML response. Detailed record: `../../../verification/yandex-search-api-2026-08-11.md`.
 - Sanitized deterministic Yandex fixtures: `web_search_request.json`, `web_search_response.json`, `web_search_response.xml`. Default live Yandex calls: **0**.
-- Redis cache schema revision: `1`; single-flight release script revision: `1`; token-bucket revision: `1`; concurrency acquire/release revisions: `1`.
+- Redis cache schema revision: `1`; single-flight release script revision: `1`; token-bucket revision: `2`; concurrency acquire/release revisions: `2`/`1`.
 
 ## Public contract evidence
 
@@ -51,7 +53,7 @@ POST /api/v1/search
 GET  /api/v1/search/providers
 ```
 
-The actual generated Search request schema has `additionalProperties=false`, `queries` 1..32, query length 1..4096, limit 1..50, provider enum `default|searxng|yandex`, omission-only optional fields, and bearer security. Provider discovery contains only public identity, enabled/billable flags, five capability booleans, and readiness.
+The actual generated Search request schema has `additionalProperties=false`, `queries` 1..32, query length 1..4096, limit 1..50, provider enum `default|searxng|yandex`, omission-only optional fields, and bearer security. Provider discovery uses the common public operation envelope and contains only public identity, enabled/billable flags, five capability booleans, and readiness.
 
 Actual FastMCP client discovery returns exactly:
 
@@ -62,6 +64,17 @@ Actual FastMCP client discovery returns exactly:
 Its discovered schema has `additionalProperties=false`, queries 1..8 with item length 1..2048, limit 1..20, exact provider/safe-search/time-range enums and defaults, no credential/context/raw provider fields, and annotations `readOnlyHint=true`, `destructiveHint=false`, `idempotentHint=true`, `openWorldHint=true`. The separate trusted descriptor is `phase_evidence_required`, has possible billable cost, and forbids blind replay after possible dispatch.
 
 REST and MCP construct the same trusted principal and `ExecutionContext`, then call the same `SearchApplicationService`; only the documented transport limits differ.
+
+## S17 correction evidence
+
+- `SearchLanguage` is dependency-free domain data. BCP 47 validation and normalization with pinned `langcodes` occurs at the application boundary, and an AST architecture test rejects every undeclared third-party domain import.
+- REST and MCP create an absolute Search deadline; the application adds the same bounded deadline for non-transport callers. Batch-slot waits, provider calls, retry sleeps, cache/single-flight work, concurrency waits, and billable accounting share that budget.
+- Owned provider tasks are cancelled and awaited before concurrency release on direct task cancellation. Cooperative cancellation or deadline expiry after possible paid dispatch returns `unknown_outcome`, records durable unknown evidence, and performs no hidden retry.
+- Retry timing applies exponential backoff, bounded jitter, and provider `Retry-After` under the remaining absolute deadline. No new attempt starts when its delay cannot fit.
+- Redis token and concurrency admission use provider-scoped generation markers in the same Lua operation as reservation/acquisition. Missing state after FLUSHDB quarantines all replicas for the conservative refill/lease horizon.
+- Redis unavailability maps to `infrastructure/search_admission_unavailable`; genuine token denial maps to `rate_limited`. Fully unsuccessful REST Search returns category-derived 4xx/5xx status, while partial/success remains HTTP 200.
+- Provider discovery uses `PublicOperationResult`; authenticated MCP principals without `search:read` receive a structured `permission/insufficient_scope` rejection.
+- SearXNG and Yandex adapters expose Russian agent-facing messages, reject unsafe provider-region values, bound URLs and response bodies, and isolate malformed result items while preserving valid siblings.
 
 ## Test and operational evidence
 
@@ -75,7 +88,7 @@ uv run pyright
 uv run pytest -q
 ```
 
-Result: `270 passed`; skips `0`; xfail `0`; xpass `0`; flaky-marked tests `0`.
+Result after the S17 correction: `288 passed`; skips `0`; xfail `0`; xpass `0`; flaky-marked tests `0`.
 
 Infrastructure and race evidence:
 
@@ -83,7 +96,8 @@ Infrastructure and race evidence:
 - Token-bucket last-token race: 10 deterministic repetitions, 30 contenders, exactly 5 admissions each.
 - Multi-replica provider cap: five seeds, two application instances, 20 clients per seed; observed active calls never exceeded global limit 3; excess work received structured capacity failures.
 - Identical requests across two application instances produced one upstream call, one cache fill, one cached waiter result, preserved retrieval timestamp, and input order.
-- SearXNG pinned JSON probe succeeded with 30 results in the final S15 topology run.
+- Redis FLUSHDB tests prove that two replicas fail closed for the conservative token/refill or lease horizon and recover without an API restart.
+- The pinned SearXNG container is checked only for health and static JSON configuration. Search behavior is exercised against a deterministic local SearXNG-compatible service; public Search calls are zero.
 
 Compose fault/restart evidence:
 
@@ -93,11 +107,12 @@ MCP default Search                     passed
 controlled Yandex v2 protocol          passed
 PostgreSQL outage/recovery              passed
 Redis restart/recovery, twice           passed
+Redis FLUSHDB fail-closed/recovery       passed
 SearXNG outage/no-fallback/recovery      passed
 graceful API shutdown/restart            passed
 ```
 
-The full controlled fault run completed in 112.9 seconds without an API restart during dependency recovery. PostgreSQL outage left free SearXNG usable and rejected Yandex before the controlled provider counter changed. The controlled Yandex service exists only in the E2E Compose override; ordinary CI requires no Yandex secret and performs zero live Yandex calls.
+The corrected controlled fault run completed in 119.3 seconds without an API restart during dependency recovery. PostgreSQL outage left free Search usable and rejected Yandex before the controlled provider counter changed. Redis transport failures are reported as infrastructure unavailability rather than rate exhaustion. The controlled Yandex and SearXNG-compatible services exist only in the E2E Compose override; ordinary CI requires no Yandex secret, performs zero live Yandex calls, and makes no public Search requests.
 
 Billable response-loss call counts:
 
@@ -113,12 +128,12 @@ live Yandex                             0
 
 - G0/G28/G29/G31: this status and evidence handoff, with independent acceptance retained.
 - G1/G2/G24/G25/G30: architecture tests, Ruff, formatting, Pyright, deterministic non-skipped tests.
-- G3/G4/G14/G15: actual OpenAPI/FastMCP contracts and common `search:read` identity.
+- G3/G4/G14/G15: actual OpenAPI/FastMCP contracts, operation-enveloped provider discovery, structured MCP scope rejection, and common `search:read` identity.
 - G5: repeatable empty/previous-head migration and durable attempt transition/constraint tests.
 - G6/G23: secret/privacy tests, hashed keys, content-free accounting, pinned SearXNG image/config.
 - G7/G27: deterministic provider selection, no fallback, paid response-loss evidence and conservative retry descriptor.
 - G13: bounded telemetry and independent provider readiness.
-- G17/G18/G20: Redis races, multi-instance caps/backpressure, dependency restart/outage recovery.
-- G26: controlled SearXNG and sanitized Yandex fixture profile; live paid profile count zero.
+- G17/G18/G20: Redis races, multi-instance caps/backpressure, FLUSHDB generation horizons, and dependency restart/outage recovery.
+- G26: deterministic local SearXNG-compatible Search, pinned SearXNG health/static verification, and sanitized Yandex fixture profile; public Search and live paid profile counts are zero.
 
 G8–G12 and v0.3+ subsystems are intentionally outside this implementation candidate.
