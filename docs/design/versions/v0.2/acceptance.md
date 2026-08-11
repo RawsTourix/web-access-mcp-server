@@ -8,6 +8,7 @@ This is coding-agent handoff evidence, not self-acceptance. An independent revie
 
 ## Candidate identity
 
+- Final factual acceptance correction: `c91f12925f4c3673ccc93a8b137824c5b913e33b`.
 - Corrected implementation commit: `07476fb73a90bbf67698bb054d270df587d31ec6`.
 - Original implementation candidate: `3c10cde78f8be8b01519d3b577bdee770e893982`.
 - S0 characterization base: `7a190d5be4e34b001a5e6e6555c032062f0235c3`.
@@ -34,6 +35,7 @@ S14 c49e50f response-loss/cost
 S15 8278668 E2E/race/fault
 S16 3c10cde acceptance closure/version/docs
 S17 07476fb acceptance correction: bounded runtime, fail-closed admission, contracts, deterministic E2E
+S18 c91f129 final acceptance correction: replica-safe flow control, provider bounds, cache/UTC
 ```
 
 ## Provider and protocol revisions
@@ -42,7 +44,7 @@ S17 07476fb acceptance correction: bounded runtime, fail-closed admission, contr
 - SearXNG configuration revision: `searxng-2026.7.28-c01178d03-v1`; private Compose service, JSON enabled, no default host port.
 - Yandex official API verification: 2026-08-11; synchronous Search API v2 `POST /v2/web/search`, `Api-Key`, REST CamelCase request, base64 XML response. Detailed record: `../../../verification/yandex-search-api-2026-08-11.md`.
 - Sanitized deterministic Yandex fixtures: `web_search_request.json`, `web_search_response.json`, `web_search_response.xml`. Default live Yandex calls: **0**.
-- Redis cache schema revision: `1`; single-flight release script revision: `1`; token-bucket revision: `2`; concurrency acquire/release revisions: `2`/`1`.
+- Redis cache schema revision: `1`; single-flight release script revision: `1`; token-bucket revision: `3`; concurrency acquire/release revisions: `3`/`1`; shared flow-generation revision: `2`.
 
 ## Public contract evidence
 
@@ -76,6 +78,16 @@ REST and MCP construct the same trusted principal and `ExecutionContext`, then c
 - Provider discovery uses `PublicOperationResult`; authenticated MCP principals without `search:read` receive a structured `permission/insufficient_scope` rejection.
 - SearXNG and Yandex adapters expose Russian agent-facing messages, reject unsafe provider-region values, bound URLs and response bodies, and isolate malformed result items while preserving valid siblings.
 
+## Final acceptance correction evidence
+
+- Rate and concurrency now use one provider-scoped Redis generation marker. Missing marker or a changed Redis `run_id` starts the configured maximum refill/lease horizon inside the same Lua transaction as admission. There is no process-local bootstrap exemption and no generation/admission TOCTOU window.
+- A read-only flow-control readiness probe reads that same marker and quarantine. Provider discovery reports `unavailable` while Search admission is fail-closed, then returns to `ready` after the horizon without API restart and without consuming a token, creating a lease, or calling a provider.
+- Fresh limiter replicas after FLUSHDB and after Redis restart cannot reopen token or concurrency capacity. Ten repeated old/new-replica bootstrap races admitted zero contenders during quarantine.
+- Yandex HTTP `400`, `401`, and `403` are server-owned upstream rejections (`provider_request_rejected` / `provider_auth_rejected`) and therefore REST returns `502`, never client authentication `401` or validation `422` after dispatch.
+- Official deterministic Yandex constraints are enforced before rate/concurrency/accounting/provider dispatch: query length 400, query word count 40, flat result window 250, folder ID length 50, region length 100 and configured positive decimal region IDs. Invalid requests produce zero rate admissions, concurrency acquisitions, attempt rows, and upstream calls.
+- Cache finalization is best-effort after terminal provider success and completed mandatory billable accounting. False returns, Redis exceptions, cache deadline expiry, and cooperative cancellation add `cache_write_failed` without changing the successful Search outcome or starting a second provider call.
+- Public Search result timestamps reject naive values and normalize aware values to UTC. SearXNG `2026-08-11T15:00:00+03:00` projects as `2026-08-11T12:00:00Z`.
+
 ## Test and operational evidence
 
 Final local gate:
@@ -88,7 +100,17 @@ uv run pyright
 uv run pytest -q
 ```
 
-Result after the S17 correction: `288 passed`; skips `0`; xfail `0`; xpass `0`; flaky-marked tests `0`.
+Result after the final correction: `300 passed in 59.81s`; skips `0`; xfail `0`; xpass `0`; flaky-marked tests `0`.
+
+Suite breakdown/evidence:
+
+```text
+unit + contract + architecture + security   238 passed
+integration + migration + Redis races        61 passed
+package smoke                                 1 passed
+full pytest                                 300 passed
+shutdown timing repetition                   10/10 passed
+```
 
 Infrastructure and race evidence:
 
@@ -96,7 +118,8 @@ Infrastructure and race evidence:
 - Token-bucket last-token race: 10 deterministic repetitions, 30 contenders, exactly 5 admissions each.
 - Multi-replica provider cap: five seeds, two application instances, 20 clients per seed; observed active calls never exceeded global limit 3; excess work received structured capacity failures.
 - Identical requests across two application instances produced one upstream call, one cache fill, one cached waiter result, preserved retrieval timestamp, and input order.
-- Redis FLUSHDB tests prove that two replicas fail closed for the conservative token/refill or lease horizon and recover without an API restart.
+- Redis FLUSHDB tests prove that old and newly constructed replicas fail closed for the conservative maximum token/refill or lease horizon and recover without an API restart.
+- The Redis flow-control subset completed `12 passed in 3.07s`; the full integration/migration suite completed `61 passed in 10.81s`.
 - The pinned SearXNG container is checked only for health and static JSON configuration. Search behavior is exercised against a deterministic local SearXNG-compatible service; public Search calls are zero.
 
 Compose fault/restart evidence:
@@ -108,11 +131,15 @@ controlled Yandex v2 protocol          passed
 PostgreSQL outage/recovery              passed
 Redis restart/recovery, twice           passed
 Redis FLUSHDB fail-closed/recovery       passed
+Redis restart + new API replica          passed
+provider readiness during quarantine     passed
 SearXNG outage/no-fallback/recovery      passed
 graceful API shutdown/restart            passed
+non-root runtime UID 10001                passed
+migration upgrade repeatability (twice)  passed
 ```
 
-The corrected controlled fault run completed in 119.3 seconds without an API restart during dependency recovery. PostgreSQL outage left free Search usable and rejected Yandex before the controlled provider counter changed. Redis transport failures are reported as infrastructure unavailability rather than rate exhaustion. The controlled Yandex and SearXNG-compatible services exist only in the E2E Compose override; ordinary CI requires no Yandex secret, performs zero live Yandex calls, and makes no public Search requests.
+The final isolated controlled fault run completed in 125 seconds. PostgreSQL outage left free Search usable and rejected Yandex before the controlled provider counter changed. Redis transport failures are reported as infrastructure unavailability rather than rate exhaustion. A fresh API process started immediately after a real Redis restart remained fail-closed until the shared horizon elapsed. Provider discovery reported `unavailable` during restart/FLUSH quarantine and automatically returned to `ready`. The controlled Yandex and SearXNG-compatible services exist only in the E2E Compose override; ordinary CI requires no Yandex secret, performs zero live Yandex calls, and makes no public Search requests.
 
 Billable response-loss call counts:
 
@@ -122,6 +149,8 @@ concurrent identical paid single-flight upstream calls 1, evidence rows 1, hidde
 explicit second caller operation        upstream calls 2, operation IDs 2, attempt rows 2
 cache hit                               upstream calls 0, new billable rows 0, rate units 0
 live Yandex                             0
+controlled local Yandex                 1
+public external Search                  0
 ```
 
 ## Gate mapping
