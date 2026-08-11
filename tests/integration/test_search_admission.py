@@ -9,7 +9,10 @@ from collections.abc import AsyncIterator
 import pytest
 from redis.asyncio import Redis
 
-from web_access.application.search.ports import ConcurrencyLease
+from web_access.application.search.ports import (
+    ConcurrencyLease,
+    RateAdmissionStatus,
+)
 from web_access.domain.search import SearchProviderId
 from web_access.infrastructure.search.admission import (
     ProviderConcurrencyPolicy,
@@ -203,12 +206,72 @@ async def test_admission_fails_closed_when_redis_is_unavailable() -> None:
     )
     try:
         rate = rate_limiter(unavailable, principal_capacity=1, global_capacity=1)
-        assert not (
-            await rate.admit(
-                principal_id="p", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
-            )
-        ).allowed
+        admission = await rate.admit(
+            principal_id="p", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
+        )
+        assert admission.status is RateAdmissionStatus.UNAVAILABLE
         concurrency = concurrency_limiter(unavailable, global_limit=1)
         assert (await concurrency.acquire(SearchProviderId.SEARXNG, wait_seconds=0.05)) is None
     finally:
         await unavailable.aclose()
+
+
+@pytest.mark.integration
+async def test_rate_flushdb_is_detected_by_two_replicas_and_recovers_after_horizon(
+    redis_client: Redis,
+) -> None:
+    first = rate_limiter(
+        redis_client,
+        principal_capacity=1,
+        global_capacity=1,
+        principal_refill=20,
+        global_refill=20,
+    )
+    second = rate_limiter(
+        redis_client,
+        principal_capacity=1,
+        global_capacity=1,
+        principal_refill=20,
+        global_refill=20,
+    )
+    assert (
+        await first.admit(
+            principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
+        )
+    ).allowed
+    assert not (
+        await second.admit(
+            principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
+        )
+    ).allowed
+
+    await redis_client.flushdb()
+    after_flush = await asyncio.gather(
+        first.admit(principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1),
+        second.admit(principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1),
+    )
+    assert all(item.status is RateAdmissionStatus.UNAVAILABLE for item in after_flush)
+    await asyncio.sleep(0.06)
+    recovered = await first.admit(
+        principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
+    )
+    assert recovered.status is RateAdmissionStatus.ALLOWED
+
+
+@pytest.mark.integration
+async def test_concurrency_flushdb_does_not_reopen_capacity_before_lease_horizon(
+    redis_client: Redis,
+) -> None:
+    first = concurrency_limiter(redis_client, global_limit=1, lease_seconds=0.15)
+    second = concurrency_limiter(redis_client, global_limit=1, lease_seconds=0.15)
+    live = await first.acquire(SearchProviderId.SEARXNG, wait_seconds=0.05)
+    assert live is not None
+    assert await second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02) is None
+
+    await redis_client.flushdb()
+    assert await second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02) is None
+    await asyncio.sleep(0.16)
+    recovered = await second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.05)
+    assert recovered is not None
+    await first.release(live)
+    await second.release(recovered)

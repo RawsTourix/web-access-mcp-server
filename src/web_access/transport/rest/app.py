@@ -21,11 +21,12 @@ from web_access.application.common.context import (
     PrincipalContext,
 )
 from web_access.application.common.correlation import bind_correlation, clear_correlation
-from web_access.application.common.errors import AuthorizationError
+from web_access.application.common.errors import AuthorizationError, ErrorCategory
 from web_access.application.common.results import PublicOperationResult, project_result
 from web_access.application.search.models import SearchBatchResult
-from web_access.application.search.readiness import SearchProviderDiscovery
+from web_access.application.search.readiness import SearchProvidersData
 from web_access.core.ids import IdPrefix
+from web_access.core.time import Deadline
 from web_access.transport.rest.auth import RestAuthAdapter, RestAuthenticationError
 from web_access.transport.rest.dependencies import RestDependencies, dependencies_from_request
 from web_access.transport.rest.errors import (
@@ -76,6 +77,9 @@ def _execution_context(
         principal=principal,
         clock=dependencies.clock,
         cancellation=CancellationToken(),
+        deadline=Deadline.after(
+            dependencies.clock, dependencies.settings.search.operation_timeout_seconds
+        ),
         request_id=request.state.request_id,
         trace_id=request.state.trace_id,
     )
@@ -175,6 +179,7 @@ def create_rest_app(lifespan: Lifespan[FastAPI]) -> FastAPI:
     async def search(
         payload: RestSearchRequest,
         request: Request,
+        response: Response,
         principal: PrincipalContext = Depends(search_principal),
     ) -> PublicOperationResult[SearchBatchResult]:
         dependencies = dependencies_from_request(request)
@@ -182,17 +187,42 @@ def create_rest_app(lifespan: Lifespan[FastAPI]) -> FastAPI:
             _execution_context(request, dependencies, principal),
             payload.to_application(),
         )
+        response.status_code = _search_status(result.error.category if result.error else None)
         return project_result(result)
 
     @app.get(
         "/api/v1/search/providers",
-        response_model=tuple[SearchProviderDiscovery, ...],
+        response_model=PublicOperationResult[SearchProvidersData],
         tags=["search"],
     )
     async def search_providers(
         request: Request,
-        _principal: PrincipalContext = Depends(search_principal),
-    ) -> tuple[SearchProviderDiscovery, ...]:
-        return await dependencies_from_request(request).search_readiness.providers()
+        principal: PrincipalContext = Depends(search_principal),
+    ) -> PublicOperationResult[SearchProvidersData]:
+        dependencies = dependencies_from_request(request)
+        result = await dependencies.search_readiness.discover(
+            _execution_context(request, dependencies, principal)
+        )
+        return project_result(result)
 
     return app
+
+
+def _search_status(category: ErrorCategory | None) -> int:
+    if category is None:
+        return 200
+    return {
+        ErrorCategory.VALIDATION: 422,
+        ErrorCategory.UNSUPPORTED: 422,
+        ErrorCategory.AUTHENTICATION: 401,
+        ErrorCategory.PERMISSION: 403,
+        ErrorCategory.POLICY: 403,
+        ErrorCategory.NOT_FOUND: 404,
+        ErrorCategory.CONFLICT: 409,
+        ErrorCategory.RATE_LIMITED: 429,
+        ErrorCategory.UPSTREAM: 502,
+        ErrorCategory.CAPACITY: 503,
+        ErrorCategory.INFRASTRUCTURE: 503,
+        ErrorCategory.TIMEOUT: 504,
+        ErrorCategory.UNKNOWN_OUTCOME: 502,
+    }.get(category, 500)

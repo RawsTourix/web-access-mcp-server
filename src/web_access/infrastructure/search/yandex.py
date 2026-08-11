@@ -81,7 +81,7 @@ class YandexSearchProvider:
             raise _attempt_error(
                 ErrorCategory.INFRASTRUCTURE,
                 "yandex_not_configured",
-                "Yandex Search is not configured",
+                "Yandex Search не настроен.",
                 retryable=False,
                 stage=ExecutionStage.BEFORE_DISPATCH,
             )
@@ -128,7 +128,7 @@ class YandexSearchProvider:
             raise _attempt_error(
                 ErrorCategory.UPSTREAM,
                 "yandex_connect_failed",
-                "Yandex Search connection failed",
+                "Не удалось установить соединение с Yandex Search.",
                 retryable=True,
                 stage=ExecutionStage.BEFORE_DISPATCH,
             ) from exc
@@ -136,7 +136,7 @@ class YandexSearchProvider:
             raise _attempt_error(
                 ErrorCategory.TIMEOUT,
                 "yandex_response_lost",
-                "Yandex Search response was not received before the deadline",
+                "Ответ Yandex Search не получен до истечения срока.",
                 retryable=True,
                 stage=ExecutionStage.RESPONSE_LOST,
             ) from exc
@@ -144,7 +144,7 @@ class YandexSearchProvider:
             raise _attempt_error(
                 ErrorCategory.UNKNOWN_OUTCOME,
                 "yandex_response_lost",
-                "Yandex Search response was lost",
+                "Ответ Yandex Search потерян; итог запроса неизвестен.",
                 retryable=True,
                 stage=ExecutionStage.RESPONSE_LOST,
             ) from exc
@@ -175,6 +175,11 @@ class YandexSearchProvider:
             and self._settings.search_type not in _REGION_SEARCH_TYPES
         ):
             raise _unsupported("region")
+        if (
+            request.provider_region is not None
+            and re.fullmatch(r"[1-9][0-9]{0,9}", request.provider_region) is None
+        ):
+            raise _unsupported("region")
 
     def _timeout(self, context: ExecutionContext) -> float:
         remaining = context.remaining_seconds()
@@ -184,7 +189,7 @@ class YandexSearchProvider:
             raise _attempt_error(
                 ErrorCategory.TIMEOUT,
                 "search_deadline_exceeded",
-                "Search deadline was exceeded before dispatch",
+                "Срок поисковой операции истёк до отправки запроса.",
                 retryable=False,
                 stage=ExecutionStage.BEFORE_DISPATCH,
             )
@@ -198,7 +203,7 @@ async def _bounded_body(response: httpx.Response, maximum: int) -> bytes:
             raise _attempt_error(
                 ErrorCategory.UPSTREAM,
                 "yandex_response_too_large",
-                "Yandex Search response exceeded the configured bound",
+                "Ответ Yandex Search превысил допустимый размер.",
                 retryable=False,
                 stage=ExecutionStage.TERMINAL_KNOWN,
                 provider_request_id=_request_id(response.headers),
@@ -220,7 +225,7 @@ def _decode_response(body: bytes, maximum: int, request_id: str | None) -> bytes
         raise _attempt_error(
             ErrorCategory.UPSTREAM,
             "yandex_response_too_large",
-            "Decoded Yandex Search response exceeded the configured bound",
+            "Декодированный ответ Yandex Search превысил допустимый размер.",
             retryable=False,
             stage=ExecutionStage.TERMINAL_KNOWN,
             provider_request_id=request_id,
@@ -243,7 +248,7 @@ def _parse_xml(
         raise _attempt_error(
             ErrorCategory.UPSTREAM,
             "yandex_search_error",
-            "Yandex Search returned a terminal search error",
+            "Yandex Search вернул терминальную ошибку поиска.",
             retryable=False,
             stage=ExecutionStage.TERMINAL_KNOWN,
             provider_request_id=request_id,
@@ -260,8 +265,13 @@ def _parse_xml(
         if not url or not title or len(url) > 8192 or len(title) > 4096:
             skipped += 1
             continue
-        split = urlsplit(url)
-        if split.scheme not in {"http", "https"} or split.hostname is None:
+        try:
+            split = urlsplit(url)
+            hostname = split.hostname
+        except ValueError:
+            skipped += 1
+            continue
+        if split.scheme not in {"http", "https"} or hostname is None:
             skipped += 1
             continue
         passages = next((child for child in doc if _local_name(child.tag) == "passages"), None)
@@ -279,7 +289,7 @@ def _parse_xml(
                 title=title,
                 url=url,
                 snippet=snippet,
-                host=split.hostname[:1024],
+                host=hostname[:1024],
                 published_at=_modtime(_text(values.get("modtime"))),
             )
         )
@@ -288,7 +298,7 @@ def _parse_xml(
         warnings = (
             Warning(
                 code="malformed_provider_item",
-                message="Some Yandex Search result items were omitted",
+                message="Часть некорректных результатов Yandex Search пропущена.",
                 details={"omitted_count": min(skipped, 1000)},
             ),
         )
@@ -324,7 +334,7 @@ def _status_error(
         return _attempt_error(
             ErrorCategory.AUTHENTICATION,
             "yandex_auth_rejected",
-            "Yandex Search authentication was rejected",
+            "Yandex Search отклонил аутентификацию.",
             retryable=False,
             stage=ExecutionStage.TERMINAL_KNOWN,
             provider_request_id=request_id,
@@ -333,7 +343,7 @@ def _status_error(
         return _attempt_error(
             ErrorCategory.RATE_LIMITED,
             "yandex_rate_limited",
-            "Yandex Search rate limit was reached",
+            "Yandex Search сообщил об исчерпании лимита запросов.",
             retryable=True,
             retry_after_seconds=_retry_after(headers),
             stage=ExecutionStage.TERMINAL_KNOWN,
@@ -343,7 +353,7 @@ def _status_error(
         return _attempt_error(
             ErrorCategory.UPSTREAM,
             "yandex_upstream_error",
-            "Yandex Search returned an upstream error",
+            "Yandex Search вернул ошибку upstream-сервиса.",
             retryable=True,
             stage=ExecutionStage.TERMINAL_KNOWN,
             provider_request_id=request_id,
@@ -351,7 +361,7 @@ def _status_error(
     return _attempt_error(
         ErrorCategory.VALIDATION,
         "yandex_request_rejected",
-        "Yandex Search rejected the request",
+        "Yandex Search отклонил запрос.",
         retryable=False,
         stage=ExecutionStage.TERMINAL_KNOWN,
         provider_request_id=request_id,
@@ -372,7 +382,7 @@ def _malformed(request_id: str | None) -> ProviderAttemptError:
     return _attempt_error(
         ErrorCategory.UPSTREAM,
         "yandex_malformed_response",
-        "Yandex Search returned a malformed response",
+        "Yandex Search вернул некорректный ответ.",
         retryable=False,
         stage=ExecutionStage.TERMINAL_KNOWN,
         provider_request_id=request_id,
@@ -383,7 +393,7 @@ def _unsupported(field: str) -> ProviderAttemptError:
     return _attempt_error(
         ErrorCategory.UNSUPPORTED,
         "yandex_unsupported_option",
-        f"Yandex Search does not support the requested {field}",
+        f"Yandex Search не поддерживает параметр {field}.",
         retryable=False,
         stage=ExecutionStage.BEFORE_DISPATCH,
     )

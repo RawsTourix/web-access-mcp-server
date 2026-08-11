@@ -308,4 +308,8 @@ async def test_actual_mcp_client_calls_shared_search_and_rejects_invalid_input(
     assert str(fake_search.request.queries[0].language) == "en-US"
     assert unknown.is_error is True
     assert explicit_null.is_error is True
-    assert denied.is_error is True
+    assert denied.is_error is False
+    assert denied.structured_content is not None
+    assert denied.structured_content["outcome"] == "rejected"
+    assert denied.structured_content["error"]["category"] == "permission"
+    assert denied.structured_content["error"]["code"] == "insufficient_scope"

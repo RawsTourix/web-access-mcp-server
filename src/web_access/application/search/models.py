@@ -9,6 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from web_access.application.common.hints import Warning
 from web_access.application.common.results import BatchItemResult
+from web_access.application.search.language import normalize_search_language
 from web_access.domain.search import (
     SearchLanguage,
     SearchProviderId,
@@ -107,7 +108,7 @@ class SearchQuery(BaseModel):
             if isinstance(value.get("query"), str):
                 value["query"] = value["query"].strip()
             if isinstance(value.get("language"), str):
-                value["language"] = SearchLanguage.parse(value["language"])
+                value["language"] = normalize_search_language(value["language"])
             if isinstance(value.get("region"), str):
                 value["region"] = SearchRegionId(value["region"])
         return value

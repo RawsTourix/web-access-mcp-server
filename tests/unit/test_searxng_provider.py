@@ -15,12 +15,12 @@ from web_access.application.common.context import (
 )
 from web_access.application.common.errors import ErrorCategory
 from web_access.application.common.results import ExecutionStage
+from web_access.application.search.language import normalize_search_language
 from web_access.application.search.models import ProviderSearchRequest
 from web_access.application.search.ports import ProviderAttemptError
 from web_access.core.config import SearxngSettings
 from web_access.core.time import Deadline, FakeClock
 from web_access.domain.search import (
-    SearchLanguage,
     SearchProviderId,
     SearchSafeMode,
     SearchTimeRange,
@@ -87,7 +87,7 @@ async def test_maps_official_query_parameters_and_preserves_result_order() -> No
         result = await provider.search(
             _context(deadline=3),
             _request(
-                language=SearchLanguage.parse("en-US"),
+                language=normalize_search_language("en-US"),
                 safe_search=SearchSafeMode.STRICT,
                 time_range=SearchTimeRange.MONTH,
             ),
@@ -135,10 +135,6 @@ async def test_empty_results_and_partial_engine_failure_are_success() -> None:
     [
         (b"not-json", "searxng_malformed_response"),
         (json.dumps({"answers": []}).encode(), "searxng_malformed_response"),
-        (
-            json.dumps({"results": [{"title": "Bad", "url": "javascript:alert(1)"}]}).encode(),
-            "searxng_malformed_response",
-        ),
     ],
 )
 @pytest.mark.asyncio
@@ -156,6 +152,33 @@ async def test_malformed_responses_are_safe_terminal_errors(payload: bytes, code
     assert caught.value.error.details is None
     assert caught.value.stage is ExecutionStage.TERMINAL_KNOWN
     assert caught.value.provider_request_id == "bounded-id"
+
+
+@pytest.mark.asyncio
+async def test_malformed_result_item_is_isolated_from_valid_sibling() -> None:
+    payload = {
+        "results": [
+            {"title": "Bad", "url": "javascript:alert(1)"},
+            {
+                "title": "Good",
+                "url": "https://example.test/good",
+                "content": "safe fixture",
+                "publishedDate": "not-a-timestamp",
+            },
+        ]
+    }
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        _ = request
+        return httpx.Response(200, json=payload)
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        result = await SearxngSearchProvider(_settings(), client).search(_context(), _request())
+
+    assert [item.title for item in result.results] == ["Good"]
+    assert result.results[0].published_at is None
+    assert [warning.code for warning in result.warnings] == ["malformed_provider_item"]
+    assert any("а" <= character.lower() <= "я" for character in result.warnings[0].message)
 
 
 @pytest.mark.asyncio

@@ -9,9 +9,16 @@ from pydantic.experimental.missing_sentinel import MISSING
 
 from web_access.application.common.auth import AuthProvider, require_scope
 from web_access.application.common.context import CancellationToken, ExecutionContext
-from web_access.application.common.results import PublicOperationResult, project_result
+from web_access.application.common.errors import AuthorizationError, ErrorCategory, OperationError
+from web_access.application.common.results import (
+    OperationOutcome,
+    OperationResult,
+    PublicOperationResult,
+    project_result,
+)
 from web_access.application.search.models import SearchBatchResult
 from web_access.core.ids import IdPrefix
+from web_access.core.time import Deadline
 from web_access.domain.search import SearchProviderSelection
 from web_access.transport.mcp.auth import FastMcpAuthAdapter
 from web_access.transport.mcp.dependencies import McpRuntimeBinding
@@ -30,7 +37,7 @@ from web_access.transport.mcp.search_schemas import (
 _WEB_SEARCH_DESCRIPTION = (
     "Ищет страницы и источники в интернете по одному или нескольким независимым "
     "поисковым запросам. Возвращает поисковую выдачу: URL, заголовки, snippets и "
-    "metadata поискового backend-а. Не читает содержимое найденных страниц; для "  # noqa: RUF001
+    "metadata поискового backend-а. Не читает содержимое найденных страниц; для "
     "известных URL используйте `web_fetch`, когда эта capability станет доступна. "
     "Некоторые providers (например Yandex) могут расходовать платный provider budget, "
     "поэтому потерянный результат не означает разрешение автоматически повторить "
@@ -50,8 +57,8 @@ def create_mcp_server(
         name="Web Access",
         version="0.2.0",
         instructions=(
-            "Web Access v0.2 exposes provider-neutral page/source discovery. "
-            "Search results are metadata and snippets, not target page content."
+            "Web Access v0.2 предоставляет нейтральный к provider поиск страниц и источников. "
+            "Результаты поиска — metadata и snippets, а не содержимое найденных страниц."
         ),
         auth=auth,
         mask_error_details=True,
@@ -84,14 +91,30 @@ def create_mcp_server(
         if access_token is None:
             raise RuntimeError("authenticated token context is missing")
         principal = auth.principal_from_access_token(access_token)
-        require_scope(principal, "search:read")
         dependencies = binding.get()
         operation_id = dependencies.ids.new(IdPrefix.OPERATION)
+        try:
+            require_scope(principal, "search:read")
+        except AuthorizationError as error:
+            return project_result(
+                OperationResult[SearchBatchResult](
+                    operation_id=operation_id,
+                    outcome=OperationOutcome.REJECTED,
+                    error=OperationError(
+                        category=ErrorCategory.PERMISSION,
+                        code=error.code.value,
+                        message=str(error),
+                    ),
+                )
+            )
         context = ExecutionContext(
             operation_id=operation_id,
             principal=principal,
             clock=dependencies.clock,
             cancellation=CancellationToken(),
+            deadline=Deadline.after(
+                dependencies.clock, dependencies.settings.search.operation_timeout_seconds
+            ),
         )
         payload = WebSearchInput(
             queries=queries,

@@ -3,6 +3,7 @@
 import pytest
 from pydantic import ValidationError
 
+from web_access.application.search.language import normalize_search_language
 from web_access.application.search.models import SearchQuery, SearchRegionEntry, SearchRegionMapping
 from web_access.application.search.registry import ProviderResolutionError, SearchRegionRegistry
 from web_access.core.config import SearchSettings, Settings
@@ -14,7 +15,7 @@ from web_access.domain.search import SearchLanguage, SearchProviderId, SearchReg
     [("ru", "ru"), ("EN", "en"), ("ru-ru", "ru-RU"), ("en-gb", "en-GB")],
 )
 def test_language_is_validated_and_normalized(raw: str, normalized: str) -> None:
-    assert SearchLanguage.parse(raw).value == normalized
+    assert normalize_search_language(raw).value == normalized
     assert SearchQuery.model_validate({"query": "q", "language": raw}).language == SearchLanguage(
         normalized
     )

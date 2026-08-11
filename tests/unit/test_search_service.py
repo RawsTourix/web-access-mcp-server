@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self
@@ -38,6 +38,7 @@ from web_access.application.search.ports import (
     ConcurrencyLease,
     ProviderAttemptError,
     RateAdmission,
+    RateAdmissionStatus,
     SearchSingleFlight,
     SearchTelemetry,
     SearchUsageUnavailable,
@@ -46,7 +47,7 @@ from web_access.application.search.ports import (
 )
 from web_access.application.search.registry import SearchProviderRegistry, SearchRegionRegistry
 from web_access.application.search.service import SearchApplicationService, SearchServicePolicy
-from web_access.core.time import Deadline, FakeClock
+from web_access.core.time import Deadline, FakeClock, SystemClock
 from web_access.domain.search import SearchProviderId, SearchProviderSelection, SearchResultItem
 from web_access.infrastructure.observability import SearchTelemetryAdapter, create_metrics
 from web_access.transport.mcp.retry import trusted_retry_descriptor
@@ -178,7 +179,10 @@ class FakeRateLimiter:
     ) -> RateAdmission:
         _ = principal_id, wait_seconds
         self.calls.append(provider_id)
-        return RateAdmission(self.allowed, None if self.allowed else 1)
+        return RateAdmission(
+            RateAdmissionStatus.ALLOWED if self.allowed else RateAdmissionStatus.RATE_LIMITED,
+            None if self.allowed else 1,
+        )
 
 
 class FakeConcurrencyLimiter:
@@ -315,6 +319,8 @@ def build(
     single_flight: SearchSingleFlight | None = None,
     policy: SearchServicePolicy | None = None,
     telemetry: SearchTelemetry | None = None,
+    sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    random_source: Callable[[], float] = lambda: 0.5,
 ) -> tuple[
     SearchApplicationService,
     FakeProvider,
@@ -340,6 +346,8 @@ def build(
         usage_uow_factory=usage,
         telemetry=telemetry,
         policy=policy or SearchServicePolicy(),
+        sleeper=sleeper,
+        random_source=random_source,
     )
     return service, searxng, yandex, selected_cache, rate, concurrency, usage
 
@@ -900,3 +908,205 @@ async def test_expired_deadline_fails_without_provider_call() -> None:
     result = await service.search(ctx, SearchBatchRequest(queries=(SearchQuery(query="late"),)))
     assert result.outcome is OperationOutcome.FAILED
     assert searxng.calls == []
+
+
+@pytest.mark.asyncio
+async def test_missing_caller_deadline_is_bounded_by_service_policy() -> None:
+    searxng = FakeProvider(SearchProviderId.SEARXNG)
+    searxng.wait_event = asyncio.Event()
+    service, *_ = build(
+        searxng=searxng,
+        policy=SearchServicePolicy(operation_timeout_seconds=0.02),
+    )
+    clock = SystemClock()
+    unbounded_caller = ExecutionContext(
+        operation_id="op_no_deadline",
+        principal=PrincipalContext("principal", frozenset({"search:read"})),
+        clock=clock,
+        cancellation=CancellationToken(),
+    )
+
+    result = await service.search(
+        unbounded_caller,
+        SearchBatchRequest(queries=(SearchQuery(query="bounded"),)),
+    )
+
+    assert result.outcome is OperationOutcome.FAILED
+    assert result.error is not None and result.error.category is ErrorCategory.TIMEOUT
+    assert len(searxng.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_retry_backoff_jitter_and_retry_after_share_remaining_deadline() -> None:
+    searxng = FakeProvider(SearchProviderId.SEARXNG)
+    searxng.failures.append(
+        ProviderAttemptError(
+            OperationError(
+                category=ErrorCategory.RATE_LIMITED,
+                code="retry_later",
+                message="retry",
+                retryable=True,
+                retry_after_seconds=2,
+            ),
+            stage=ExecutionStage.TERMINAL_KNOWN,
+        )
+    )
+    sleeps: list[float] = []
+    ctx = context()
+    assert isinstance(ctx.clock, FakeClock)
+    fake_clock = ctx.clock
+
+    async def advance(delay: float) -> None:
+        sleeps.append(delay)
+        fake_clock.advance(delay)
+
+    service, _, _, _, rate, concurrency, _ = build(
+        searxng=searxng,
+        policy=SearchServicePolicy(
+            searxng_max_attempts=2,
+            retry_backoff_seconds=1,
+            retry_jitter_ratio=0.5,
+        ),
+        sleeper=advance,
+        random_source=lambda: 1.0,
+    )
+    result = await service.search(ctx, SearchBatchRequest(queries=(SearchQuery(query="retry"),)))
+
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert sleeps == [2.0]
+    assert len(searxng.calls) == len(rate.calls) == len(concurrency.acquires) == 2
+    assert searxng.calls[1] is not searxng.calls[0]
+
+
+@pytest.mark.asyncio
+async def test_retry_does_not_start_when_retry_after_exceeds_remaining_budget() -> None:
+    searxng = FakeProvider(SearchProviderId.SEARXNG)
+    searxng.failures.append(
+        ProviderAttemptError(
+            OperationError(
+                category=ErrorCategory.RATE_LIMITED,
+                code="retry_later",
+                message="retry",
+                retryable=True,
+                retry_after_seconds=2,
+            ),
+            stage=ExecutionStage.TERMINAL_KNOWN,
+        )
+    )
+    service, *_ = build(
+        searxng=searxng,
+        policy=SearchServicePolicy(searxng_max_attempts=2),
+    )
+    ctx = context()
+    assert isinstance(ctx.clock, FakeClock)
+    ctx = ExecutionContext(
+        operation_id=ctx.operation_id,
+        principal=ctx.principal,
+        clock=ctx.clock,
+        cancellation=ctx.cancellation,
+        deadline=Deadline.after(ctx.clock, 1),
+    )
+
+    result = await service.search(ctx, SearchBatchRequest(queries=(SearchQuery(query="no-retry"),)))
+
+    assert result.outcome is OperationOutcome.FAILED
+    assert result.error is not None and result.error.category is ErrorCategory.TIMEOUT
+    assert len(searxng.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_billable_cooperative_cancellation_after_dispatch_is_unknown() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    yandex.wait_event = asyncio.Event()
+    service, _, _, _, _, concurrency, usage = build(yandex=yandex)
+    ctx = context()
+    task = asyncio.create_task(
+        service.search(
+            ctx,
+            SearchBatchRequest(
+                queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+            ),
+        )
+    )
+    await yandex.called_event.wait()
+    assert isinstance(ctx.cancellation, CancellationToken)
+    ctx.cancellation.request()
+    result = await task
+
+    assert result.outcome is OperationOutcome.UNKNOWN
+    assert len(yandex.calls) == 1
+    assert concurrency.releases == 1
+    assert usage.rows[("op_test", 0, 1)] == {
+        "stage": AttemptStage.DISPATCH_POSSIBLE,
+        "outcome_code": "unknown",
+        "retry_reason": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_billable_deadline_after_dispatch_is_unknown_without_retry() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    yandex.wait_event = asyncio.Event()
+    service, _, _, _, rate, concurrency, usage = build(
+        yandex=yandex,
+        policy=SearchServicePolicy(yandex_max_attempts=2, operation_timeout_seconds=0.02),
+    )
+    clock = SystemClock()
+    ctx = ExecutionContext(
+        operation_id="op_deadline_dispatch",
+        principal=PrincipalContext("principal", frozenset({"search:read"})),
+        clock=clock,
+        cancellation=CancellationToken(),
+    )
+    result = await service.search(
+        ctx,
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.UNKNOWN
+    assert len(yandex.calls) == len(rate.calls) == 1
+    assert concurrency.releases == 1
+    assert usage.rows[("op_deadline_dispatch", 0, 1)]["outcome_code"] == "unknown"
+
+
+@pytest.mark.asyncio
+async def test_direct_task_cancel_finishes_billable_child_before_concurrency_release() -> None:
+    child_finished = asyncio.Event()
+
+    class CancelAwareProvider(FakeProvider):
+        async def search(
+            self, context: ExecutionContext, request: ProviderSearchRequest
+        ) -> ProviderSearchResult:
+            try:
+                return await super().search(context, request)
+            finally:
+                child_finished.set()
+
+    class OrderingConcurrency(FakeConcurrencyLimiter):
+        async def release(self, lease: ConcurrencyLease) -> None:
+            assert child_finished.is_set()
+            await super().release(lease)
+
+    yandex = CancelAwareProvider(SearchProviderId.YANDEX, billable=True)
+    yandex.wait_event = asyncio.Event()
+    service, *_ = build(yandex=yandex)
+    ordering = OrderingConcurrency()
+    service._concurrency = ordering
+    task = asyncio.create_task(
+        service.search(
+            context(),
+            SearchBatchRequest(
+                queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+            ),
+        )
+    )
+    await yandex.called_event.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert child_finished.is_set()
+    assert len(yandex.calls) == 1
+    assert ordering.releases == 1

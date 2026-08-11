@@ -18,13 +18,13 @@ from web_access.application.common.context import (
 )
 from web_access.application.common.errors import ErrorCategory
 from web_access.application.common.results import ExecutionStage
+from web_access.application.search.language import normalize_search_language
 from web_access.application.search.models import ProviderSearchRequest, SearchQuery
 from web_access.application.search.ports import ProviderAttemptError
 from web_access.application.search.registry import ProviderResolutionError, SearchProviderRegistry
 from web_access.core.config import YandexSearchSettings
 from web_access.core.time import Deadline, FakeClock
 from web_access.domain.search import (
-    SearchLanguage,
     SearchProviderId,
     SearchSafeMode,
     SearchTimeRange,
@@ -183,9 +183,10 @@ async def test_supported_time_ranges_map_to_current_period_contract(
 @pytest.mark.parametrize(
     ("provider_request", "field"),
     [
-        (_request(language=SearchLanguage.parse("ru")), "language"),
+        (_request(language=normalize_search_language("ru")), "language"),
         (_request(time_range=SearchTimeRange.YEAR), "time_range"),
         (_request(query="x" * 401), "query"),
+        (_request(provider_region="invalid-region"), "region"),
     ],
 )
 @pytest.mark.asyncio
@@ -214,11 +215,11 @@ def test_registry_rejects_yandex_year_language_and_long_query_before_attempt_adm
         provider = YandexSearchProvider(_settings(), client)
         registry = SearchProviderRegistry((provider,), default_provider=SearchProviderId.YANDEX)
         for query in (
-            SearchQuery(query="q", language=SearchLanguage.parse("ru")),
+            SearchQuery(query="q", language=normalize_search_language("ru")),
             SearchQuery(query="q", time_range=SearchTimeRange.YEAR),
             SearchQuery(query="x" * 401),
         ):
-            with pytest.raises(ProviderResolutionError, match="does not support"):
+            with pytest.raises(ProviderResolutionError, match="не поддерживает"):
                 registry.validate_capabilities(provider, query)
     finally:
         import asyncio

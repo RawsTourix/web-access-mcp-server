@@ -142,7 +142,7 @@ async def main() -> None:
                     ]
                 },
             )
-            assert failed_paid.status_code == 200
+            assert failed_paid.status_code == 503
             assert failed_paid.json()["outcome"] == "failed"
             assert (
                 failed_paid.json()["data"]["items"][0]["error"]["code"]
@@ -177,10 +177,11 @@ async def main() -> None:
                     description=f"Redis outage detection {attempt + 1}",
                 )
                 rejected = await search(f"Redis fail closed {attempt}")
-                assert rejected.status_code == 200
+                assert rejected.status_code == 503
                 assert rejected.json()["outcome"] == "failed"
                 assert (
-                    rejected.json()["data"]["items"][0]["error"]["code"] == "provider_rate_limited"
+                    rejected.json()["data"]["items"][0]["error"]["code"]
+                    == "search_admission_unavailable"
                 )
                 await _compose("start", "redis")
                 await _poll(
@@ -198,9 +199,23 @@ async def main() -> None:
                 cached = await search(recovery_query)
                 assert cached.json()["data"]["items"][0]["data"]["cache"]["cached"] is True
 
-            await _compose("stop", "searxng")
+            await _compose("exec", "-T", "redis", "redis-cli", "FLUSHDB")
+            flush_rejected = await search("Redis flush must fail closed")
+            assert flush_rejected.status_code == 503
+            assert (
+                flush_rejected.json()["data"]["items"][0]["error"]["code"]
+                == "search_admission_unavailable"
+            )
+            await _poll(
+                lambda: search_succeeds("Redis FLUSHDB recovery without API restart"),
+                description="Redis FLUSHDB conservative-horizon recovery",
+                deadline_seconds=25,
+            )
+            assert await _compose("ps", "-q", "api") == api_container
+
+            await _compose("stop", "mock-searxng")
             outage = await search("SearXNG outage must not fall back")
-            assert outage.status_code == 200
+            assert outage.status_code == 502
             assert outage.json()["outcome"] == "failed"
             assert outage.json()["data"]["items"][0]["error"]["code"] in {
                 "searxng_timeout",
@@ -208,10 +223,12 @@ async def main() -> None:
                 "searxng_transport_error",
             }
             providers = await client.get("/api/v1/search/providers", headers=authorization)
-            discovered = {item["provider_id"]: item for item in providers.json()}
+            discovered = {
+                item["provider_id"]: item for item in providers.json()["data"]["providers"]
+            }
             assert discovered["searxng"]["readiness"] == "unavailable"
             assert discovered["yandex"]["enabled"] is False
-            await _compose("start", "searxng")
+            await _compose("start", "mock-searxng")
             await _poll(
                 lambda: search_succeeds("SearXNG recovered without API restart"),
                 description="SearXNG Search recovery",
@@ -230,6 +247,7 @@ async def main() -> None:
                 "postgres",
                 "redis",
                 "searxng",
+                "mock-searxng",
                 "mock-yandex",
                 "api",
                 "api-yandex-test",

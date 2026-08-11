@@ -278,6 +278,7 @@ class SearchRetrySettings(BaseModel):
     searxng_max_attempts: int = Field(default=2, ge=1, le=3)
     yandex_max_attempts: int = Field(default=1, ge=1, le=2)
     backoff_seconds: float = Field(default=0.05, ge=0, le=5)
+    jitter_ratio: float = Field(default=0.2, ge=0, le=1)
 
 
 class SearchSettings(BaseModel):
@@ -290,6 +291,7 @@ class SearchSettings(BaseModel):
     max_results: int = Field(default=50, ge=1, le=50)
     max_page: int = Field(default=100, ge=1, le=100)
     batch_concurrency: int = Field(default=8, ge=1, le=32)
+    operation_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
     searxng: SearxngSettings = Field(default_factory=SearxngSettings)
     yandex: YandexSearchSettings = Field(default_factory=YandexSearchSettings)
     cache: SearchCacheSettings = Field(default_factory=SearchCacheSettings)

@@ -181,6 +181,9 @@ async def runtime_lifespan(
                 searxng_max_attempts=settings.search.retry.searxng_max_attempts,
                 yandex_max_attempts=settings.search.retry.yandex_max_attempts,
                 batch_concurrency=settings.search.batch_concurrency,
+                operation_timeout_seconds=settings.search.operation_timeout_seconds,
+                retry_backoff_seconds=settings.search.retry.backoff_seconds,
+                retry_jitter_ratio=settings.search.retry.jitter_ratio,
             ),
         )
         search_readiness = SearchProviderReadinessService(

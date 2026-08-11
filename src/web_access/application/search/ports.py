@@ -62,10 +62,20 @@ class SearchSingleFlight(Protocol):
     async def release(self, lease: SingleFlightLease) -> None: ...
 
 
+class RateAdmissionStatus(StrEnum):
+    ALLOWED = "allowed"
+    RATE_LIMITED = "rate_limited"
+    UNAVAILABLE = "unavailable"
+
+
 @dataclass(frozen=True, slots=True)
 class RateAdmission:
-    allowed: bool
+    status: RateAdmissionStatus
     retry_after_seconds: float | None = None
+
+    @property
+    def allowed(self) -> bool:
+        return self.status is RateAdmissionStatus.ALLOWED
 
 
 class ProviderRateLimiter(Protocol):

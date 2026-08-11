@@ -5,8 +5,9 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable
-from dataclasses import dataclass
+import random
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass, replace
 from typing import TypeVar
 
 from web_access.application.common.auth import require_scope
@@ -38,6 +39,7 @@ from web_access.application.search.ports import (
     ProviderAttemptError,
     ProviderConcurrencyLimiter,
     ProviderRateLimiter,
+    RateAdmissionStatus,
     SearchCache,
     SearchProvider,
     SearchSingleFlight,
@@ -51,6 +53,7 @@ from web_access.application.search.registry import (
     SearchProviderRegistry,
     SearchRegionRegistry,
 )
+from web_access.core.time import Deadline
 from web_access.domain.search import SearchProviderId
 
 _T = TypeVar("_T")
@@ -64,12 +67,19 @@ class SearchServicePolicy:
     searxng_max_attempts: int = 2
     yandex_max_attempts: int = 1
     batch_concurrency: int = 8
+    operation_timeout_seconds: float = 30.0
+    retry_backoff_seconds: float = 0.05
+    retry_jitter_ratio: float = 0.2
 
     def __post_init__(self) -> None:
         if self.cache_mode not in {"principal", "shared_public", "disabled"}:
             raise ValueError("invalid Search cache mode")
         if not 1 <= self.batch_concurrency <= 32:
             raise ValueError("invalid Search batch concurrency")
+        if self.operation_timeout_seconds <= 0:
+            raise ValueError("invalid Search operation timeout")
+        if self.retry_backoff_seconds < 0 or not 0 <= self.retry_jitter_ratio <= 1:
+            raise ValueError("invalid Search retry timing policy")
         for value in (
             self.searxng_cache_ttl_seconds,
             self.yandex_cache_ttl_seconds,
@@ -122,17 +132,17 @@ class _NoopSearchTelemetry:
 
 
 async def _bounded_await(context: ExecutionContext, awaitable: Awaitable[_T]) -> _T:
+    task = asyncio.ensure_future(awaitable)
     remaining = context.remaining_seconds()
     if remaining is not None and remaining <= 0:
-        if hasattr(awaitable, "close"):
-            awaitable.close()  # type: ignore[union-attr]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         raise _DeadlineExceeded
     if context.cancellation.requested:
-        if hasattr(awaitable, "close"):
-            awaitable.close()  # type: ignore[union-attr]
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
         raise _CooperativeCancellation
 
-    task = asyncio.ensure_future(awaitable)
     cancellation = asyncio.create_task(context.cancellation.wait())
     try:
         done, _ = await asyncio.wait(
@@ -145,6 +155,10 @@ async def _bounded_await(context: ExecutionContext, awaitable: Awaitable[_T]) ->
         if cancellation in done:
             raise _CooperativeCancellation
         raise _DeadlineExceeded
+    except asyncio.CancelledError:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        raise
     finally:
         cancellation.cancel()
         await asyncio.gather(cancellation, return_exceptions=True)
@@ -163,6 +177,8 @@ class SearchApplicationService:
         usage_uow_factory: SearchUsageUnitOfWorkFactory | None,
         telemetry: SearchTelemetry | None = None,
         policy: SearchServicePolicy | None = None,
+        sleeper: Callable[[float], Awaitable[None]] = asyncio.sleep,
+        random_source: Callable[[], float] = random.random,
     ) -> None:
         self._providers = providers
         self._regions = regions
@@ -173,30 +189,50 @@ class SearchApplicationService:
         self._usage = usage_uow_factory
         self._telemetry = telemetry or _NoopSearchTelemetry()
         self._policy = policy or SearchServicePolicy()
+        self._sleeper = sleeper
+        self._random = random_source
 
     async def search(
         self, context: ExecutionContext, request: SearchBatchRequest
     ) -> OperationResult[SearchBatchResult]:
         require_scope(context.principal, "search:read")
+        if context.deadline is None:
+            context = replace(
+                context,
+                deadline=Deadline.after(context.clock, self._policy.operation_timeout_seconds),
+            )
         semaphore = asyncio.Semaphore(self._policy.batch_concurrency)
 
         async def run(index: int, query: SearchQuery) -> BatchItemResult[SearchQueryData]:
-            async with semaphore:
+            try:
+                await _bounded_await(context, semaphore.acquire())
+            except _CooperativeCancellation:
+                return self._error_item(
+                    index,
+                    LeafOutcome.CANCELLED,
+                    ErrorCategory.CANCELLED,
+                    "search_cancelled",
+                    "Поисковый запрос отменён до получения batch-слота.",
+                )
+            except _DeadlineExceeded:
+                return self._error_item(
+                    index,
+                    LeafOutcome.FAILED,
+                    ErrorCategory.TIMEOUT,
+                    "search_deadline_exceeded",
+                    "Истёк общий срок ожидания batch-слота.",
+                )
+            try:
                 return await self._search_item(context, index, query)
+            finally:
+                semaphore.release()
 
         pending = (run(index, query) for index, query in enumerate(request.queries))
         items = tuple(await asyncio.gather(*pending))
         outcome = aggregate_batch_outcome([item.outcome for item in items])
         error = None
         if outcome not in {OperationOutcome.SUCCEEDED, OperationOutcome.PARTIAL_SUCCESS}:
-            error = OperationError(
-                category=ErrorCategory.UNKNOWN_OUTCOME
-                if outcome is OperationOutcome.UNKNOWN
-                else ErrorCategory.UPSTREAM,
-                code="search_batch_unsuccessful",
-                message="Search batch did not contain a successful item.",
-                retryable=False,
-            )
+            error = _aggregate_error(outcome, items)
         return OperationResult(
             operation_id=context.operation_id,
             outcome=outcome,
@@ -242,7 +278,7 @@ class SearchApplicationService:
                         OperationError(
                             category=ErrorCategory.CAPACITY,
                             code="single_flight_wait_exhausted",
-                            message="Search single-flight wait was exhausted.",
+                            message="Ожидание совпадающего поискового запроса исчерпано.",
                             retryable=True,
                         ),
                         stage=ExecutionStage.BEFORE_DISPATCH,
@@ -282,7 +318,7 @@ class SearchApplicationService:
                     warnings.append(
                         Warning(
                             code="cache_write_failed",
-                            message="Search result was obtained but could not be cached.",
+                            message="Результат поиска получен, но сохранить его в кэше не удалось.",
                         )
                     )
             return BatchItemResult(
@@ -313,7 +349,7 @@ class SearchApplicationService:
                 LeafOutcome.CANCELLED,
                 ErrorCategory.CANCELLED,
                 "search_cancelled",
-                "Search item was cancelled.",
+                "Поисковый запрос отменён.",
             )
         except _DeadlineExceeded:
             return self._error_item(
@@ -321,7 +357,7 @@ class SearchApplicationService:
                 LeafOutcome.FAILED,
                 ErrorCategory.TIMEOUT,
                 "search_deadline_exceeded",
-                "Search item deadline was exceeded.",
+                "Истёк общий срок выполнения поискового запроса.",
             )
         finally:
             if lease is not None and lease.holder:
@@ -348,13 +384,24 @@ class SearchApplicationService:
                     wait_seconds=context.remaining_seconds(),
                 ),
             )
-            if not admission.allowed:
+            if admission.status is RateAdmissionStatus.UNAVAILABLE:
+                self._telemetry.observe_admission_rejection(provider_id, "admission_unavailable")
+                raise ProviderAttemptError(
+                    OperationError(
+                        category=ErrorCategory.INFRASTRUCTURE,
+                        code="search_admission_unavailable",
+                        message="Инфраструктура допуска поисковых запросов недоступна.",
+                        retryable=True,
+                    ),
+                    stage=ExecutionStage.BEFORE_DISPATCH,
+                )
+            if admission.status is RateAdmissionStatus.RATE_LIMITED:
                 self._telemetry.observe_admission_rejection(provider_id, "rate")
                 raise ProviderAttemptError(
                     OperationError(
                         category=ErrorCategory.RATE_LIMITED,
                         code="provider_rate_limited",
-                        message="Search provider rate limit denied the attempt.",
+                        message="Лимит частоты запросов к поисковому provider исчерпан.",
                         retryable=True,
                         retry_after_seconds=(
                             None
@@ -374,7 +421,7 @@ class SearchApplicationService:
                     OperationError(
                         category=ErrorCategory.CAPACITY,
                         code="provider_capacity_unavailable",
-                        message="Search provider capacity is unavailable.",
+                        message="Свободная ёмкость поискового provider недоступна.",
                         retryable=True,
                     ),
                     stage=ExecutionStage.BEFORE_DISPATCH,
@@ -386,7 +433,7 @@ class SearchApplicationService:
                             OperationError(
                                 category=ErrorCategory.INFRASTRUCTURE,
                                 code="usage_accounting_unavailable",
-                                message="Billable Search accounting is unavailable.",
+                                message="Учёт платного поискового запроса недоступен.",
                             ),
                             stage=ExecutionStage.BEFORE_DISPATCH,
                         )
@@ -402,6 +449,7 @@ class SearchApplicationService:
                         index=index,
                         attempt=attempt,
                         stage=AttemptStage.DISPATCH_POSSIBLE,
+                        outcome_code="unknown",
                     )
                 request = ProviderSearchRequest(
                     query=query.query,
@@ -416,6 +464,23 @@ class SearchApplicationService:
                 )
                 try:
                     result = await _bounded_await(context, provider.search(context, request))
+                except (_CooperativeCancellation, _DeadlineExceeded) as termination:
+                    if descriptor.billable:
+                        code = (
+                            "search_cancelled_after_dispatch"
+                            if isinstance(termination, _CooperativeCancellation)
+                            else "search_deadline_after_dispatch"
+                        )
+                        raise ProviderAttemptError(
+                            OperationError(
+                                category=ErrorCategory.UNKNOWN_OUTCOME,
+                                code=code,
+                                message=("Платный запрос мог быть отправлен; его итог неизвестен."),
+                                retryable=False,
+                            ),
+                            stage=ExecutionStage.SIDE_EFFECT_POSSIBLE,
+                        ) from termination
+                    raise
                 except ProviderAttemptError as error:
                     will_retry = attempt < max_attempts and self._retry_allowed(
                         billable=descriptor.billable, error=error
@@ -438,6 +503,7 @@ class SearchApplicationService:
                         )
                     if will_retry:
                         self._telemetry.observe_internal_retry(provider_id, _retry_reason(error))
+                        await self._wait_before_retry(context, attempt, error)
                         continue
                     raise
                 if descriptor.billable and self._usage is not None:
@@ -536,7 +602,7 @@ class SearchApplicationService:
             OperationError(
                 category=ErrorCategory.INFRASTRUCTURE,
                 code="usage_accounting_unavailable",
-                message="Billable Search accounting is unavailable.",
+                message="Учёт платного поискового запроса недоступен.",
                 retryable=False,
             ),
             stage=stage,
@@ -549,6 +615,23 @@ class SearchApplicationService:
         if billable:
             return error.stage is ExecutionStage.BEFORE_DISPATCH
         return True
+
+    async def _wait_before_retry(
+        self,
+        context: ExecutionContext,
+        attempt: int,
+        error: ProviderAttemptError,
+    ) -> None:
+        configured = self._policy.retry_backoff_seconds * (2 ** (attempt - 1))
+        jitter = configured * self._policy.retry_jitter_ratio * (2 * self._random() - 1)
+        delay = max(0.0, configured + jitter)
+        if error.error.retry_after_seconds is not None:
+            delay = max(delay, float(error.error.retry_after_seconds))
+        remaining = context.remaining_seconds()
+        if remaining is not None and (remaining <= 0 or delay >= remaining):
+            raise _DeadlineExceeded
+        if delay:
+            await _bounded_await(context, self._sleeper(delay))
 
     def _cache_identity(
         self,
@@ -628,3 +711,24 @@ def _billable_outcome(
     if stage is AttemptStage.DISPATCH_POSSIBLE:
         return "unknown"
     return "failed"
+
+
+def _aggregate_error(
+    outcome: OperationOutcome,
+    items: tuple[BatchItemResult[SearchQueryData], ...],
+) -> OperationError:
+    candidates = [item for item in items if item.error is not None]
+    if outcome is OperationOutcome.UNKNOWN:
+        candidates = [item for item in candidates if item.outcome is LeafOutcome.UNKNOWN]
+    if not candidates:
+        return OperationError(
+            category=ErrorCategory.INTERNAL,
+            code="search_batch_unsuccessful",
+            message="Поисковая операция завершилась без успешных элементов.",
+        )
+    # Per-item order is authoritative. For a mixed no-success batch, the first
+    # item matching the aggregate outcome deterministically supplies the broad error.
+    selected = candidates[0].error
+    if selected is None:
+        raise RuntimeError("Search aggregate candidate has no error")
+    return selected

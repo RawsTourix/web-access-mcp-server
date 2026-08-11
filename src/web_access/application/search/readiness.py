@@ -7,7 +7,10 @@ from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict
 
+from web_access.application.common.auth import require_scope
+from web_access.application.common.context import ExecutionContext
 from web_access.application.common.health import Availability
+from web_access.application.common.results import OperationOutcome, OperationResult
 from web_access.application.search.ports import SearchTelemetry
 from web_access.application.search.registry import SearchProviderRegistry
 from web_access.domain.search import SearchProviderId
@@ -32,6 +35,12 @@ class SearchProviderDiscovery(BaseModel):
     billable: bool
     capabilities: PublicProviderCapabilities
     readiness: Availability
+
+
+class SearchProvidersData(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    providers: tuple[SearchProviderDiscovery, ...]
 
 
 class ProviderReadinessProbe(Protocol):
@@ -92,3 +101,11 @@ class SearchProviderReadinessService:
             )
             self._telemetry.observe_provider_readiness(descriptor.provider_id, state.value)
         return tuple(result)
+
+    async def discover(self, context: ExecutionContext) -> OperationResult[SearchProvidersData]:
+        require_scope(context.principal, "search:read")
+        return OperationResult(
+            operation_id=context.operation_id,
+            outcome=OperationOutcome.SUCCEEDED,
+            data=SearchProvidersData(providers=await self.providers()),
+        )

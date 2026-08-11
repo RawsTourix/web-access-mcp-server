@@ -7,9 +7,9 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from pydantic.experimental.missing_sentinel import MISSING
 
+from web_access.application.search.language import normalize_search_language
 from web_access.application.search.models import SearchBatchRequest, SearchQuery
 from web_access.domain.search import (
-    SearchLanguage,
     SearchProviderSelection,
     SearchRegionId,
     SearchSafeMode,
@@ -39,7 +39,7 @@ class RestSearchQuery(BaseModel):
     def validate_language(cls, value: str | MISSING) -> str | MISSING:
         if value is MISSING:
             return value
-        return str(SearchLanguage.parse(value))
+        return str(normalize_search_language(value))
 
     @field_validator("region")
     @classmethod

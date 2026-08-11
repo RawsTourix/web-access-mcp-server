@@ -7,9 +7,9 @@ from typing import Annotated
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field, StringConstraints
 from pydantic.experimental.missing_sentinel import MISSING
 
+from web_access.application.search.language import normalize_search_language
 from web_access.application.search.models import SearchBatchRequest, SearchQuery
 from web_access.domain.search import (
-    SearchLanguage,
     SearchProviderSelection,
     SearchRegionId,
     SearchSafeMode,
@@ -23,7 +23,7 @@ McpOption = Annotated[str, StringConstraints(min_length=1, max_length=64)]
 
 
 def _language(value: str) -> str:
-    return str(SearchLanguage.parse(value))
+    return str(normalize_search_language(value))
 
 
 def _region(value: str) -> str:

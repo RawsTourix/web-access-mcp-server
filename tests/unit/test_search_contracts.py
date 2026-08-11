@@ -76,7 +76,7 @@ def test_disabled_provider_is_rejected_and_default_must_be_enabled() -> None:
     registry = SearchProviderRegistry(
         (searxng, disabled), default_provider=SearchProviderId.SEARXNG
     )
-    with pytest.raises(ProviderResolutionError, match="disabled") as error:
+    with pytest.raises(ProviderResolutionError) as error:
         registry.resolve(SearchProviderSelection.YANDEX)
     assert error.value.code == "provider_disabled"
     with pytest.raises(ValueError, match="default Search provider is disabled"):

@@ -35,6 +35,7 @@ from web_access.application.search.readiness import (
     PublicProviderCapabilities,
     SearchProviderDiscovery,
     SearchProviderReadinessService,
+    SearchProvidersData,
 )
 from web_access.application.search.service import SearchApplicationService
 from web_access.bootstrap.app import create_control_plane
@@ -252,8 +253,8 @@ class _FakeSearch:
 
 
 class _FakeReadiness:
-    async def providers(self) -> tuple[SearchProviderDiscovery, ...]:
-        return (
+    async def discover(self, context: ExecutionContext) -> OperationResult[SearchProvidersData]:
+        providers = (
             SearchProviderDiscovery(
                 provider_id=SearchProviderId.SEARXNG,
                 name="SearXNG",
@@ -268,6 +269,11 @@ class _FakeReadiness:
                 ),
                 readiness=Availability.READY,
             ),
+        )
+        return OperationResult(
+            operation_id=context.operation_id,
+            outcome=OperationOutcome.SUCCEEDED,
+            data=SearchProvidersData(providers=providers),
         )
 
 
@@ -328,7 +334,10 @@ async def test_search_routes_are_exact_scoped_and_project_canonical_results(
     assert str(fake_search.request.queries[1].language) == "en-US"
 
     assert providers.status_code == 200
-    provider = providers.json()[0]
+    providers_body = providers.json()
+    assert providers_body["operation_id"] == providers.headers["X-Operation-ID"]
+    assert providers_body["outcome"] == "succeeded"
+    provider = providers_body["data"]["providers"][0]
     assert set(provider) == {
         "provider_id",
         "name",
@@ -376,6 +385,71 @@ async def test_search_rest_rejects_non_contract_inputs(
 
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("category", "outcome", "expected_status"),
+    [
+        (ErrorCategory.RATE_LIMITED, OperationOutcome.FAILED, 429),
+        (ErrorCategory.CAPACITY, OperationOutcome.FAILED, 503),
+        (ErrorCategory.INFRASTRUCTURE, OperationOutcome.FAILED, 503),
+        (ErrorCategory.UPSTREAM, OperationOutcome.FAILED, 502),
+        (ErrorCategory.TIMEOUT, OperationOutcome.FAILED, 504),
+        (ErrorCategory.VALIDATION, OperationOutcome.REJECTED, 422),
+        (ErrorCategory.PERMISSION, OperationOutcome.REJECTED, 403),
+        (ErrorCategory.UNKNOWN_OUTCOME, OperationOutcome.UNKNOWN, 502),
+    ],
+)
+async def test_fully_unsuccessful_search_uses_canonical_http_status(
+    tmp_path: Path,
+    category: ErrorCategory,
+    outcome: OperationOutcome,
+    expected_status: int,
+) -> None:
+    class FailedSearch:
+        async def search(
+            self, context: ExecutionContext, request: SearchBatchRequest
+        ) -> OperationResult[SearchBatchResult]:
+            _ = request
+            leaf = (
+                LeafOutcome.UNKNOWN
+                if outcome is OperationOutcome.UNKNOWN
+                else LeafOutcome.REJECTED
+                if outcome is OperationOutcome.REJECTED
+                else LeafOutcome.FAILED
+            )
+            error = OperationError(
+                category=category,
+                code="controlled_failure",
+                message="Контролируемая ошибка поиска.",
+            )
+            return OperationResult(
+                operation_id=context.operation_id,
+                outcome=outcome,
+                data=SearchBatchResult(
+                    items=(BatchItemResult(index=0, outcome=leaf, error=error),)
+                ),
+                error=error,
+            )
+
+    app = create_control_plane(_settings(tmp_path))
+    async with app.router.lifespan_context(app):
+        app.state.container = replace(
+            app.state.container,
+            search=cast(SearchApplicationService, FailedSearch()),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/v1/search",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                json={"queries": [{"query": "x"}]},
+            )
+
+    assert response.status_code == expected_status
+    assert response.json()["error"]["category"] == category.value
 
 
 @pytest.mark.asyncio

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from web_access.application.search.service import SearchApplicationService
+from web_access.core.config import Settings
 from web_access.core.ids import IdGenerator
 from web_access.core.time import Clock
 
@@ -18,6 +19,9 @@ class McpDependencies(Protocol):
 
     @property
     def search(self) -> SearchApplicationService: ...
+
+    @property
+    def settings(self) -> Settings: ...
 
 
 class McpRuntimeBinding:

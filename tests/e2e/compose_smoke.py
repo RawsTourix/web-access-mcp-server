@@ -56,6 +56,21 @@ async def main() -> None:
             headers={"Authorization": f"Bearer {token}"},
             json={"queries": [mixed_queries[0]]},
         )
+        rate_limited = await rest.post(
+            "/api/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"queries": [{"query": "__status_429__"}]},
+        )
+        malformed = await rest.post(
+            "/api/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"queries": [{"query": "__malformed__"}]},
+        )
+        timed_out = await rest.post(
+            "/api/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"queries": [{"query": "__timeout__"}]},
+        )
 
     assert live.status_code == 200 and live.json() == {"status": "alive"}
     assert ready.status_code == 200 and ready.json() == {"status": "ready"}
@@ -65,7 +80,9 @@ async def main() -> None:
     assert metrics.status_code == 200
     assert "web_access_http_requests_total" in metrics.text
     assert providers.status_code == 200
-    discovered = {item["provider_id"]: item for item in providers.json()}
+    providers_body = providers.json()
+    assert providers_body["operation_id"] == providers.headers["X-Operation-ID"]
+    discovered = {item["provider_id"]: item for item in providers_body["data"]["providers"]}
     assert discovered["searxng"]["readiness"] == "ready"
     assert discovered["yandex"]["enabled"] is False
     assert discovered["yandex"]["readiness"] == "unavailable"
@@ -88,6 +105,12 @@ async def main() -> None:
         "billable_attempts": 0,
         "internal_retries": 0,
     }
+    assert rate_limited.status_code == 429
+    assert rate_limited.json()["error"]["category"] == "rate_limited"
+    assert malformed.status_code == 502
+    assert malformed.json()["error"]["code"] == "searxng_malformed_response"
+    assert timed_out.status_code == 504
+    assert timed_out.json()["error"]["category"] == "timeout"
 
     async with Client(f"{base_url}/mcp/", auth=token) as mcp:
         tools = await mcp.list_tools()

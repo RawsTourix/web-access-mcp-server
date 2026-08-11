@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import sys
 from pathlib import Path
 
 SOURCE_ROOT = Path("src/web_access")
@@ -55,6 +56,25 @@ def test_domain_is_independent_of_outer_layers_and_frameworks() -> None:
             "prometheus_client",
         ),
     )
+
+
+def test_domain_imports_only_stdlib_domain_and_approved_core() -> None:
+    allowed_core = {
+        "web_access.core.ids",
+        "web_access.core.time",
+    }
+    violations: dict[Path, list[str]] = {}
+    for path, imports in _layer_imports("domain").items():
+        forbidden = sorted(
+            name
+            for name in imports
+            if name.split(".", 1)[0] not in sys.stdlib_module_names
+            and not name.startswith("web_access.domain")
+            and name not in allowed_core
+        )
+        if forbidden:
+            violations[path] = forbidden
+    assert not violations
 
 
 def test_application_does_not_depend_on_adapters_or_composition() -> None:

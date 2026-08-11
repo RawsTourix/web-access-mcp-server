@@ -63,11 +63,17 @@ select = ["E", "F", "I", "UP", "B", "ASYNC", "S", "RUF"]
 "tests/**/*.py" = ["S101", "S105", "S106"]
 # Canonical application messages are intentionally Russian and contain homoglyphs.
 "src/web_access/application/common/auth.py" = ["RUF001"]
+"src/web_access/application/search/service.py" = ["RUF001"]
+"src/web_access/infrastructure/search/searxng.py" = ["RUF001"]
+"src/web_access/infrastructure/search/yandex.py" = ["RUF001"]
+"src/web_access/transport/mcp/server.py" = ["RUF001"]
 "src/web_access/transport/rest/auth.py" = ["RUF001"]
 # FastAPI dependency markers are intentionally declared as default values.
 "src/web_access/transport/rest/app.py" = ["B008"]
 # Canonical public REST messages are intentionally Russian.
 "src/web_access/transport/rest/errors.py" = ["RUF001"]
+# This assertion verifies a canonical Russian provider warning.
+"tests/unit/test_searxng_provider.py" = ["RUF001"]
 
 [tool.pyright]
 pythonVersion = "3.11"

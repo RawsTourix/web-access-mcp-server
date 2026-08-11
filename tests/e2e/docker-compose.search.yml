@@ -1,10 +1,31 @@
 services:
   api:
     environment:
-      WEB_ACCESS_SEARCH__SEARXNG__REQUEST_TIMEOUT_SECONDS: "10"
+      WEB_ACCESS_SEARCH__SEARXNG__ENDPOINT: http://mock-searxng:8080
+      WEB_ACCESS_SEARCH__SEARXNG__PROFILE_REVISION: controlled-searxng-e2e-v1
+      WEB_ACCESS_SEARCH__SEARXNG__REQUEST_TIMEOUT_SECONDS: "1"
       WEB_ACCESS_SEARCH__CONCURRENCY__SEARXNG__LEASE_SECONDS: "12"
       WEB_ACCESS_SEARCH__RATE_LIMIT__SEARXNG__PRINCIPAL__REFILL_PER_SECOND: "20"
       WEB_ACCESS_SEARCH__RATE_LIMIT__SEARXNG__GLOBAL__REFILL_PER_SECOND: "100"
+    depends_on:
+      mock-searxng:
+        condition: service_healthy
+
+  mock-searxng:
+    image: python:3.11-alpine
+    command: ["python", "/app/mock_searxng.py"]
+    volumes:
+      - ./tests/e2e/mock_searxng.py:/app/mock_searxng.py:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
 
   mock-yandex:
     image: python:3.11-alpine
@@ -39,8 +60,8 @@ services:
       WEB_ACCESS_CONTENT_STORE__ROOT: /var/lib/web-access/content
       WEB_ACCESS_AUTH__PRINCIPALS: ${WEB_ACCESS_AUTH__PRINCIPALS:?Set WEB_ACCESS_AUTH__PRINCIPALS in .env}
       WEB_ACCESS_OBSERVABILITY__LOG_FORMAT: json
-      WEB_ACCESS_SEARCH__SEARXNG__ENDPOINT: http://searxng:8080
-      WEB_ACCESS_SEARCH__SEARXNG__PROFILE_REVISION: searxng-2026.7.28-c01178d03-v1
+      WEB_ACCESS_SEARCH__SEARXNG__ENDPOINT: http://mock-searxng:8080
+      WEB_ACCESS_SEARCH__SEARXNG__PROFILE_REVISION: controlled-searxng-e2e-v1
       WEB_ACCESS_SEARCH__YANDEX__ENABLED: "true"
       WEB_ACCESS_SEARCH__YANDEX__ENDPOINT: http://mock-yandex:8080/v2/web/search
       WEB_ACCESS_SEARCH__YANDEX__FOLDER_ID: controlled-folder
@@ -57,6 +78,8 @@ services:
       redis:
         condition: service_healthy
       searxng:
+        condition: service_healthy
+      mock-searxng:
         condition: service_healthy
       mock-yandex:
         condition: service_healthy

@@ -50,11 +50,11 @@ class SearchRegionRegistry:
     def provider_region(self, region_id: str, provider_id: SearchProviderId) -> str:
         entry = self._entries.get(region_id)
         if entry is None:
-            raise ProviderResolutionError("unknown_region", "Search region is not configured.")
+            raise ProviderResolutionError("unknown_region", "Регион поиска не настроен.")
         mapping = next((item for item in entry.mappings if item.provider_id is provider_id), None)
         if mapping is None:
             raise ProviderResolutionError(
-                "unsupported_region", "Search region is unsupported by this provider."
+                "unsupported_region", "Регион поиска не поддерживается выбранным provider."
             )
         return mapping.provider_region
 
@@ -91,9 +91,9 @@ class SearchProviderRegistry:
         )
         provider = self._providers.get(provider_id)
         if provider is None:
-            raise ProviderResolutionError("unknown_provider", "Search provider is not configured.")
+            raise ProviderResolutionError("unknown_provider", "Поисковый provider не настроен.")
         if not provider.descriptor.enabled:
-            raise ProviderResolutionError("provider_disabled", "Search provider is disabled.")
+            raise ProviderResolutionError("provider_disabled", "Поисковый provider отключён.")
         return provider
 
     @staticmethod
@@ -121,5 +121,6 @@ class SearchProviderRegistry:
             unsupported.append("query")
         if unsupported:
             raise ProviderResolutionError(
-                "unsupported_option", f"Provider does not support: {', '.join(unsupported)}"
+                "unsupported_option",
+                f"Provider не поддерживает параметры: {', '.join(unsupported)}",
             )

@@ -91,7 +91,7 @@ class SearxngSearchProvider:
             raise _attempt_error(
                 ErrorCategory.UPSTREAM,
                 "searxng_unavailable",
-                "SearXNG is unavailable",
+                "SearXNG недоступен.",
                 retryable=True,
                 stage=ExecutionStage.BEFORE_DISPATCH,
             ) from exc
@@ -99,7 +99,7 @@ class SearxngSearchProvider:
             raise _attempt_error(
                 ErrorCategory.TIMEOUT,
                 "searxng_timeout",
-                "SearXNG did not respond before the deadline",
+                "SearXNG не ответил до истечения срока.",
                 retryable=True,
                 stage=ExecutionStage.RESPONSE_LOST,
             ) from exc
@@ -107,22 +107,30 @@ class SearxngSearchProvider:
             raise _attempt_error(
                 ErrorCategory.UPSTREAM,
                 "searxng_transport_error",
-                "SearXNG transport failed",
+                "Транспортный запрос к SearXNG завершился ошибкой.",
                 retryable=True,
                 stage=ExecutionStage.RESPONSE_LOST,
             ) from exc
 
         request_id = _request_id(response.headers) if response is not None else None
         payload = _decode_payload(body, request_id)
-        results = _parse_results(payload, request.limit, request_id)
-        warnings = _parse_warnings(payload)
+        results, skipped = _parse_results(payload, request.limit, request_id)
+        warnings = list(_parse_warnings(payload))
+        if skipped:
+            warnings.append(
+                Warning(
+                    code="malformed_provider_item",
+                    message="Часть некорректных результатов SearXNG пропущена.",
+                    details={"omitted_count": min(skipped, 1000)},
+                )
+            )
         return ProviderSearchResult(
             provider_id=SearchProviderId.SEARXNG,
             results=results,
             retrieved_at=context.clock.utc_now(),
             next_page_available=None,
             provider_request_id=request_id,
-            warnings=warnings,
+            warnings=tuple(warnings),
         )
 
     def _timeout(self, context: ExecutionContext) -> float:
@@ -133,7 +141,7 @@ class SearxngSearchProvider:
             raise _attempt_error(
                 ErrorCategory.TIMEOUT,
                 "search_deadline_exceeded",
-                "Search deadline was exceeded before dispatch",
+                "Срок поисковой операции истёк до отправки запроса.",
                 retryable=False,
                 stage=ExecutionStage.BEFORE_DISPATCH,
             )
@@ -147,7 +155,7 @@ async def _bounded_body(response: httpx.Response, maximum: int) -> bytes:
             raise _attempt_error(
                 ErrorCategory.UPSTREAM,
                 "searxng_response_too_large",
-                "SearXNG response exceeded the configured bound",
+                "Ответ SearXNG превысил допустимый размер.",
                 retryable=False,
                 stage=ExecutionStage.TERMINAL_KNOWN,
                 provider_request_id=_request_id(response.headers),
@@ -168,11 +176,13 @@ def _decode_payload(body: bytes, request_id: str | None) -> Mapping[str, Any]:
 
 def _parse_results(
     payload: Mapping[str, Any], limit: int, request_id: str | None
-) -> tuple[SearchResultItem, ...]:
+) -> tuple[tuple[SearchResultItem, ...], int]:
     parsed: list[SearchResultItem] = []
+    skipped = 0
     for raw in payload["results"][:limit]:
         if not isinstance(raw, dict):
-            raise _malformed(request_id)
+            skipped += 1
+            continue
         title = raw.get("title")
         url = raw.get("url")
         snippet = raw.get("content")
@@ -185,10 +195,17 @@ def _parse_results(
             or len(url) > 8192
             or (snippet is not None and (not isinstance(snippet, str) or len(snippet) > 8192))
         ):
-            raise _malformed(request_id)
-        split = urlsplit(url)
-        if split.scheme not in {"http", "https"} or split.hostname is None:
-            raise _malformed(request_id)
+            skipped += 1
+            continue
+        try:
+            split = urlsplit(url)
+            hostname = split.hostname
+        except ValueError:
+            skipped += 1
+            continue
+        if split.scheme not in {"http", "https"} or hostname is None:
+            skipped += 1
+            continue
         published_at = _published_at(raw.get("publishedDate"))
         parsed.append(
             SearchResultItem(
@@ -196,11 +213,11 @@ def _parse_results(
                 title=title,
                 url=url,
                 snippet=snippet,
-                host=split.hostname[:1024],
+                host=hostname[:1024],
                 published_at=published_at,
             )
         )
-    return tuple(parsed)
+    return tuple(parsed), skipped
 
 
 def _published_at(value: object) -> datetime | None:
@@ -220,7 +237,7 @@ def _parse_warnings(payload: Mapping[str, Any]) -> tuple[Warning, ...]:
     return (
         Warning(
             code="partial_provider_failure",
-            message="Some SearXNG engines did not return results",
+            message="Часть поисковых движков SearXNG не вернула результаты.",
             details={"engine_failure_count": min(len(unavailable), 1000)},
         ),
     )
@@ -234,7 +251,7 @@ def _status_error(
         return _attempt_error(
             ErrorCategory.RATE_LIMITED,
             "searxng_rate_limited",
-            "SearXNG rate limit was reached",
+            "SearXNG сообщил об исчерпании лимита запросов.",
             retryable=True,
             retry_after_seconds=retry_after,
             stage=ExecutionStage.TERMINAL_KNOWN,
@@ -244,7 +261,7 @@ def _status_error(
         return _attempt_error(
             ErrorCategory.UPSTREAM,
             "searxng_upstream_error",
-            "SearXNG returned an upstream error",
+            "SearXNG вернул ошибку upstream-сервиса.",
             retryable=True,
             stage=ExecutionStage.TERMINAL_KNOWN,
             provider_request_id=request_id,
@@ -252,7 +269,7 @@ def _status_error(
     return _attempt_error(
         ErrorCategory.UPSTREAM,
         "searxng_request_rejected",
-        "SearXNG rejected the request",
+        "SearXNG отклонил запрос.",
         retryable=False,
         stage=ExecutionStage.TERMINAL_KNOWN,
         provider_request_id=request_id,
@@ -275,7 +292,7 @@ def _malformed(request_id: str | None) -> ProviderAttemptError:
     return _attempt_error(
         ErrorCategory.UPSTREAM,
         "searxng_malformed_response",
-        "SearXNG returned a malformed response",
+        "SearXNG вернул некорректный ответ.",
         retryable=False,
         stage=ExecutionStage.TERMINAL_KNOWN,
         provider_request_id=request_id,

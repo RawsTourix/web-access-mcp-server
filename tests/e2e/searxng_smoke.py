@@ -1,38 +1,20 @@
-"""Validate the real pinned SearXNG container's private JSON protocol."""
+"""Validate the pinned SearXNG runtime without calling public search engines."""
 
 from __future__ import annotations
 
-import json
 import subprocess
 
 
 def main() -> None:
     probe = """
-import json
-import urllib.parse
 import urllib.request
 
-params = urllib.parse.urlencode({
-    "q": "1+1",
-    "format": "json",
-    "categories": "general",
-    "pageno": "1",
-    "safesearch": "2",
-    "time_range": "day",
-})
-request = urllib.request.Request(
-    "http://127.0.0.1:8080/search?" + params,
-    headers={"X-Forwarded-For": "127.0.0.1"},
-)
-with urllib.request.urlopen(request, timeout=20) as response:
-    body = response.read(2 * 1024 * 1024 + 1)
+with urllib.request.urlopen("http://127.0.0.1:8080/healthz", timeout=10) as response:
     assert response.status == 200
-    assert response.headers.get_content_type() == "application/json"
-    assert len(body) <= 2 * 1024 * 1024
-payload = json.loads(body)
-assert isinstance(payload, dict)
-assert isinstance(payload.get("results"), list)
-print(json.dumps({"result_count": len(payload["results"])}))
+settings = open("/etc/searxng/settings.yml", encoding="utf-8").read()
+assert "formats:" in settings
+assert "- json" in settings
+print("health-and-static-config-ok")
 """
     # The executable and every argument are repository-owned constants.
     completed = subprocess.run(  # noqa: S603
@@ -43,9 +25,8 @@ print(json.dumps({"result_count": len(payload["results"])}))
         text=True,
         timeout=45,
     )
-    evidence = json.loads(completed.stdout.strip().splitlines()[-1])
-    assert isinstance(evidence["result_count"], int)
-    print("Pinned SearXNG JSON protocol smoke passed", evidence)
+    assert completed.stdout.strip().splitlines()[-1] == "health-and-static-config-ok"
+    print("Pinned SearXNG health/static-config smoke passed; public Search calls: 0")
 
 
 if __name__ == "__main__":
