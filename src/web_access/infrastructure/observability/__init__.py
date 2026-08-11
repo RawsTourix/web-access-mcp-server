@@ -8,6 +8,10 @@ from web_access.infrastructure.observability.context import (
 )
 from web_access.infrastructure.observability.logging import configure_logging
 from web_access.infrastructure.observability.metrics import ServiceMetrics, create_metrics
+from web_access.infrastructure.observability.search import (
+    ObservedSearchProvider,
+    SearchTelemetryAdapter,
+)
 from web_access.infrastructure.observability.tracing import (
     configure_tracing,
     instrument_fastapi,
@@ -16,6 +20,8 @@ from web_access.infrastructure.observability.tracing import (
 )
 
 __all__ = [
+    "ObservedSearchProvider",
+    "SearchTelemetryAdapter",
     "ServiceMetrics",
     "bind_correlation",
     "clear_correlation",

@@ -41,6 +41,7 @@ from web_access.application.search.ports import (
     SearchCache,
     SearchProvider,
     SearchSingleFlight,
+    SearchTelemetry,
     SearchUsageUnavailable,
     SearchUsageUnitOfWorkFactory,
     SingleFlightLease,
@@ -101,6 +102,25 @@ class _DeadlineExceeded(Exception):
     pass
 
 
+class _NoopSearchTelemetry:
+    def observe_cache(self, provider_id: SearchProviderId, state: CacheLookupState) -> None:
+        _ = provider_id, state
+
+    def observe_admission_rejection(self, provider_id: SearchProviderId, kind: str) -> None:
+        _ = provider_id, kind
+
+    def observe_internal_retry(self, provider_id: SearchProviderId, reason: str) -> None:
+        _ = provider_id, reason
+
+    def observe_billable_attempt(
+        self, provider_id: SearchProviderId, stage: AttemptStage, outcome: str
+    ) -> None:
+        _ = provider_id, stage, outcome
+
+    def observe_provider_readiness(self, provider_id: SearchProviderId, status: str) -> None:
+        _ = provider_id, status
+
+
 async def _bounded_await(context: ExecutionContext, awaitable: Awaitable[_T]) -> _T:
     remaining = context.remaining_seconds()
     if remaining is not None and remaining <= 0:
@@ -141,6 +161,7 @@ class SearchApplicationService:
         rate_limiter: ProviderRateLimiter,
         concurrency_limiter: ProviderConcurrencyLimiter,
         usage_uow_factory: SearchUsageUnitOfWorkFactory | None,
+        telemetry: SearchTelemetry | None = None,
         policy: SearchServicePolicy | None = None,
     ) -> None:
         self._providers = providers
@@ -150,6 +171,7 @@ class SearchApplicationService:
         self._rate = rate_limiter
         self._concurrency = concurrency_limiter
         self._usage = usage_uow_factory
+        self._telemetry = telemetry or _NoopSearchTelemetry()
         self._policy = policy or SearchServicePolicy()
 
     async def search(
@@ -202,6 +224,7 @@ class SearchApplicationService:
 
             if self._policy.cache_mode != "disabled":
                 cached = await _bounded_await(context, self._cache.get(identity))
+                self._telemetry.observe_cache(provider_id, cached.state)
                 if cached.state is CacheLookupState.HIT and cached.value is not None:
                     return self._cache_hit(index, cached.value)
                 lease = await _bounded_await(
@@ -210,6 +233,7 @@ class SearchApplicationService:
                 )
                 if not lease.holder:
                     cached = await _bounded_await(context, self._cache.get(identity))
+                    self._telemetry.observe_cache(provider_id, cached.state)
                     if cached.state is CacheLookupState.HIT and cached.value is not None:
                         return self._cache_hit(index, cached.value)
                     raise ProviderAttemptError(
@@ -323,6 +347,7 @@ class SearchApplicationService:
                 ),
             )
             if not admission.allowed:
+                self._telemetry.observe_admission_rejection(provider_id, "rate")
                 raise ProviderAttemptError(
                     OperationError(
                         category=ErrorCategory.RATE_LIMITED,
@@ -342,6 +367,7 @@ class SearchApplicationService:
                 self._concurrency.acquire(provider_id, wait_seconds=context.remaining_seconds()),
             )
             if concurrency is None:
+                self._telemetry.observe_admission_rejection(provider_id, "concurrency")
                 raise ProviderAttemptError(
                     OperationError(
                         category=ErrorCategory.CAPACITY,
@@ -409,6 +435,7 @@ class SearchApplicationService:
                             accounting_failure_stage=ExecutionStage.RESPONSE_LOST,
                         )
                     if will_retry:
+                        self._telemetry.observe_internal_retry(provider_id, _retry_reason(error))
                         continue
                     raise
                 if descriptor.billable and self._usage is not None:
@@ -451,6 +478,9 @@ class SearchApplicationService:
                     ),
                 )
                 await _bounded_await(context, uow.commit())
+            self._telemetry.observe_billable_attempt(
+                provider_id, AttemptStage.PRE_DISPATCH, "started"
+            )
         except SearchUsageUnavailable as exc:
             raise self._usage_error() from exc
 
@@ -486,6 +516,13 @@ class SearchApplicationService:
                     ),
                 )
                 await _bounded_await(context, uow.commit())
+            self._telemetry.observe_billable_attempt(
+                provider_id,
+                stage,
+                _billable_outcome(
+                    stage=stage, outcome_code=outcome_code, retry_reason=retry_reason
+                ),
+            )
         except SearchUsageUnavailable as exc:
             raise self._usage_error(accounting_failure_stage) from exc
 
@@ -563,3 +600,29 @@ class SearchApplicationService:
             outcome=outcome,
             error=OperationError(category=category, code=code, message=message),
         )
+
+
+def _retry_reason(error: ProviderAttemptError) -> str:
+    if error.stage is ExecutionStage.BEFORE_DISPATCH:
+        return "pre_dispatch_failure"
+    if error.error.category is ErrorCategory.TIMEOUT:
+        return "timeout"
+    if error.error.category is ErrorCategory.RATE_LIMITED:
+        return "rate_limited"
+    if error.stage is ExecutionStage.RESPONSE_LOST:
+        return "response_lost"
+    return "upstream_retryable"
+
+
+def _billable_outcome(
+    *, stage: AttemptStage, outcome_code: str | None, retry_reason: str | None
+) -> str:
+    if retry_reason is not None:
+        return "retrying"
+    if outcome_code == "succeeded":
+        return "succeeded"
+    if outcome_code is None:
+        return "pending"
+    if stage is AttemptStage.DISPATCH_POSSIBLE:
+        return "unknown"
+    return "failed"

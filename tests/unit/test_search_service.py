@@ -33,6 +33,7 @@ from web_access.application.search.ports import (
     ConcurrencyLease,
     ProviderAttemptError,
     RateAdmission,
+    SearchTelemetry,
     SearchUsageUnavailable,
     SearchUsageUnitOfWork,
     SingleFlightLease,
@@ -41,6 +42,7 @@ from web_access.application.search.registry import SearchProviderRegistry, Searc
 from web_access.application.search.service import SearchApplicationService, SearchServicePolicy
 from web_access.core.time import Deadline, FakeClock
 from web_access.domain.search import SearchProviderId, SearchProviderSelection, SearchResultItem
+from web_access.infrastructure.observability import SearchTelemetryAdapter, create_metrics
 
 NOW = datetime(2026, 1, 1, tzinfo=UTC)
 
@@ -229,6 +231,7 @@ def build(
     yandex: FakeProvider | None = None,
     cache: FakeCache | None = None,
     policy: SearchServicePolicy | None = None,
+    telemetry: SearchTelemetry | None = None,
 ) -> tuple[
     SearchApplicationService,
     FakeProvider,
@@ -252,6 +255,7 @@ def build(
         rate_limiter=rate,
         concurrency_limiter=concurrency,
         usage_uow_factory=usage,
+        telemetry=telemetry,
         policy=policy or SearchServicePolicy(),
     )
     return service, searxng, yandex, selected_cache, rate, concurrency, usage
@@ -469,6 +473,59 @@ async def test_free_provider_does_not_require_usage_database() -> None:
     )
     assert result.outcome is OperationOutcome.SUCCEEDED
     assert len(searxng.calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_search_service_emits_cache_admission_retry_and_billable_metrics() -> None:
+    metrics = create_metrics()
+    telemetry = SearchTelemetryAdapter(metrics)
+    searxng = FakeProvider(SearchProviderId.SEARXNG)
+    searxng.failures.append(
+        ProviderAttemptError(
+            OperationError(
+                category=ErrorCategory.TIMEOUT,
+                code="temporary_timeout",
+                message="temporary",
+                retryable=True,
+            ),
+            stage=ExecutionStage.RESPONSE_LOST,
+        )
+    )
+    service, *_ = build(searxng=searxng, telemetry=telemetry)
+    request = SearchBatchRequest(queries=(SearchQuery(query="metrics"),))
+    await service.search(context(), request)
+    await service.search(context(), request)
+
+    paid_service, *_ = build(telemetry=telemetry)
+    await paid_service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+
+    rejected_service, _, _, _, rate, _, _ = build(telemetry=telemetry)
+    rate.allowed = False
+    await rejected_service.search(
+        context(), SearchBatchRequest(queries=(SearchQuery(query="rejected"),))
+    )
+    capacity_service, _, _, _, _, concurrency, _ = build(telemetry=telemetry)
+    concurrency.available = False
+    await capacity_service.search(
+        context(), SearchBatchRequest(queries=(SearchQuery(query="capacity"),))
+    )
+    rendered = metrics.render().decode()
+    for expected in (
+        'state="miss"',
+        'state="hit"',
+        'reason="timeout"',
+        'kind="rate"',
+        'kind="concurrency"',
+        'stage="pre_dispatch"',
+        'stage="dispatch_possible"',
+        'stage="completed"',
+    ):
+        assert expected in rendered
 
 
 @pytest.mark.asyncio

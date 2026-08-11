@@ -33,3 +33,14 @@ __all__ = [
     "SearchServicePolicy",
     "SearchUsageMetadata",
 ]
+from web_access.application.search.readiness import (
+    PublicProviderCapabilities,
+    SearchProviderDiscovery,
+    SearchProviderReadinessService,
+)
+
+__all__ = [
+    "PublicProviderCapabilities",
+    "SearchProviderDiscovery",
+    "SearchProviderReadinessService",
+]

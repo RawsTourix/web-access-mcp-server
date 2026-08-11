@@ -148,6 +148,22 @@ class SearchUsageUnavailable(RuntimeError):
     """Durable billable-attempt evidence cannot be persisted."""
 
 
+class SearchTelemetry(Protocol):
+    """Synchronous, bounded-label telemetry consumed by Search orchestration."""
+
+    def observe_cache(self, provider_id: SearchProviderId, state: CacheLookupState) -> None: ...
+
+    def observe_admission_rejection(self, provider_id: SearchProviderId, kind: str) -> None: ...
+
+    def observe_internal_retry(self, provider_id: SearchProviderId, reason: str) -> None: ...
+
+    def observe_billable_attempt(
+        self, provider_id: SearchProviderId, stage: AttemptStage, outcome: str
+    ) -> None: ...
+
+    def observe_provider_readiness(self, provider_id: SearchProviderId, status: str) -> None: ...
+
+
 class ProviderAttemptError(Exception):
     """Safe normalized failure from exactly one provider request attempt."""
 

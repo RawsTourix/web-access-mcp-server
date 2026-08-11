@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from io import StringIO
 
 import httpx
@@ -13,8 +14,30 @@ from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor, SpanExporter, SpanExportResult
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
+from web_access.application.common.context import (
+    CancellationToken,
+    ExecutionContext,
+    PrincipalContext,
+)
+from web_access.application.common.errors import ErrorCategory, OperationError
+from web_access.application.common.results import ExecutionStage
+from web_access.application.search.models import (
+    ProviderCapabilities,
+    ProviderDescriptor,
+    ProviderSearchRequest,
+    ProviderSearchResult,
+)
+from web_access.application.search.ports import (
+    AttemptStage,
+    CacheLookupState,
+    ProviderAttemptError,
+)
 from web_access.core.config import ObservabilitySettings
+from web_access.core.time import FakeClock
+from web_access.domain.search import SearchProviderId, SearchResultItem
 from web_access.infrastructure.observability import (
+    ObservedSearchProvider,
+    SearchTelemetryAdapter,
     bind_correlation,
     clear_correlation,
     configure_logging,
@@ -25,6 +48,64 @@ from web_access.infrastructure.observability import (
     operation_span,
     shutdown_tracing,
 )
+
+
+class ObservableProvider:
+    descriptor = ProviderDescriptor(
+        provider_id=SearchProviderId.SEARXNG,
+        name="SearXNG",
+        enabled=True,
+        configuration_revision="observable-revision",
+        capabilities=ProviderCapabilities(
+            pagination=True,
+            language=True,
+            region=False,
+            safe_search=True,
+            time_range=True,
+            max_results=50,
+            billable=False,
+        ),
+    )
+
+    def __init__(self, *, failure: ProviderAttemptError | None = None) -> None:
+        self.failure = failure
+
+    async def search(
+        self, context: ExecutionContext, request: ProviderSearchRequest
+    ) -> ProviderSearchResult:
+        _ = request
+        context.clock.advance(0.25)  # type: ignore[attr-defined]
+        if self.failure is not None:
+            raise self.failure
+        return ProviderSearchResult(
+            provider_id=SearchProviderId.SEARXNG,
+            results=(
+                SearchResultItem(
+                    rank=1,
+                    title="secret-title-canary",
+                    url="https://secret-url-canary.example",
+                ),
+            ),
+            retrieved_at=context.clock.utc_now(),
+        )
+
+
+def _search_context() -> ExecutionContext:
+    return ExecutionContext(
+        operation_id="safe-operation",
+        principal=PrincipalContext("secret-principal-canary", frozenset({"search:read"})),
+        clock=FakeClock(datetime(2026, 8, 11, tzinfo=UTC)),
+        cancellation=CancellationToken(),
+    )
+
+
+def _provider_request() -> ProviderSearchRequest:
+    return ProviderSearchRequest(
+        query="secret-query-canary",
+        provider_id=SearchProviderId.SEARXNG,
+        page=1,
+        limit=1,
+    )
 
 
 def test_json_logging_correlation_and_recursive_redaction() -> None:
@@ -68,6 +149,91 @@ def test_metrics_registries_are_isolated_and_low_cardinality() -> None:
     label_names = set(first.requests._labelnames)
     assert label_names == {"method", "route", "status_class"}
     assert not label_names & {"operation_id", "request_id", "principal_id", "url", "query"}
+
+
+def test_search_metrics_use_only_bounded_labels() -> None:
+    metrics = create_metrics()
+    telemetry = SearchTelemetryAdapter(metrics)
+    telemetry.observe_cache(SearchProviderId.SEARXNG, CacheLookupState.HIT)
+    telemetry.observe_cache(SearchProviderId.SEARXNG, CacheLookupState.CORRUPT)
+    telemetry.observe_admission_rejection(SearchProviderId.SEARXNG, "rate")
+    telemetry.observe_admission_rejection(SearchProviderId.YANDEX, "concurrency")
+    telemetry.observe_internal_retry(SearchProviderId.SEARXNG, "timeout")
+    telemetry.observe_billable_attempt(
+        SearchProviderId.YANDEX, AttemptStage.DISPATCH_POSSIBLE, "pending"
+    )
+    telemetry.observe_provider_readiness(SearchProviderId.SEARXNG, "ready")
+    rendered = metrics.render().decode()
+    for expected in (
+        "web_access_search_cache_total",
+        'provider="searxng"',
+        'state="hit"',
+        'kind="rate"',
+        'reason="timeout"',
+        'stage="dispatch_possible"',
+        'status="ready"',
+    ):
+        assert expected in rendered
+    for forbidden in (
+        "secret-query-canary",
+        "secret-url-canary",
+        "secret-principal-canary",
+        "authorization",
+        "folder_id",
+    ):
+        assert forbidden not in rendered.lower()
+
+
+@pytest.mark.asyncio
+async def test_observed_provider_records_safe_metrics_logs_and_spans() -> None:
+    exporter = InMemorySpanExporter()
+    tracer_provider = TracerProvider()
+    tracer_provider.add_span_processor(SimpleSpanProcessor(exporter))
+    metrics = create_metrics()
+    provider = ObservedSearchProvider(
+        ObservableProvider(), metrics=metrics, tracer_provider=tracer_provider
+    )
+    result = await provider.search(_search_context(), _provider_request())
+    assert len(result.results) == 1
+    rendered = metrics.render().decode()
+    assert "web_access_search_provider_calls_total" in rendered
+    assert 'provider="searxng"' in rendered and 'outcome="succeeded"' in rendered
+    assert "web_access_search_result_count_sum" in rendered
+    spans = exporter.get_finished_spans()
+    assert [span.name for span in spans] == ["search.provider_attempt"]
+    attributes = repr(spans[0].attributes)
+    assert "search.provider_id" in attributes and "search.result_count" in attributes
+    assert "secret-query-canary" not in attributes
+    assert "secret-url-canary" not in attributes
+    assert "secret-principal-canary" not in attributes
+    shutdown_tracing(tracer_provider)
+
+
+@pytest.mark.asyncio
+async def test_observed_provider_normalizes_failure_log_without_query_or_body() -> None:
+    failure = ProviderAttemptError(
+        OperationError(
+            category=ErrorCategory.TIMEOUT,
+            code="provider_timeout",
+            message="safe timeout",
+            retryable=True,
+        ),
+        stage=ExecutionStage.RESPONSE_LOST,
+    )
+    metrics = create_metrics()
+    provider = ObservedSearchProvider(
+        ObservableProvider(failure=failure), metrics=metrics, tracer_provider=None
+    )
+    with structlog.testing.capture_logs() as logs:
+        with pytest.raises(ProviderAttemptError):
+            await provider.search(_search_context(), _provider_request())
+    rendered = repr(logs)
+    assert "provider_timeout" in rendered
+    assert "secret-query-canary" not in rendered
+    assert "secret-url-canary" not in rendered
+    assert "secret-principal-canary" not in rendered
+    metrics_text = metrics.render().decode()
+    assert "web_access_search_provider_timeouts_total" in metrics_text
 
 
 class FailingExporter(SpanExporter):
