@@ -32,4 +32,5 @@ def test_example_credentials_remain_explicit_placeholders() -> None:
         if line and not line.startswith("#") and "=" in line
     }
     assert assignments["WEB_ACCESS_AUTH__PRINCIPALS"] == ""
+    assert assignments["WEB_ACCESS_CONTENT_CURSOR_SECRET"] == ""
     assert assignments["POSTGRES_PASSWORD"] == ""

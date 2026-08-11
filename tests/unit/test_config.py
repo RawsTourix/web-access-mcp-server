@@ -15,6 +15,9 @@ from web_access.core.config import (
     Environment,
     PrincipalSettings,
     RedisSettings,
+    SearchSettings,
+    SearxngSettings,
+    SecuritySettings,
     Settings,
 )
 
@@ -24,6 +27,7 @@ def _clear_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
         "WEB_ACCESS_APP__ENVIRONMENT",
         "WEB_ACCESS_AUTH__PRINCIPALS",
         "WEB_ACCESS_AUTH__PRINCIPALS_FILE",
+        "WEB_ACCESS_SECURITY__CONTENT_CURSOR_HMAC_SECRET",
         "WEB_ACCESS_DATABASE__URL",
         "WEB_ACCESS_REDIS__URL",
         "WEB_ACCESS_CONTENT_STORE__ROOT",
@@ -167,6 +171,12 @@ def _production_settings(**overrides) -> Settings:
             {"url": "postgresql+asyncpg://user:password@db/service"}
         ),
         "redis": RedisSettings.model_validate({"url": "redis://redis:6379/0"}),
+        "security": SecuritySettings(
+            content_cursor_hmac_secret=SecretStr("production-cursor-secret-value-32-bytes")
+        ),
+        "search": SearchSettings(
+            searxng=SearxngSettings.model_validate({"endpoint": "http://searxng:8080"})
+        ),
     }
     values.update(overrides)
     return Settings(**values)
@@ -180,6 +190,11 @@ def test_production_rejects_implicit_database_default() -> None:
 def test_production_rejects_implicit_redis_default() -> None:
     with pytest.raises(ValidationError, match="Redis URL must be explicitly configured"):
         _production_settings(redis=RedisSettings())
+
+
+def test_production_requires_dedicated_content_cursor_secret() -> None:
+    with pytest.raises(ValidationError, match="cursor HMAC secret"):
+        _production_settings(security=SecuritySettings())
 
 
 def test_principals_file(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:

@@ -94,12 +94,15 @@ def test_json_native_parse_publishes_derived_content_and_provenance(tmp_path) ->
             source_filename="profile.json",
         )
         parsed = await service.native_parse(context, source.content_id)
+        metadata = await service.metadata(context, source.content_id)
 
         assert parsed.parser_capability == "json"
         assert parsed.reused is False
         assert len(parsed.representations) == 1
         derived = parsed.representations[0]
         assert derived.representation is ContentRepresentationKind.STRUCTURED
+        assert metadata.available_representations == parsed.representations
+        assert metadata.text is None
 
         async with uow_factory() as uow:
             source_record = await uow.contents.get(ContentId(source.content_id))

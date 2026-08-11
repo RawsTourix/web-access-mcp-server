@@ -156,6 +156,14 @@ class SecuritySettings(BaseModel):
 
     request_id_max_length: int = Field(default=128, ge=16, le=512)
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    content_cursor_hmac_secret: SecretStr | None = None
+
+    @field_validator("content_cursor_hmac_secret")
+    @classmethod
+    def validate_content_cursor_secret(cls, secret: SecretStr | None) -> SecretStr | None:
+        if secret is not None and len(secret.get_secret_value().encode()) < 32:
+            raise ValueError("Content cursor HMAC secret must contain at least 32 bytes")
+        return secret
 
 
 class RetrievalSecuritySettings(BaseModel):
@@ -470,6 +478,10 @@ class Settings(BaseSettings):
                 raise ValueError("production SearXNG endpoint must be explicitly configured")
             if self.search.yandex.enabled and self.search.yandex.endpoint.scheme != "https":
                 raise ValueError("production Yandex Search endpoint must use TLS")
+            if self.security.content_cursor_hmac_secret is None:
+                raise ValueError(
+                    "production Content cursor HMAC secret must be explicitly configured"
+                )
         return self
 
     def safe_summary(self) -> dict[str, object]:

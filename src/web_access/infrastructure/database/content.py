@@ -341,14 +341,19 @@ class PostgresContentRelationRepository:
             )
         )
 
-    async def for_source(self, source_content_id: ContentId) -> tuple[ContentRelation, ...]:
-        rows = (
-            await self._session.scalars(
-                select(ContentRelationRow).where(
-                    ContentRelationRow.source_content_id == str(source_content_id)
-                )
-            )
-        ).all()
+    async def for_source(
+        self, source_content_id: ContentId, *, limit: int | None = None
+    ) -> tuple[ContentRelation, ...]:
+        if limit is not None and limit < 1:
+            raise ValueError("Content relation limit must be positive")
+        statement = (
+            select(ContentRelationRow)
+            .where(ContentRelationRow.source_content_id == str(source_content_id))
+            .order_by(ContentRelationRow.created_at, ContentRelationRow.id)
+        )
+        if limit is not None:
+            statement = statement.limit(limit)
+        rows = (await self._session.scalars(statement)).all()
         return tuple(
             ContentRelation(
                 source_content_id=ContentId(row.source_content_id),

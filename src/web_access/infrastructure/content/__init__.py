@@ -1,5 +1,6 @@
 """Content storage adapters."""
 
+from web_access.infrastructure.content.cursor import HmacContentCursorCodec, InvalidContentCursor
 from web_access.infrastructure.content.filesystem import (
     FilesystemContentStore,
     InvalidStorageKey,
@@ -15,7 +16,9 @@ from web_access.infrastructure.content.parser_isolation import SubprocessParserE
 __all__ = [
     "ContentIdentificationRegistry",
     "FilesystemContentStore",
+    "HmacContentCursorCodec",
     "IdentificationDescriptor",
+    "InvalidContentCursor",
     "InvalidStorageKey",
     "RegistryContentIdentifier",
     "SubprocessParserExecutor",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from datetime import datetime
 from types import TracebackType
@@ -17,12 +18,27 @@ from web_access.application.common.content_store import (
 )
 from web_access.application.content.models import (
     ContentInspection,
+    ContentRef,
     NativeParserOutput,
     ParserDescriptor,
 )
 from web_access.domain.content import ContentId, ContentObject, ContentRelation
 
 FinalizedBlob = StoredBlob
+
+
+@dataclass(frozen=True, slots=True)
+class ContentCursorClaims:
+    owner_principal_id: str
+    content_id: ContentId
+    content_revision: int
+    byte_offset: int
+
+
+class ContentCursorCodec(Protocol):
+    def encode(self, claims: ContentCursorClaims) -> str: ...
+
+    def decode(self, cursor: str) -> ContentCursorClaims: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +57,13 @@ class ContentRecord:
 class ContentRepresentationClaim:
     record: ContentRecord
     claimed: bool
+
+
+@dataclass(frozen=True, slots=True)
+class AuthorizedContentStream:
+    content: ContentRef
+    source_filename: str | None
+    stream: AsyncIterator[bytes]
 
 
 class ContentRepository(Protocol):
@@ -100,7 +123,9 @@ class ContentRepository(Protocol):
 class ContentRelationRepository(Protocol):
     async def add(self, relation: ContentRelation) -> None: ...
 
-    async def for_source(self, source_content_id: ContentId) -> tuple[ContentRelation, ...]: ...
+    async def for_source(
+        self, source_content_id: ContentId, *, limit: int | None = None
+    ) -> tuple[ContentRelation, ...]: ...
 
 
 class ContentIdentifier(Protocol):

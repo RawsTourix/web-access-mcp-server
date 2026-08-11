@@ -3,23 +3,29 @@
 from __future__ import annotations
 
 import asyncio
+import codecs
 import hashlib
 import json
 from collections.abc import AsyncIterable, AsyncIterator
 
-from web_access.application.common.auth import require_owner
+from web_access.application.common.auth import require_owner, require_scope
 from web_access.application.common.content_store import ContentStore, StagedBlob
 from web_access.application.common.context import ExecutionContext
 from web_access.application.common.hints import Warning
 from web_access.application.content.models import (
     ContentInspection,
+    ContentReadResult,
     ContentRef,
     NativeParseResult,
     ParsedRepresentation,
     ParserDescriptor,
 )
 from web_access.application.content.ports import (
+    AuthorizedContentStream,
+    ContentCursorClaims,
+    ContentCursorCodec,
     ContentIdentifier,
+    ContentRecord,
     ContentUnitOfWorkFactory,
     NativeParserExecutor,
     NativeParserRegistry,
@@ -39,6 +45,10 @@ class ContentLifecycleError(RuntimeError):
     pass
 
 
+class ContentCursorError(ValueError):
+    code = "invalid_content_cursor"
+
+
 class ContentApplicationService:
     def __init__(
         self,
@@ -49,6 +59,7 @@ class ContentApplicationService:
         identifier: ContentIdentifier | None = None,
         parser_registry: NativeParserRegistry | None = None,
         parser_executor: NativeParserExecutor | None = None,
+        cursor_codec: ContentCursorCodec | None = None,
         inspection_sample_bytes: int = 256 * 1024,
         max_inspection_json_bytes: int = 64 * 1024,
         parser_input_bytes: int = 16 * 1024 * 1024,
@@ -61,6 +72,7 @@ class ContentApplicationService:
         self._identifier = identifier
         self._parser_registry = parser_registry
         self._parser_executor = parser_executor
+        self._cursor_codec = cursor_codec
         self._inspection_sample_bytes = inspection_sample_bytes
         self._max_inspection_json_bytes = max_inspection_json_bytes
         self._parser_input_bytes = parser_input_bytes
@@ -179,6 +191,7 @@ class ContentApplicationService:
             pass
 
     async def inspect(self, context: ExecutionContext, content_id: str) -> ContentInspection:
+        require_scope(context.principal, "content:read")
         identifier = self._identifier
         if identifier is None:
             raise ContentLifecycleError("Content identifier is not configured")
@@ -225,6 +238,7 @@ class ContentApplicationService:
         raise ContentLifecycleError("Content inspection CAS failed")
 
     async def native_parse(self, context: ExecutionContext, content_id: str) -> NativeParseResult:
+        require_scope(context.principal, "content:read")
         registry = self._parser_registry
         executor = self._parser_executor
         if registry is None or executor is None:
@@ -326,6 +340,175 @@ class ContentApplicationService:
             if remaining_wait <= 0:
                 raise ContentLifecycleError("compatible Content representation wait expired")
             await asyncio.sleep(min(self._representation_poll_seconds, remaining_wait))
+
+    async def metadata(self, context: ExecutionContext, content_id: str) -> ContentReadResult:
+        record, representations = await self._load_authorized(context, content_id)
+        return ContentReadResult(
+            content=_content_ref(record.content),
+            returned_chars=0,
+            inspection=record.inspection,
+            available_representations=representations,
+        )
+
+    async def read(
+        self,
+        context: ExecutionContext,
+        content_id: str,
+        *,
+        max_chars: int = 12000,
+        cursor: str | None = None,
+    ) -> ContentReadResult:
+        if not 1 <= max_chars <= 30000:
+            raise ValueError("max_chars must be between 1 and 30000")
+        record, representations = await self._load_authorized(context, content_id)
+        reference = _content_ref(record.content)
+        if record.content.representation_kind not in {
+            ContentRepresentationKind.TEXT,
+            ContentRepresentationKind.MARKDOWN,
+            ContentRepresentationKind.STRUCTURED,
+        }:
+            if cursor is not None:
+                raise ContentCursorError("Content cursor cannot be used with binary Content")
+            return ContentReadResult(
+                content=reference,
+                returned_chars=0,
+                inspection=record.inspection,
+                available_representations=representations,
+            )
+        codec = self._cursor_codec
+        if codec is None:
+            raise ContentLifecycleError("Content cursor codec is not configured")
+        offset = 0
+        if cursor is not None:
+            try:
+                claims = codec.decode(cursor)
+            except ValueError as error:
+                raise ContentCursorError("Content cursor is malformed or tampered") from error
+            if (
+                claims.owner_principal_id != context.principal.principal_id
+                or claims.content_id != record.content.content_id
+                or claims.content_revision != record.content.revision
+            ):
+                raise ContentCursorError("Content cursor does not match this resource revision")
+            offset = claims.byte_offset
+        if record.storage_key is None:
+            raise ContentLifecycleError("Content storage metadata is missing")
+        try:
+            text_value, next_offset = await self._read_utf8_chunk(
+                record.storage_key, offset=offset, max_chars=max_chars
+            )
+        except UnicodeDecodeError as error:
+            raise ContentLifecycleError("text Content is not valid UTF-8") from error
+        next_cursor = None
+        if next_offset is not None:
+            next_cursor = codec.encode(
+                ContentCursorClaims(
+                    owner_principal_id=context.principal.principal_id,
+                    content_id=record.content.content_id,
+                    content_revision=record.content.revision,
+                    byte_offset=next_offset,
+                )
+            )
+        return ContentReadResult(
+            content=reference,
+            text=text_value,
+            returned_chars=len(text_value),
+            next_cursor=next_cursor,
+            inspection=record.inspection,
+            available_representations=representations,
+        )
+
+    async def open_data(
+        self, context: ExecutionContext, content_id: str
+    ) -> AuthorizedContentStream:
+        record, _ = await self._load_authorized(context, content_id)
+        if record.storage_key is None:
+            raise ContentLifecycleError("Content storage metadata is missing")
+        observed = await self._store.stat(record.storage_key)
+        if (
+            observed is None
+            or observed.sha256 != record.content.sha256
+            or observed.size != record.content.size_bytes
+        ):
+            raise ContentLifecycleError("Content storage integrity verification failed")
+        return AuthorizedContentStream(
+            content=_content_ref(record.content),
+            source_filename=record.content.source_filename,
+            stream=self._store.open_stream(record.storage_key),
+        )
+
+    async def _load_authorized(
+        self, context: ExecutionContext, content_id: str
+    ) -> tuple[ContentRecord, tuple[ContentRef, ...]]:
+        require_scope(context.principal, "content:read")
+        typed_id = ContentId(content_id)
+        async with self._uow_factory() as uow:
+            record = await uow.contents.get(typed_id)
+            if record is None:
+                raise ContentLifecycleError("Content was not found")
+            require_owner(context.principal, record.content.owner_principal_id)
+            if (
+                record.content.state is not ContentState.AVAILABLE
+                or record.storage_key is None
+                or (
+                    record.content.expires_at is not None
+                    and record.content.expires_at <= context.clock.utc_now()
+                )
+            ):
+                raise ContentLifecycleError("Content is not available")
+            relations = await uow.relations.for_source(typed_id, limit=32)
+            available: list[ContentRef] = []
+            for relation in relations:
+                target = await uow.contents.get(relation.target_content_id)
+                if (
+                    target is not None
+                    and target.content.owner_principal_id == context.principal.principal_id
+                    and target.content.state is ContentState.AVAILABLE
+                    and (
+                        target.content.expires_at is None
+                        or target.content.expires_at > context.clock.utc_now()
+                    )
+                ):
+                    available.append(_content_ref(target.content))
+        return record, tuple(available)
+
+    async def _read_utf8_chunk(
+        self, storage_key: str, *, offset: int, max_chars: int
+    ) -> tuple[str, int | None]:
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="strict")
+        parts: list[str] = []
+        character_count = 0
+        skipped = 0
+        stream = self._store.open_stream(storage_key)
+        exceeded = False
+        try:
+            async for chunk in stream:
+                if skipped < offset:
+                    consumed = min(len(chunk), offset - skipped)
+                    skipped += consumed
+                    chunk = chunk[consumed:]
+                    if not chunk:
+                        continue
+                decoded = decoder.decode(chunk, final=False)
+                parts.append(decoded)
+                character_count += len(decoded)
+                if character_count > max_chars:
+                    exceeded = True
+                    break
+            if skipped < offset:
+                raise ContentCursorError("Content cursor offset exceeds the resource")
+            if not exceeded:
+                parts.append(decoder.decode(b"", final=True))
+        finally:
+            close = getattr(stream, "aclose", None)
+            if close is not None:
+                await close()
+        value = "".join(parts)
+        if len(value) <= max_chars:
+            return value, None
+        bounded = value[:max_chars]
+        returned_bytes = len(bounded.encode("utf-8"))
+        return bounded, offset + returned_bytes
 
     async def _read_inspection_sample(self, storage_key: str) -> bytes:
         return await self._read_bounded(storage_key, self._inspection_sample_bytes, strict=False)
