@@ -7,7 +7,12 @@ from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 
-from web_access.application.common.content_store import ContentStore, StagedBlob, StoredBlob
+from web_access.application.common.content_store import (
+    ContentStore,
+    StagedBlob,
+    StagingEntry,
+    StoredBlob,
+)
 from web_access.application.content.models import (
     ContentInspection,
     NativeParseResult,
@@ -25,6 +30,7 @@ class ContentRecord:
     staging_key: str | None = None
     staged_at: datetime | None = None
     available_at: datetime | None = None
+    updated_at: datetime | None = None
     failure_code: str | None = None
 
 
@@ -54,6 +60,22 @@ class ContentRepository(Protocol):
     async def mark_failed(
         self, content_id: ContentId, *, expected_revision: int, failure_code: str
     ) -> ContentRecord | None: ...
+
+    async def stale_creating(
+        self, *, older_than: datetime, limit: int
+    ) -> tuple[ContentRecord, ...]: ...
+
+    async def known_staging_handles(self) -> frozenset[str]: ...
+
+    async def gc_storage_candidates(
+        self, *, older_than: datetime, limit: int
+    ) -> tuple[str, ...]: ...
+
+    async def lock_storage_key(self, storage_key: str) -> None: ...
+
+    async def has_active_storage_reference(self, storage_key: str) -> bool: ...
+
+    async def available_for_audit(self, *, limit: int) -> tuple[ContentRecord, ...]: ...
 
 
 class ContentRelationRepository(Protocol):
@@ -131,4 +153,5 @@ __all__ = [
     "NativeParserExecutor",
     "NativeParserRegistry",
     "StagedBlob",
+    "StagingEntry",
 ]

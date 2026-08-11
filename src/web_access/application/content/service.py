@@ -76,6 +76,10 @@ class ContentApplicationService:
             revision = 2
             final = await self._store.finalize(staged)
             async with self._uow_factory() as uow:
+                await uow.contents.lock_storage_key(final.key)
+                observed_final = await self._store.stat(final.key)
+                if observed_final != final:
+                    raise ContentLifecycleError("final Content integrity verification failed")
                 published = await uow.contents.publish(
                     content_id, expected_revision=revision, storage_key=final.key
                 )

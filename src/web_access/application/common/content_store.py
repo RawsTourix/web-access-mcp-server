@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Protocol
 
 
@@ -23,6 +24,12 @@ class StagedBlob:
     size: int
 
 
+@dataclass(frozen=True, slots=True)
+class StagingEntry:
+    handle: str
+    modified_at: datetime
+
+
 class ContentStore(Protocol):
     async def stage_write(self, identity: str, stream: AsyncIterable[bytes]) -> StagedBlob: ...
 
@@ -31,6 +38,8 @@ class ContentStore(Protocol):
     async def finalize(self, staged: StagedBlob) -> StoredBlob: ...
 
     async def remove_staging(self, handle: str) -> bool: ...
+
+    async def list_staging(self, limit: int) -> tuple[StagingEntry, ...]: ...
 
     async def write_stream(self, stream: AsyncIterable[bytes]) -> StoredBlob: ...
 
@@ -41,5 +50,7 @@ class ContentStore(Protocol):
     async def exists(self, key: str) -> bool: ...
 
     async def remove(self, key: str) -> bool: ...
+
+    async def list_final(self, limit: int) -> tuple[StoredBlob, ...]: ...
 
     async def probe(self) -> bool: ...

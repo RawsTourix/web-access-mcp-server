@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self
 
-from sqlalchemy import select, update
+from sqlalchemy import func, select, text, update
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from web_access.application.content.ports import ContentRecord
@@ -46,6 +46,7 @@ def _record(row: ContentObjectRow) -> ContentRecord:
         staging_key=row.staging_key,
         staged_at=row.staged_at,
         available_at=row.available_at,
+        updated_at=row.updated_at,
         failure_code=row.failure_code,
     )
 
@@ -165,6 +166,79 @@ class PostgresContentRepository:
         if result.scalar_one_or_none() is None:
             return None
         return await self.get(content_id)
+
+    async def stale_creating(
+        self, *, older_than: datetime, limit: int
+    ) -> tuple[ContentRecord, ...]:
+        rows = (
+            await self._session.scalars(
+                select(ContentObjectRow)
+                .where(
+                    ContentObjectRow.state == ContentState.CREATING.value,
+                    ContentObjectRow.updated_at <= older_than,
+                )
+                .order_by(ContentObjectRow.updated_at, ContentObjectRow.id)
+                .limit(limit)
+                .with_for_update(skip_locked=True)
+            )
+        ).all()
+        return tuple(_record(row) for row in rows)
+
+    async def known_staging_handles(self) -> frozenset[str]:
+        handles = await self._session.scalars(
+            select(ContentObjectRow.staging_key).where(
+                ContentObjectRow.state == ContentState.CREATING.value,
+                ContentObjectRow.staging_key.is_not(None),
+            )
+        )
+        return frozenset(handle for handle in handles if handle is not None)
+
+    async def gc_storage_candidates(self, *, older_than: datetime, limit: int) -> tuple[str, ...]:
+        keys = await self._session.scalars(
+            select(ContentObjectRow.storage_key)
+            .where(
+                ContentObjectRow.state.in_(
+                    (
+                        ContentState.FAILED.value,
+                        ContentState.EXPIRED.value,
+                        ContentState.DELETED.value,
+                    )
+                ),
+                ContentObjectRow.updated_at <= older_than,
+                ContentObjectRow.storage_key.is_not(None),
+            )
+            .distinct()
+            .limit(limit)
+        )
+        return tuple(key for key in keys if key is not None)
+
+    async def lock_storage_key(self, storage_key: str) -> None:
+        await self._session.execute(
+            text("SELECT pg_advisory_xact_lock(hashtextextended(:storage_key, 0))"),
+            {"storage_key": storage_key},
+        )
+
+    async def has_active_storage_reference(self, storage_key: str) -> bool:
+        count = await self._session.scalar(
+            select(func.count())
+            .select_from(ContentObjectRow)
+            .where(
+                ContentObjectRow.storage_key == storage_key,
+                ContentObjectRow.state == ContentState.AVAILABLE.value,
+            )
+        )
+        return bool(count)
+
+    async def available_for_audit(self, *, limit: int) -> tuple[ContentRecord, ...]:
+        rows = (
+            await self._session.scalars(
+                select(ContentObjectRow)
+                .where(ContentObjectRow.state == ContentState.AVAILABLE.value)
+                .order_by(ContentObjectRow.updated_at, ContentObjectRow.id)
+                .limit(limit)
+            )
+        ).all()
+        return tuple(_record(row) for row in rows)
 
 
 class PostgresContentRelationRepository:

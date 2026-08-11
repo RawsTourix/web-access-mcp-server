@@ -9,10 +9,11 @@ import re
 import secrets
 import time
 from collections.abc import AsyncIterable, AsyncIterator
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
-from web_access.application.common.content_store import StagedBlob, StoredBlob
+from web_access.application.common.content_store import StagedBlob, StagingEntry, StoredBlob
 from web_access.core.config import ContentStoreSettings
 
 _KEY_PATTERN = re.compile(r"^sha256/([0-9a-f]{2})/([0-9a-f]{64})$")
@@ -185,6 +186,25 @@ class FilesystemContentStore:
         await asyncio.to_thread(self._prune_staging_parent, path.parent)
         return True
 
+    async def list_staging(self, limit: int) -> tuple[StagingEntry, ...]:
+        if not 1 <= limit <= 10_000:
+            raise ValueError("staging list limit is out of bounds")
+        await asyncio.to_thread(self._validate_managed_directories)
+        paths = await asyncio.to_thread(lambda: sorted(self._staging.glob("**/*.part")))
+        entries: list[StagingEntry] = []
+        for path in paths:
+            if len(entries) >= limit or path.is_symlink() or not path.is_file():
+                continue
+            relative = path.relative_to(self._staging).as_posix()
+            handle = f"staging/{relative}"
+            if _STAGING_PATTERN.fullmatch(handle) is None:
+                continue
+            modified = (await asyncio.to_thread(path.stat)).st_mtime
+            entries.append(
+                StagingEntry(handle=handle, modified_at=datetime.fromtimestamp(modified, UTC))
+            )
+        return tuple(entries)
+
     def _safe_unlink_staging(self, path: Path) -> None:
         """Never follow a replaced staging base while cleaning our temporary file."""
 
@@ -242,6 +262,25 @@ class FilesystemContentStore:
         except FileNotFoundError:
             return False
         return True
+
+    async def list_final(self, limit: int) -> tuple[StoredBlob, ...]:
+        if not 1 <= limit <= 10_000:
+            raise ValueError("final blob list limit is out of bounds")
+        await asyncio.to_thread(self._validate_managed_directories)
+        paths = await asyncio.to_thread(
+            lambda: sorted((self._blobs / "sha256").glob("[0-9a-f][0-9a-f]/*"))
+        )
+        blobs: list[StoredBlob] = []
+        for path in paths:
+            if len(blobs) >= limit or path.is_symlink() or not path.is_file():
+                continue
+            sha256 = path.name
+            key = f"sha256/{path.parent.name}/{sha256}"
+            if _KEY_PATTERN.fullmatch(key) is None:
+                continue
+            size = (await asyncio.to_thread(path.stat)).st_size
+            blobs.append(StoredBlob(key=key, sha256=sha256, size=size))
+        return tuple(blobs)
 
     async def cleanup_staging(self, older_than_seconds: float) -> int:
         if older_than_seconds < 0:
