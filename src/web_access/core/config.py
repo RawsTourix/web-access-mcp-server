@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from enum import StrEnum
+from ipaddress import ip_network
 from pathlib import Path
 from typing import Annotated, Literal, Self
 
@@ -153,6 +154,43 @@ class SecuritySettings(BaseModel):
 
     request_id_max_length: int = Field(default=128, ge=16, le=512)
     shutdown_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+
+
+class RetrievalSecuritySettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    additional_allowed_ports: frozenset[int] = Field(default=frozenset(), max_length=32)
+    internal_cidrs: tuple[str, ...] = Field(default=(), max_length=64)
+    policy_revision: str = Field(default="retrieval-egress-v1", min_length=8, max_length=128)
+
+    @field_validator("additional_allowed_ports")
+    @classmethod
+    def validate_ports(cls, ports: frozenset[int]) -> frozenset[int]:
+        if any(port < 1 or port > 65535 for port in ports):
+            raise ValueError("Retrieval egress ports must be between 1 and 65535")
+        return ports
+
+    @field_validator("internal_cidrs")
+    @classmethod
+    def validate_internal_cidrs(cls, cidrs: tuple[str, ...]) -> tuple[str, ...]:
+        try:
+            normalized = tuple(str(ip_network(cidr, strict=True)) for cidr in cidrs)
+        except ValueError as error:
+            raise ValueError("invalid Retrieval internal CIDR") from error
+        if len(normalized) != len(set(normalized)):
+            raise ValueError("duplicate Retrieval internal CIDR")
+        return normalized
+
+
+class RetrievalSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
+
+    operation_timeout_seconds: float = Field(default=30.0, gt=0, le=300)
+    batch_concurrency: int = Field(default=8, ge=1, le=32)
+    max_connections: int = Field(default=32, ge=1, le=256)
+    max_connections_per_host: int = Field(default=4, ge=1, le=32)
+    max_redirects: int = Field(default=5, ge=0, le=10)
+    security: RetrievalSecuritySettings = Field(default_factory=RetrievalSecuritySettings)
 
 
 class SearxngSettings(BaseModel):
@@ -356,6 +394,7 @@ class Settings(BaseSettings):
     content_store: ContentStoreSettings = Field(default_factory=ContentStoreSettings)
     observability: ObservabilitySettings = Field(default_factory=ObservabilitySettings)
     security: SecuritySettings = Field(default_factory=SecuritySettings)
+    retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     search: SearchSettings = Field(default_factory=SearchSettings)
 
     @model_validator(mode="after")
