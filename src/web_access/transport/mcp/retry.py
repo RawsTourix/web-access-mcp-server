@@ -13,6 +13,7 @@ class TrustedToolRetryDescriptor:
     retry_class: RetryClass
     effects: OperationEffects
     blind_retry_after_possible_dispatch: bool
+    idempotency_proven: bool = False
 
 
 _DESCRIPTORS = MappingProxyType(
@@ -21,7 +22,23 @@ _DESCRIPTORS = MappingProxyType(
             retry_class=RetryClass.PHASE_EVIDENCE_REQUIRED,
             effects=OperationEffects(billable_cost_possible=True),
             blind_retry_after_possible_dispatch=False,
-        )
+        ),
+        "web_fetch": TrustedToolRetryDescriptor(
+            retry_class=RetryClass.PHASE_EVIDENCE_REQUIRED,
+            effects=OperationEffects(resource_creation_possible=True),
+            blind_retry_after_possible_dispatch=False,
+        ),
+        "content_get": TrustedToolRetryDescriptor(
+            retry_class=RetryClass.SAFE_RETRY,
+            effects=OperationEffects(),
+            blind_retry_after_possible_dispatch=True,
+        ),
+        "content_parse": TrustedToolRetryDescriptor(
+            retry_class=RetryClass.IDEMPOTENT_RETRY,
+            effects=OperationEffects(resource_creation_possible=True),
+            blind_retry_after_possible_dispatch=True,
+            idempotency_proven=True,
+        ),
     }
 )
 

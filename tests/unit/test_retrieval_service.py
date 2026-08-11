@@ -109,7 +109,8 @@ class FakeFetcher:
 
 
 class FakeContentPipeline:
-    def __init__(self) -> None:
+    def __init__(self, *, lose_ingest_result: bool = False) -> None:
+        self.lose_ingest_result = lose_ingest_result
         self.ingested: list[bytes] = []
         self.inspected: list[str] = []
         self.parsed: list[str] = []
@@ -127,6 +128,8 @@ class FakeContentPipeline:
         assert representation_kind is ContentRepresentationKind.RAW
         body = b"".join([chunk async for chunk in stream])
         self.ingested.append(body)
+        if self.lose_ingest_result:
+            raise RuntimeError("controlled response loss after resource creation")
         return _ref(f"cnt_{len(self.ingested):032x}")
 
     async def inspect(self, context: ExecutionContext, content_id: str) -> ContentInspection:
@@ -276,6 +279,25 @@ async def test_transport_failure_has_no_automatic_retry() -> None:
     assert result.error.category is ErrorCategory.UPSTREAM
     assert fetcher.calls == [url]
     assert content.ingested == []
+
+
+@pytest.mark.asyncio
+async def test_content_creation_response_loss_is_unknown_and_never_reacquired() -> None:
+    url = "https://example.com/ambiguous"
+    fetcher = FakeFetcher()
+    content = FakeContentPipeline(lose_ingest_result=True)
+
+    result = await _service(fetcher, content).fetch(
+        _context(), RetrievalBatchRequest((RetrievalRequestItem(url),))
+    )
+
+    assert result.outcome is OperationOutcome.UNKNOWN
+    assert result.error is not None
+    assert result.error.code == "retrieval_resource_outcome_unknown"
+    assert result.error.retryable is False
+    assert result.error.details == {"retrieval_phase": "content_creating_staging"}
+    assert fetcher.calls == [url]
+    assert content.ingested == [b"body"]
 
 
 @pytest.mark.asyncio

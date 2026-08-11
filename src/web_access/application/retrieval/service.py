@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 
+from pydantic import JsonValue
+
 from web_access.application.common.auth import require_scope
 from web_access.application.common.context import ExecutionContext
 from web_access.application.common.errors import ErrorCategory, OperationError, PublicError
@@ -26,6 +28,7 @@ from web_access.application.retrieval.ports import (
     TooManyRedirects,
     UnsupportedContentEncoding,
 )
+from web_access.application.retrieval.retry import RetrievalPhase, RetrievalPhaseTracker
 from web_access.core.config import RetrievalSettings
 from web_access.core.time import Deadline
 from web_access.domain.content import ContentRepresentationKind
@@ -94,8 +97,18 @@ class RetrievalApplicationService:
         item: RetrievalRequestItem,
         processing_level: RetrievalProcessingLevel,
     ) -> BatchItemResult[RetrievalItemResult]:
+        phase = RetrievalPhaseTracker()
         try:
+            phase.advance(RetrievalPhase.VALIDATED)
+            phase.advance(RetrievalPhase.DNS_RESOLVING)
+            phase.advance(RetrievalPhase.CONNECTING)
+            # The aiohttp dispatch boundary is deliberately treated as ambiguous:
+            # connection/request failures after this point never trigger a blind retry.
+            phase.advance(RetrievalPhase.REQUEST_DISPATCH_POSSIBLE)
             response = await self._fetcher.fetch(context, item.url)
+            phase.advance(RetrievalPhase.RESPONSE_HEADERS_RECEIVED)
+            phase.advance(RetrievalPhase.BODY_STREAMING)
+            phase.advance(RetrievalPhase.CONTENT_CREATING_STAGING)
             raw = await self._content.ingest(
                 context,
                 response.body,
@@ -103,12 +116,14 @@ class RetrievalApplicationService:
                 media_type=response.declared_media_type,
                 source_filename=response.source_filename,
             )
+            phase.advance(RetrievalPhase.CONTENT_FINALIZED)
             inspection = None
             native = None
             representations = ()
             warnings = ()
             hints = ()
             if processing_level is not RetrievalProcessingLevel.STORE_ONLY:
+                phase.advance(RetrievalPhase.PROCESSING)
                 inspection = await self._content.inspect(context, raw.content_id)
             if processing_level is RetrievalProcessingLevel.NATIVE:
                 parsed = await self._content.native_parse(context, raw.content_id)
@@ -131,6 +146,7 @@ class RetrievalApplicationService:
                 native_content=native,
                 available_representations=representations,
             )
+            phase.advance(RetrievalPhase.TERMINAL)
             if 200 <= metadata.http_status < 300:
                 return BatchItemResult(
                     index=index,
@@ -161,6 +177,7 @@ class RetrievalApplicationService:
                 ErrorCategory.POLICY,
                 getattr(error, "code", "retrieval_url_blocked"),
                 "The requested Retrieval destination is not allowed.",
+                details={"retrieval_phase": phase.phase_value},
             )
         except TooManyRedirects:
             return _error_item(
@@ -169,6 +186,7 @@ class RetrievalApplicationService:
                 ErrorCategory.UPSTREAM,
                 "too_many_redirects",
                 "The upstream redirect limit was exceeded.",
+                details={"retrieval_phase": phase.phase_value},
             )
         except ResponseTooLarge:
             return _error_item(
@@ -177,6 +195,7 @@ class RetrievalApplicationService:
                 ErrorCategory.CAPACITY,
                 "response_too_large",
                 "The retrieved response exceeded its byte limit.",
+                details={"retrieval_phase": phase.phase_value},
             )
         except DecompressionLimitExceeded:
             return _error_item(
@@ -185,6 +204,7 @@ class RetrievalApplicationService:
                 ErrorCategory.CAPACITY,
                 "decompression_limit",
                 "The retrieved response exceeded its decompression limit.",
+                details={"retrieval_phase": phase.phase_value},
             )
         except UnsupportedContentEncoding:
             return _error_item(
@@ -193,6 +213,7 @@ class RetrievalApplicationService:
                 ErrorCategory.UNSUPPORTED,
                 "unsupported_content_encoding",
                 "The upstream Content-Encoding is unsupported.",
+                details={"retrieval_phase": phase.phase_value},
             )
         except TimeoutError:
             return _error_item(
@@ -201,7 +222,7 @@ class RetrievalApplicationService:
                 ErrorCategory.TIMEOUT,
                 "retrieval_timeout",
                 "The Retrieval operation timed out.",
-                retryable=True,
+                details={"retrieval_phase": phase.phase_value},
             )
         except RetrievalConnectionError:
             return _error_item(
@@ -210,15 +231,25 @@ class RetrievalApplicationService:
                 ErrorCategory.UPSTREAM,
                 "retrieval_transport_error",
                 "The upstream response could not be retrieved.",
-                retryable=True,
+                details={"retrieval_phase": phase.phase_value},
             )
         except Exception:
+            if phase.resource_creation_possible:
+                return _error_item(
+                    index,
+                    LeafOutcome.UNKNOWN,
+                    ErrorCategory.UNKNOWN_OUTCOME,
+                    "retrieval_resource_outcome_unknown",
+                    "Retrieval may have created Content, but its result was not confirmed.",
+                    details={"retrieval_phase": phase.phase_value},
+                )
             return _error_item(
                 index,
                 LeafOutcome.FAILED,
                 ErrorCategory.INTERNAL,
                 "retrieval_internal_error",
                 "The Retrieval item could not be completed.",
+                details={"retrieval_phase": phase.phase_value},
             )
 
 
@@ -230,6 +261,7 @@ def _error_item(
     message: str,
     *,
     retryable: bool = False,
+    details: dict[str, JsonValue] | None = None,
 ) -> BatchItemResult[RetrievalItemResult]:
     return BatchItemResult(
         index=index,
@@ -239,6 +271,7 @@ def _error_item(
             code=code,
             message=message,
             retryable=retryable,
+            details=details,
         ),
     )
 
