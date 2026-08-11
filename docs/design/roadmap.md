@@ -86,7 +86,13 @@ billable/read-oriented Search ≠ blind retry-safe
 
 ADR-0024 applies to paid provider response-loss.
 
-**Status:** implemented, pending acceptance.
+**Status:** accepted.
+
+Acceptance repository HEAD:
+
+```text
+a6af55ba5e6b2781af580f335342e356a8fbe747
+```
 
 ---
 
@@ -122,7 +128,7 @@ web_fetch resource creation ≠ blind safe replay
 content_parse idempotent only after canonical reuse proof
 ```
 
-**Status:** ready for implementation; allowed only after factual acceptance of v0.2. Not started.
+**Status:** ready for implementation. Next allowed milestone; not started.
 
 ---
 

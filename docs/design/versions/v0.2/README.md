@@ -2,13 +2,27 @@
 
 ## Статус
 
-`implemented, pending acceptance`
+`accepted`
+
+Independent acceptance completed.
+
+Acceptance repository HEAD:
+
+```text
+a6af55ba5e6b2781af580f335342e356a8fbe747
+```
+
+Final production correction:
+
+```text
+c91f12925f4c3673ccc93a8b137824c5b913e33b
+```
 
 v0.2 реализует первую полноценную Web Access capability — Search — через общий application backend, REST и MCP.
 
 Implementation order: `implementation-sequence.md`.
 
-Implementation evidence: `acceptance.md`. Independent review, not the coding agent, changes this status to `accepted`.
+Implementation and independent acceptance evidence: `acceptance.md`.
 
 ---
 

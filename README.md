@@ -21,7 +21,7 @@ MCP      — компактный LLM-friendly interface
 
 ## Статус
 
-**v0.2 Search Runtime implemented, pending acceptance.**
+**v0.2 Search Runtime accepted.**
 
 Acceptance v0.1 остаётся зафиксирован на:
 
@@ -29,7 +29,13 @@ Acceptance v0.1 остаётся зафиксирован на:
 3e5df8775f99cf15a30e17b56db740c08b00233c
 ```
 
-Search доступен через REST и MCP. Остальные Web Access capabilities ещё не реализованы. v0.3 Retrieval & Content Core разрешён только после factual acceptance v0.2; v0.3 не начат.
+Acceptance v0.2 зафиксирован на repository HEAD:
+
+```text
+a6af55ba5e6b2781af580f335342e356a8fbe747
+```
+
+Search доступен через REST и MCP. Остальные Web Access capabilities ещё не реализованы. v0.3 Retrieval & Content Core — следующий разрешённый implementation milestone; v0.3 ещё не начат.
 
 ## Основные принципы
 

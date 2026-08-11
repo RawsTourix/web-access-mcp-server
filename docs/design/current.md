@@ -8,12 +8,18 @@
 
 # 1. Общий статус
 
-**Архитектурный design первой stable line v1.0 сформирован. v0.1 принят; v0.2 Search Runtime implemented, pending acceptance.**
+**Архитектурный design первой stable line v1.0 сформирован. v0.1 Service Foundation accepted; v0.2 Search Runtime accepted.**
 
 Acceptance HEAD v0.1:
 
 ```text
 3e5df8775f99cf15a30e17b56db740c08b00233c
+```
+
+Acceptance HEAD v0.2:
+
+```text
+a6af55ba5e6b2781af580f335342e356a8fbe747
 ```
 
 Закрыты:
@@ -30,14 +36,16 @@ Concept
 → implementation sequences
 → testing/release/operational gates
 → v0.1 Service Foundation implementation and acceptance
-→ v0.2 Search Runtime implementation candidate and coding-agent evidence
+→ v0.2 Search Runtime implementation and independent acceptance
 ```
 
-Текущий acceptance milestone:
+Следующий разрешённый implementation milestone:
 
 ```text
-v0.2 Search Runtime independent acceptance review
+v0.3 Retrieval & Content Core
 ```
+
+v0.3 ещё не начат и требует отдельной implementation instruction.
 
 Version-by-version order обязателен; design readiness поздней версии не разрешает перепрыгнуть acceptance prerequisites.
 
@@ -229,8 +237,8 @@ Exact Admin REST covers policy revisions/rollback, overrides, usage/providers, a
 
 ```text
 v0.1 Service Foundation                         accepted
-v0.2 Search Runtime                             implemented, pending acceptance
-v0.3 Retrieval & Content Core                   ready; allowed only after v0.2 acceptance
+v0.2 Search Runtime                             accepted
+v0.3 Retrieval & Content Core                   ready for implementation; next allowed milestone; not started
 v0.4 Managed Browser Runtime                    ready for implementation
 v0.5 Native Content Expansion                   ready for implementation
 v0.6 Durable Jobs Runtime                       ready for implementation
@@ -280,15 +288,15 @@ v1 baseline намеренно не обещает:
 
 Design-phase feature expansion **остановлен**. Новые capability не следует добавлять без новой реальной requirement/review.
 
-Перед acceptance review v0.2:
+Перед отдельной implementation instruction для v0.3:
 
 ```text
 docs/AGENTS.md
 → this current.md
-→ v0.2 Search Design/ADR
-→ versions/v0.2/README.md
-→ versions/v0.2/implementation-sequence.md
+→ v0.3 Retrieval/Content Design/ADR
+→ versions/v0.3/README.md
+→ versions/v0.3/implementation-sequence.md
 → testing/release gates
 ```
 
-v0.2 реализован и ожидает независимого acceptance. v0.3 Retrieval & Content Core разрешён только после factual acceptance v0.2 и не начат.
+v0.2 Search Runtime независимо принят. v0.3 Retrieval & Content Core — следующий разрешённый implementation milestone и ещё не начат.

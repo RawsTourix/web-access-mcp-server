@@ -13,8 +13,8 @@ Version docs не создают новую архитектуру без отд
 | Версия | Название | Status |
 |---|---|---|
 | `v0.1` | Service Foundation | accepted |
-| `v0.2` | Search Runtime | implemented, pending acceptance |
-| `v0.3` | Retrieval & Content Core | ready; allowed only after v0.2 acceptance |
+| `v0.2` | Search Runtime | accepted |
+| `v0.3` | Retrieval & Content Core | ready for implementation; next allowed milestone |
 | `v0.4` | Managed Browser Runtime | ready for implementation |
 | `v0.5` | Native Content Expansion | ready for implementation |
 | `v0.6` | Durable Jobs Runtime | ready for implementation |
@@ -27,6 +27,12 @@ Acceptance v0.1 зафиксирован на implementation HEAD:
 
 ```text
 3e5df8775f99cf15a30e17b56db740c08b00233c
+```
+
+Acceptance v0.2 зафиксирован на repository HEAD:
+
+```text
+a6af55ba5e6b2781af580f335342e356a8fbe747
 ```
 
 ---

@@ -1,10 +1,32 @@
-# v0.2 Search Runtime — implementation candidate evidence
+# v0.2 Search Runtime — implementation and acceptance evidence
 
 ## Status
 
-`implemented, pending acceptance`
+`accepted`
 
-This is coding-agent handoff evidence, not self-acceptance. An independent reviewer decides whether the version becomes `accepted`. v0.3 Retrieval & Content Core has not started and is allowed only after factual acceptance of v0.2.
+The coding-agent handoff evidence below has completed independent review. v0.3 Retrieval & Content Core was not part of this acceptance and had not started at the accepted HEAD.
+
+## Independent acceptance
+
+v0.2 Search Runtime independently accepted.
+
+Acceptance repository HEAD:
+
+```text
+a6af55ba5e6b2781af580f335342e356a8fbe747
+```
+
+Final production correction:
+
+```text
+c91f12925f4c3673ccc93a8b137824c5b913e33b
+```
+
+Independent review confirmed the applicable v0.2 architecture, contract, security, migration, Search, retry/cost, race/fault, recovery, and scope gates recorded in this document.
+
+No unresolved v0.2 acceptance blocker remains.
+
+v0.3 Retrieval & Content Core was not part of this acceptance and had not started at the accepted HEAD.
 
 ## Candidate identity
 
