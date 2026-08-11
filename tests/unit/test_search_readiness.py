@@ -60,12 +60,12 @@ class FixedProbe:
         return self.state
 
 
-async def _true() -> bool:
-    return True
+async def _ready() -> Availability:
+    return Availability.READY
 
 
-async def _false() -> bool:
-    return False
+async def _unavailable() -> Availability:
+    return Availability.UNAVAILABLE
 
 
 @pytest.mark.asyncio
@@ -109,7 +109,7 @@ async def test_searxng_probe_uses_only_private_non_billable_health_protocol() ->
         probe = SearxngProviderReadinessProbe(
             settings=SearxngSettings.model_validate({"endpoint": "http://searxng:8080"}),
             client=client,
-            rate_dependency=_true,
+            admission_dependency=_ready,
         )
         assert await probe.check() is Availability.READY
     assert len(calls) == 1
@@ -131,29 +131,29 @@ async def test_redis_failure_makes_searxng_unavailable_without_http_call() -> No
         probe = SearxngProviderReadinessProbe(
             settings=SearxngSettings.model_validate({"endpoint": "http://searxng:8080"}),
             client=client,
-            rate_dependency=_false,
+            admission_dependency=_unavailable,
         )
         assert await probe.check() is Availability.UNAVAILABLE
     assert calls == 0
 
 
 @pytest.mark.parametrize(
-    ("rate_ready", "database_ready", "expected"),
+    ("admission", "database_ready", "expected"),
     [
-        (True, True, Availability.READY),
-        (False, True, Availability.UNAVAILABLE),
-        (True, False, Availability.UNAVAILABLE),
+        (Availability.READY, True, Availability.READY),
+        (Availability.UNAVAILABLE, True, Availability.UNAVAILABLE),
+        (Availability.READY, False, Availability.UNAVAILABLE),
     ],
 )
 @pytest.mark.asyncio
 async def test_yandex_readiness_uses_config_redis_and_postgres_without_search(
-    rate_ready: bool, database_ready: bool, expected: Availability
+    admission: Availability, database_ready: bool, expected: Availability
 ) -> None:
-    calls = {"rate": 0, "database": 0}
+    calls = {"admission": 0, "database": 0}
 
-    async def rate() -> bool:
-        calls["rate"] += 1
-        return rate_ready
+    async def flow_control() -> Availability:
+        calls["admission"] += 1
+        return admission
 
     async def database() -> bool:
         calls["database"] += 1
@@ -163,11 +163,11 @@ async def test_yandex_readiness_uses_config_redis_and_postgres_without_search(
         settings=YandexSearchSettings.model_validate(
             {"enabled": True, "folder_id": "folder", "api_key": "secret-api-key"}
         ),
-        rate_dependency=rate,
+        admission_dependency=flow_control,
         usage_database=database,
     )
     assert await probe.check() is expected
-    assert calls == {"rate": 1, "database": 1}
+    assert calls == {"admission": 1, "database": 1}
 
 
 @pytest.mark.asyncio

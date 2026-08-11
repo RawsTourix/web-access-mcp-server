@@ -277,6 +277,26 @@ class _FakeReadiness:
         )
 
 
+class _ProviderAuthRejectedSearch:
+    async def search(
+        self, context: ExecutionContext, request: SearchBatchRequest
+    ) -> OperationResult[SearchBatchResult]:
+        _ = request
+        error = OperationError(
+            category=ErrorCategory.UPSTREAM,
+            code="provider_auth_rejected",
+            message="Yandex Search отклонил серверные credentials.",
+        )
+        return OperationResult(
+            operation_id=context.operation_id,
+            outcome=OperationOutcome.FAILED,
+            data=SearchBatchResult(
+                items=(BatchItemResult(index=0, outcome=LeafOutcome.FAILED, error=error),)
+            ),
+            error=error,
+        )
+
+
 @pytest.mark.asyncio
 async def test_search_routes_are_exact_scoped_and_project_canonical_results(
     tmp_path: Path,
@@ -354,6 +374,37 @@ async def test_search_routes_are_exact_scoped_and_project_canonical_results(
         "time_range",
     }
     assert provider["readiness"] == "ready"
+
+
+@pytest.mark.asyncio
+async def test_authenticated_client_never_receives_401_for_yandex_credentials(
+    tmp_path: Path,
+) -> None:
+    app = create_control_plane(_settings(tmp_path))
+    async with app.router.lifespan_context(app):
+        app.state.container = replace(
+            app.state.container,
+            search=cast(SearchApplicationService, _ProviderAuthRejectedSearch()),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/v1/search",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                json={"queries": [{"query": "valid", "provider": "yandex"}]},
+            )
+
+    assert response.status_code == 502
+    assert response.json()["error"] == {
+        "category": "upstream",
+        "code": "provider_auth_rejected",
+        "message": "Yandex Search отклонил серверные credentials.",
+        "retryable": False,
+        "retry_after_seconds": None,
+        "fields": [],
+        "details": None,
+    }
 
 
 @pytest.mark.asyncio

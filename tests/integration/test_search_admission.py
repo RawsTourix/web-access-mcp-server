@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
+from typing import cast
 
 import pytest
 from redis.asyncio import Redis
 
+from web_access.application.common.health import Availability
 from web_access.application.search.ports import (
     ConcurrencyLease,
     RateAdmissionStatus,
@@ -18,6 +20,7 @@ from web_access.infrastructure.search.admission import (
     ProviderConcurrencyPolicy,
     ProviderRatePolicy,
     RedisProviderConcurrencyLimiter,
+    RedisProviderFlowControlReadiness,
     RedisProviderRateLimiter,
     TokenBucketPolicy,
 )
@@ -34,11 +37,27 @@ def redis_url() -> str:
 async def redis_client() -> AsyncIterator[Redis]:
     client = Redis.from_url(redis_url())
     await client.flushdb()
+    await _trust_flow_state(client, namespace="test-web-access")
     try:
         yield client
     finally:
         await client.flushdb()
         await client.aclose()
+
+
+async def _trust_flow_state(client: Redis, *, namespace: str) -> None:
+    info = await client.info(section="server")
+    await cast(
+        Awaitable[int],
+        client.hset(
+            f"{namespace}:search-flow-generation:v2:{{searxng}}",
+            mapping={
+                "generation": "known-safe-test-state",
+                "run_id": info["run_id"],
+                "quarantine_until_ms": "0",
+            },
+        ),
+    )
 
 
 def rate_limiter(
@@ -123,6 +142,7 @@ async def test_principal_and_global_reservation_is_atomic(redis_client: Redis) -
 async def test_exact_last_token_race_has_no_overspend(redis_client: Redis) -> None:
     for iteration in range(10):
         await redis_client.flushdb()
+        await _trust_flow_state(redis_client, namespace="test-web-access")
         limiter = rate_limiter(redis_client, principal_capacity=5, global_capacity=5)
         admissions = await asyncio.gather(
             *(
@@ -246,9 +266,19 @@ async def test_rate_flushdb_is_detected_by_two_replicas_and_recovers_after_horiz
     ).allowed
 
     await redis_client.flushdb()
+    new_replica = rate_limiter(
+        redis_client,
+        principal_capacity=1,
+        global_capacity=1,
+        principal_refill=20,
+        global_refill=20,
+    )
     after_flush = await asyncio.gather(
         first.admit(principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1),
         second.admit(principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1),
+        new_replica.admit(
+            principal_id="flush", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
+        ),
     )
     assert all(item.status is RateAdmissionStatus.UNAVAILABLE for item in after_flush)
     await asyncio.sleep(0.06)
@@ -269,9 +299,94 @@ async def test_concurrency_flushdb_does_not_reopen_capacity_before_lease_horizon
     assert await second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02) is None
 
     await redis_client.flushdb()
-    assert await second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02) is None
+    new_replica = concurrency_limiter(redis_client, global_limit=1, lease_seconds=0.15)
+    after_flush = await asyncio.gather(
+        first.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02),
+        second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02),
+        new_replica.acquire(SearchProviderId.SEARXNG, wait_seconds=0.02),
+    )
+    assert after_flush == [None, None, None]
     await asyncio.sleep(0.16)
     recovered = await second.acquire(SearchProviderId.SEARXNG, wait_seconds=0.05)
     assert recovered is not None
     await first.release(live)
     await second.release(recovered)
+
+
+@pytest.mark.integration
+async def test_old_and_new_replicas_cannot_win_missing_marker_bootstrap_race(
+    redis_client: Redis,
+) -> None:
+    old_rate = rate_limiter(
+        redis_client,
+        principal_capacity=2,
+        global_capacity=2,
+        principal_refill=1,
+        global_refill=1,
+    )
+    assert (
+        await old_rate.admit(
+            principal_id="old", provider_id=SearchProviderId.SEARXNG, wait_seconds=0.1
+        )
+    ).allowed
+    await redis_client.flushdb()
+    replicas = [
+        old_rate,
+        *[
+            rate_limiter(
+                redis_client,
+                principal_capacity=2,
+                global_capacity=2,
+                principal_refill=1,
+                global_refill=1,
+            )
+            for _ in range(5)
+        ],
+    ]
+
+    for iteration in range(10):
+        admissions = await asyncio.gather(
+            *(
+                replica.admit(
+                    principal_id=f"race-{iteration}-{index}",
+                    provider_id=SearchProviderId.SEARXNG,
+                    wait_seconds=0.1,
+                )
+                for index, replica in enumerate(replicas)
+            )
+        )
+        assert all(item.status is RateAdmissionStatus.UNAVAILABLE for item in admissions)
+
+
+@pytest.mark.integration
+async def test_flow_control_readiness_tracks_quarantine_without_consuming_capacity(
+    redis_client: Redis,
+) -> None:
+    limiter = rate_limiter(
+        redis_client,
+        principal_capacity=1,
+        global_capacity=1,
+        principal_refill=20,
+        global_refill=20,
+    )
+    readiness = RedisProviderFlowControlReadiness(redis_client, namespace="test-web-access")
+    assert await readiness.check(SearchProviderId.SEARXNG) is Availability.READY
+
+    await redis_client.flushdb()
+    assert await readiness.check(SearchProviderId.SEARXNG) is Availability.UNAVAILABLE
+    admission = await limiter.admit(
+        principal_id="readiness",
+        provider_id=SearchProviderId.SEARXNG,
+        wait_seconds=0.1,
+    )
+    assert admission.status is RateAdmissionStatus.UNAVAILABLE
+    assert await readiness.check(SearchProviderId.SEARXNG) is Availability.UNAVAILABLE
+
+    await asyncio.sleep(0.06)
+    assert await readiness.check(SearchProviderId.SEARXNG) is Availability.READY
+    recovered = await limiter.admit(
+        principal_id="readiness",
+        provider_id=SearchProviderId.SEARXNG,
+        wait_seconds=0.1,
+    )
+    assert recovered.status is RateAdmissionStatus.ALLOWED

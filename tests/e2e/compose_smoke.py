@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+from time import monotonic
 
 import httpx
 from fastmcp import Client
@@ -22,6 +23,36 @@ async def main() -> None:
         providers = await rest.get(
             "/api/v1/search/providers", headers={"Authorization": f"Bearer {token}"}
         )
+        bootstrap = await rest.post(
+            "/api/v1/search",
+            headers={"Authorization": f"Bearer {token}"},
+            json={"queries": [{"query": "bounded initial flow-control quarantine"}]},
+        )
+        if bootstrap.status_code == 503:
+            assert bootstrap.json()["error"]["code"] == "search_admission_unavailable"
+            quarantined = await rest.get(
+                "/api/v1/search/providers", headers={"Authorization": f"Bearer {token}"}
+            )
+            states = {
+                item["provider_id"]: item["readiness"]
+                for item in quarantined.json()["data"]["providers"]
+            }
+            assert states["searxng"] == "unavailable"
+            deadline = monotonic() + 20
+            while monotonic() < deadline:
+                providers = await rest.get(
+                    "/api/v1/search/providers",
+                    headers={"Authorization": f"Bearer {token}"},
+                )
+                states = {
+                    item["provider_id"]: item["readiness"]
+                    for item in providers.json()["data"]["providers"]
+                }
+                if states["searxng"] == "ready":
+                    break
+                await asyncio.sleep(0.25)
+            else:
+                raise TimeoutError("initial flow-control quarantine did not recover")
         mixed_queries = [
             {
                 "query": "1+1",

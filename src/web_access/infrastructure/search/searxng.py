@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Mapping
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -227,7 +227,7 @@ def _published_at(value: object) -> datetime | None:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError:
         return None
-    return parsed if parsed.tzinfo is not None else None
+    return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
 
 
 def _parse_warnings(payload: Mapping[str, Any]) -> tuple[Warning, ...]:

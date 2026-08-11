@@ -103,6 +103,13 @@ def test_result_bounds_order_and_empty_success_representation() -> None:
     assert tuple() == ()
     with pytest.raises(ValueError, match="title"):
         SearchResultItem(rank=1, title="x" * 4097, url="https://example.test")
+    with pytest.raises(ValueError, match="timezone-aware"):
+        SearchResultItem(
+            rank=1,
+            title="naive",
+            url="https://example.test",
+            published_at=datetime(2026, 8, 11, 12),
+        )
 
 
 @pytest.mark.parametrize("size", [0, 33])

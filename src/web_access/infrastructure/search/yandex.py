@@ -66,6 +66,8 @@ class YandexSearchProvider:
                 supported_time_ranges=(SearchTimeRange.DAY, SearchTimeRange.MONTH),
                 max_results=settings.max_results,
                 max_query_length=400,
+                max_query_words=40,
+                max_result_window=250,
                 billable=True,
             ),
         )
@@ -166,6 +168,10 @@ class YandexSearchProvider:
             raise ValueError("Yandex provider received a request for another provider")
         if len(request.query) > 400:
             raise _unsupported("query")
+        if len(request.query.split()) > 40:
+            raise _unsupported("query")
+        if request.page * request.limit > 250:
+            raise _unsupported("page")
         if request.language is not None:
             raise _unsupported("language")
         if request.time_range is SearchTimeRange.YEAR:
@@ -177,7 +183,7 @@ class YandexSearchProvider:
             raise _unsupported("region")
         if (
             request.provider_region is not None
-            and re.fullmatch(r"[1-9][0-9]{0,9}", request.provider_region) is None
+            and re.fullmatch(r"[1-9][0-9]{0,99}", request.provider_region) is None
         ):
             raise _unsupported("region")
 
@@ -332,8 +338,8 @@ def _status_error(
 ) -> ProviderAttemptError:
     if status in {401, 403}:
         return _attempt_error(
-            ErrorCategory.AUTHENTICATION,
-            "yandex_auth_rejected",
+            ErrorCategory.UPSTREAM,
+            "provider_auth_rejected",
             "Yandex Search отклонил аутентификацию.",
             retryable=False,
             stage=ExecutionStage.TERMINAL_KNOWN,
@@ -359,8 +365,8 @@ def _status_error(
             provider_request_id=request_id,
         )
     return _attempt_error(
-        ErrorCategory.VALIDATION,
-        "yandex_request_rejected",
+        ErrorCategory.UPSTREAM,
+        "provider_request_rejected",
         "Yandex Search отклонил запрос.",
         retryable=False,
         stage=ExecutionStage.TERMINAL_KNOWN,

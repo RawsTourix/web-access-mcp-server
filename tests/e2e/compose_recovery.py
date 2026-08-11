@@ -72,6 +72,16 @@ async def main() -> None:
             except (httpx.HTTPError, KeyError, ValueError):
                 return False
 
+        async def provider_readiness(provider_id: str, expected: str) -> bool:
+            try:
+                response = await client.get("/api/v1/search/providers", headers=authorization)
+                providers = {
+                    item["provider_id"]: item for item in response.json()["data"]["providers"]
+                }
+                return providers[provider_id]["readiness"] == expected
+            except (httpx.HTTPError, KeyError, ValueError):
+                return False
+
         async def mock_yandex_calls() -> int:
             output = await _compose(
                 "exec",
@@ -189,6 +199,18 @@ async def main() -> None:
                     description=f"Redis connection recovery {attempt + 1}",
                 )
                 assert "PONG" in await _compose("exec", "-T", "redis", "redis-cli", "ping")
+                assert await provider_readiness("searxng", "unavailable")
+                if attempt == 1:
+                    await _compose("restart", "api", deadline_seconds=30)
+                    await _poll(
+                        lambda: ready(200), description="new API replica after Redis restart"
+                    )
+                    new_replica = await search("new replica after Redis restart")
+                    assert new_replica.status_code == 503
+                    assert (
+                        new_replica.json()["data"]["items"][0]["error"]["code"]
+                        == "search_admission_unavailable"
+                    )
                 assert await _compose("ps", "-q", "api") == api_container
                 recovery_query = f"Redis recovery Search {attempt}"
                 await _poll(
@@ -196,6 +218,7 @@ async def main() -> None:
                     description=f"Search limiter recovery {attempt + 1}",
                     deadline_seconds=25,
                 )
+                assert await provider_readiness("searxng", "ready")
                 cached = await search(recovery_query)
                 assert cached.json()["data"]["items"][0]["data"]["cache"]["cached"] is True
 
@@ -206,11 +229,13 @@ async def main() -> None:
                 flush_rejected.json()["data"]["items"][0]["error"]["code"]
                 == "search_admission_unavailable"
             )
+            assert await provider_readiness("searxng", "unavailable")
             await _poll(
                 lambda: search_succeeds("Redis FLUSHDB recovery without API restart"),
                 description="Redis FLUSHDB conservative-horizon recovery",
                 deadline_seconds=25,
             )
+            assert await provider_readiness("searxng", "ready")
             assert await _compose("ps", "-q", "api") == api_container
 
             await _compose("stop", "mock-searxng")

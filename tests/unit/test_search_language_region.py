@@ -1,12 +1,14 @@
 """S2 language, region, and Search configuration gates."""
 
+from pathlib import Path
+
 import pytest
-from pydantic import ValidationError
+from pydantic import SecretStr, ValidationError
 
 from web_access.application.search.language import normalize_search_language
 from web_access.application.search.models import SearchQuery, SearchRegionEntry, SearchRegionMapping
 from web_access.application.search.registry import ProviderResolutionError, SearchRegionRegistry
-from web_access.core.config import SearchSettings, Settings
+from web_access.core.config import SearchSettings, Settings, YandexSearchSettings
 from web_access.domain.search import SearchLanguage, SearchProviderId, SearchRegionId
 
 
@@ -115,6 +117,33 @@ def test_yandex_config_is_secret_safe_and_requires_credentials() -> None:
     assert "top-secret-api-key" not in settings.provider_revision("yandex")
 
 
+def test_yandex_folder_and_region_official_bounds_fail_at_configuration() -> None:
+    with pytest.raises(ValidationError):
+        YandexSearchSettings(
+            enabled=True,
+            folder_id="f" * 51,
+            api_key=SecretStr("top-secret-api-key"),
+        )
+    for provider_region in ("not-numeric", "0", "1" * 101):
+        with pytest.raises(ValidationError):
+            SearchSettings.model_validate(
+                {
+                    "regions": [
+                        {
+                            "region_id": "ru",
+                            "label": "Russia",
+                            "mappings": [
+                                {
+                                    "provider_id": "yandex",
+                                    "provider_region": provider_region,
+                                }
+                            ],
+                        }
+                    ]
+                }
+            )
+
+
 def test_production_rejects_implicit_searxng_endpoint() -> None:
     with pytest.raises(ValidationError, match="SearXNG endpoint"):
         Settings.model_validate(
@@ -131,6 +160,6 @@ def test_production_rejects_implicit_searxng_endpoint() -> None:
                 },
                 "database": {"url": "postgresql+asyncpg://u:p@db/db"},
                 "redis": {"url": "redis://redis:6379/0"},
-                "content_store": {"root": "/var/lib/web-access/content"},
+                "content_store": {"root": str(Path.cwd() / "content")},
             }
         )

@@ -41,6 +41,7 @@ from web_access.infrastructure.search import (
     ProviderConcurrencyPolicy,
     ProviderRatePolicy,
     RedisProviderConcurrencyLimiter,
+    RedisProviderFlowControlReadiness,
     RedisProviderRateLimiter,
     RedisSearchCache,
     RedisSearchSingleFlight,
@@ -151,6 +152,7 @@ async def runtime_lifespan(
             policies={
                 provider_id: _rate_policy(settings, provider_id) for provider_id in SearchProviderId
             },
+            state_loss_horizons=_flow_control_horizons(settings),
         )
         concurrency_limiter = RedisProviderConcurrencyLimiter(
             redis.client,
@@ -159,6 +161,10 @@ async def runtime_lifespan(
                 provider_id: _concurrency_policy(settings, provider_id)
                 for provider_id in SearchProviderId
             },
+            state_loss_horizons=_flow_control_horizons(settings),
+        )
+        flow_readiness = RedisProviderFlowControlReadiness(
+            redis.client, namespace=settings.redis.namespace
         )
         search = SearchApplicationService(
             providers=provider_registry,
@@ -192,11 +198,11 @@ async def runtime_lifespan(
                 SearxngProviderReadinessProbe(
                     settings=settings.search.searxng,
                     client=searxng_http,
-                    rate_dependency=redis.ping,
+                    admission_dependency=lambda: flow_readiness.check(SearchProviderId.SEARXNG),
                 ),
                 YandexProviderReadinessProbe(
                     settings=settings.search.yandex,
-                    rate_dependency=redis.ping,
+                    admission_dependency=lambda: flow_readiness.check(SearchProviderId.YANDEX),
                     usage_database=lambda: probe_database(engine),
                 ),
             ),
@@ -276,3 +282,16 @@ def _concurrency_policy(
         lease_seconds=configured.lease_seconds,
         admission_timeout_seconds=configured.admission_timeout_seconds,
     )
+
+
+def _flow_control_horizons(settings: Settings) -> dict[SearchProviderId, float]:
+    result: dict[SearchProviderId, float] = {}
+    for provider_id in SearchProviderId:
+        rate = _rate_policy(settings, provider_id)
+        concurrency = _concurrency_policy(settings, provider_id)
+        result[provider_id] = max(
+            rate.principal.capacity / rate.principal.refill_per_second,
+            rate.global_.capacity / rate.global_.refill_per_second,
+            concurrency.lease_seconds,
+        )
+    return result

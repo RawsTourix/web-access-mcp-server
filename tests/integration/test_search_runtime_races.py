@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable
 from datetime import UTC, datetime
+from typing import cast
 
 import pytest
 from redis.asyncio import Redis
@@ -57,6 +58,21 @@ async def redis_client() -> AsyncIterator[Redis]:
     finally:
         await client.flushdb()
         await client.aclose()
+
+
+async def _trust_flow_state(client: Redis, *, namespace: str) -> None:
+    info = await client.info(section="server")
+    await cast(
+        Awaitable[int],
+        client.hset(
+            f"{namespace}:search-flow-generation:v2:{{searxng}}",
+            mapping={
+                "generation": "known-safe-test-state",
+                "run_id": info["run_id"],
+                "quarantine_until_ms": "0",
+            },
+        ),
+    )
 
 
 class ControlledProvider:
@@ -171,6 +187,7 @@ async def test_identical_requests_across_instances_have_one_call_and_fresh_cache
     redis_client: Redis,
 ) -> None:
     provider = ControlledProvider(delay_seconds=0.05)
+    await _trust_flow_state(redis_client, namespace="race-identical")
     first = _service(redis_client, provider, namespace="race-identical")
     second = _service(redis_client, provider, namespace="race-identical")
     request = SearchBatchRequest(queries=(SearchQuery(query="same query"),))
@@ -198,6 +215,7 @@ async def test_many_clients_obey_cross_instance_global_cap_and_backpressure(
         await redis_client.flushdb()
         provider = ControlledProvider(delay_seconds=0.08)
         namespace = f"race-load-{seed}"
+        await _trust_flow_state(redis_client, namespace=namespace)
         replicas = (
             _service(
                 redis_client,

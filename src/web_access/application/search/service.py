@@ -310,9 +310,11 @@ class SearchApplicationService:
             )
             warnings = list(result.warnings)
             if self._policy.cache_mode != "disabled":
-                stored = await _bounded_await(
-                    context,
-                    self._cache.put(identity, data, self._policy.cache_ttl(provider_id)),
+                stored = await self._best_effort_cache_put(
+                    context=context,
+                    provider_id=provider_id,
+                    identity=identity,
+                    data=data,
                 )
                 if not stored:
                     warnings.append(
@@ -362,6 +364,27 @@ class SearchApplicationService:
         finally:
             if lease is not None and lease.holder:
                 await self._single_flight.release(lease)
+
+    async def _best_effort_cache_put(
+        self,
+        *,
+        context: ExecutionContext,
+        provider_id: SearchProviderId,
+        identity: str,
+        data: SearchQueryData,
+    ) -> bool:
+        """Never replace a terminal provider success with optional cache failure."""
+
+        try:
+            stored = await _bounded_await(
+                context,
+                self._cache.put(identity, data, self._policy.cache_ttl(provider_id)),
+            )
+        except Exception:
+            stored = False
+        if not stored:
+            self._telemetry.observe_cache(provider_id, CacheLookupState.UNAVAILABLE)
+        return stored
 
     async def _execute_attempts(
         self,

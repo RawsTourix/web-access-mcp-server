@@ -119,6 +119,16 @@ class SearchProviderRegistry:
             unsupported.append("limit")
         if len(query.query) > capabilities.max_query_length:
             unsupported.append("query")
+        if (
+            capabilities.max_query_words is not None
+            and len(query.query.split()) > capabilities.max_query_words
+        ):
+            unsupported.append("query")
+        if (
+            capabilities.max_result_window is not None
+            and query.page * query.limit > capabilities.max_result_window
+        ):
+            unsupported.append("page")
         if unsupported:
             raise ProviderResolutionError(
                 "unsupported_option",

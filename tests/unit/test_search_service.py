@@ -75,6 +75,9 @@ class FakeProvider:
                 safe_search=True,
                 time_range=True,
                 max_results=50,
+                max_query_length=400 if provider_id is SearchProviderId.YANDEX else 4096,
+                max_query_words=40 if provider_id is SearchProviderId.YANDEX else None,
+                max_result_window=250 if provider_id is SearchProviderId.YANDEX else None,
                 billable=billable,
             ),
         )
@@ -129,6 +132,33 @@ class FakeCache:
         if self.write_ok:
             self.values[identity] = value
         return self.write_ok
+
+
+class RaisingCache(FakeCache):
+    async def put(self, identity: str, value: SearchQueryData, ttl_seconds: int) -> bool:
+        _ = identity, value, ttl_seconds
+        self.puts += 1
+        raise RuntimeError("redis unavailable")
+
+
+class BlockingCache(FakeCache):
+    def __init__(self, *, cancellation: CancellationToken | None = None) -> None:
+        super().__init__()
+        self.started = asyncio.Event()
+        self.cancelled = asyncio.Event()
+        self._cancellation = cancellation
+
+    async def put(self, identity: str, value: SearchQueryData, ttl_seconds: int) -> bool:
+        _ = identity, value, ttl_seconds
+        self.puts += 1
+        self.started.set()
+        if self._cancellation is not None:
+            self._cancellation.request()
+        try:
+            await asyncio.Event().wait()
+        finally:
+            self.cancelled.set()
+        return True
 
 
 class FakeSingleFlight:
@@ -374,6 +404,39 @@ async def test_default_and_explicit_provider_have_no_fallback() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        SearchQuery(
+            query="window",
+            provider=SearchProviderSelection.YANDEX,
+            page=6,
+            limit=50,
+        ),
+        SearchQuery(
+            query=" ".join(f"word{index}" for index in range(41)),
+            provider=SearchProviderSelection.YANDEX,
+        ),
+        SearchQuery(query="x" * 401, provider=SearchProviderSelection.YANDEX),
+    ],
+)
+async def test_known_yandex_limits_reject_before_all_admission_and_accounting(
+    query: SearchQuery,
+) -> None:
+    service, _, yandex, _, rate, concurrency, usage = build()
+
+    result = await service.search(context(), SearchBatchRequest(queries=(query,)))
+
+    assert result.outcome is OperationOutcome.REJECTED
+    assert yandex.calls == []
+    assert rate.calls == []
+    assert concurrency.acquires == []
+    assert usage.starts == []
+    assert result.data and result.data.items[0].error
+    assert result.data.items[0].error.code == "unsupported_option"
+
+
+@pytest.mark.asyncio
 async def test_cache_hit_consumes_no_provider_rate_concurrency_or_usage() -> None:
     service, searxng, _, cache, rate, concurrency, usage = build()
     request = SearchBatchRequest(queries=(SearchQuery(query="same"),))
@@ -396,6 +459,74 @@ async def test_cache_write_failure_keeps_success_and_adds_warning() -> None:
     service, *_ = build(cache=cache)
     result = await service.search(context(), SearchBatchRequest(queries=(SearchQuery(query="q"),)))
     assert result.outcome is OperationOutcome.SUCCEEDED
+    assert result.data and result.data.items[0].warnings[0].code == "cache_write_failed"
+
+
+@pytest.mark.asyncio
+async def test_cache_exception_after_provider_success_is_best_effort() -> None:
+    cache = RaisingCache()
+    service, provider, _, _, _, _, _ = build(cache=cache)
+    result = await service.search(context(), SearchBatchRequest(queries=(SearchQuery(query="q"),)))
+
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert len(provider.calls) == 1
+    assert result.data and result.data.items[0].warnings[0].code == "cache_write_failed"
+
+
+@pytest.mark.asyncio
+async def test_cache_deadline_after_paid_provider_success_preserves_success() -> None:
+    cache = BlockingCache()
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    service, _, _, _, rate, concurrency, usage = build(yandex=yandex, cache=cache)
+    clock = SystemClock()
+    ctx = ExecutionContext(
+        operation_id="op_cache_deadline",
+        principal=PrincipalContext("principal", frozenset({"search:read"})),
+        clock=clock,
+        cancellation=CancellationToken(),
+        deadline=Deadline.after(clock, 0.02),
+    )
+
+    result = await service.search(
+        ctx,
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 1
+    assert usage.rows[("op_cache_deadline", 0, 1)]["stage"] is AttemptStage.COMPLETED
+    assert cache.cancelled.is_set()
+    assert result.data and result.data.items[0].warnings[0].code == "cache_write_failed"
+
+
+@pytest.mark.asyncio
+async def test_cooperative_cancellation_after_paid_success_only_skips_cache() -> None:
+    cancellation = CancellationToken()
+    cache = BlockingCache(cancellation=cancellation)
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    service, _, _, _, rate, concurrency, usage = build(yandex=yandex, cache=cache)
+    ctx = context(operation_id="op_cache_cancel")
+    ctx = ExecutionContext(
+        operation_id=ctx.operation_id,
+        principal=ctx.principal,
+        clock=ctx.clock,
+        cancellation=cancellation,
+        deadline=ctx.deadline,
+    )
+
+    result = await service.search(
+        ctx,
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 1
+    assert usage.rows[("op_cache_cancel", 0, 1)]["stage"] is AttemptStage.COMPLETED
+    assert cache.cancelled.is_set()
     assert result.data and result.data.items[0].warnings[0].code == "cache_write_failed"
 
 

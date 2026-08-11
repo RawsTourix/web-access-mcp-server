@@ -171,7 +171,7 @@ class YandexSearchSettings(BaseModel):
 
     enabled: bool = False
     endpoint: AnyHttpUrl = AnyHttpUrl("https://searchapi.api.cloud.yandex.net/v2/web/search")
-    folder_id: str | None = Field(default=None, min_length=1, max_length=128)
+    folder_id: str | None = Field(default=None, min_length=1, max_length=50)
     api_key: SecretStr | None = None
     search_type: Literal[
         "SEARCH_TYPE_RU",
@@ -197,7 +197,14 @@ class SearchRegionProviderSettings(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True, hide_input_in_errors=True)
 
     provider_id: Literal["searxng", "yandex"]
-    provider_region: str = Field(min_length=1, max_length=128)
+    provider_region: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_provider_region(self) -> Self:
+        if self.provider_id == "yandex":
+            if not self.provider_region.isdecimal() or self.provider_region.startswith("0"):
+                raise ValueError("Yandex provider region must be a positive decimal ID")
+        return self
 
 
 class SearchRegionSettings(BaseModel):

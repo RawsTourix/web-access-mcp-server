@@ -186,6 +186,8 @@ async def test_supported_time_ranges_map_to_current_period_contract(
         (_request(language=normalize_search_language("ru")), "language"),
         (_request(time_range=SearchTimeRange.YEAR), "time_range"),
         (_request(query="x" * 401), "query"),
+        (_request(query=" ".join(f"word{i}" for i in range(41))), "query"),
+        (_request(page=6, limit=50), "page"),
         (_request(provider_region="invalid-region"), "region"),
     ],
 )
@@ -218,6 +220,8 @@ def test_registry_rejects_yandex_year_language_and_long_query_before_attempt_adm
             SearchQuery(query="q", language=normalize_search_language("ru")),
             SearchQuery(query="q", time_range=SearchTimeRange.YEAR),
             SearchQuery(query="x" * 401),
+            SearchQuery(query=" ".join(f"word{i}" for i in range(41))),
+            SearchQuery(query="q", page=6, limit=50),
         ):
             with pytest.raises(ProviderResolutionError, match="не поддерживает"):
                 registry.validate_capabilities(provider, query)
@@ -307,9 +311,9 @@ async def test_malformed_json_base64_and_xml_are_terminal(payload: bytes, code: 
 @pytest.mark.parametrize(
     ("status", "code", "category", "retryable"),
     [
-        (400, "yandex_request_rejected", ErrorCategory.VALIDATION, False),
-        (401, "yandex_auth_rejected", ErrorCategory.AUTHENTICATION, False),
-        (403, "yandex_auth_rejected", ErrorCategory.AUTHENTICATION, False),
+        (400, "provider_request_rejected", ErrorCategory.UPSTREAM, False),
+        (401, "provider_auth_rejected", ErrorCategory.UPSTREAM, False),
+        (403, "provider_auth_rejected", ErrorCategory.UPSTREAM, False),
         (429, "yandex_rate_limited", ErrorCategory.RATE_LIMITED, True),
         (503, "yandex_upstream_error", ErrorCategory.UPSTREAM, True),
     ],

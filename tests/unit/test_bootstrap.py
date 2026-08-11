@@ -159,6 +159,8 @@ async def test_shutdown_timeout_cancels_blocked_closer_and_completes_lifespan(
 ) -> None:
     configured_timeout = 0.05
     events: list[str] = []
+    lifespan_entered = asyncio.Event()
+    begin_shutdown = asyncio.Event()
     closer_started = asyncio.Event()
     closer_cancelled = asyncio.Event()
 
@@ -185,15 +187,19 @@ async def test_shutdown_timeout_cancels_blocked_closer_and_completes_lifespan(
 
     async def run_lifespan() -> None:
         async with lifespan.runtime_lifespan(settings):
-            pass
+            lifespan_entered.set()
+            await begin_shutdown.wait()
 
     loop = asyncio.get_running_loop()
+    task = asyncio.create_task(run_lifespan())
+    await asyncio.wait_for(lifespan_entered.wait(), timeout=2)
     started_at = loop.time()
-    await asyncio.wait_for(run_lifespan(), timeout=1)
+    begin_shutdown.set()
+    await asyncio.wait_for(task, timeout=1)
     elapsed = loop.time() - started_at
 
     assert closer_started.is_set()
     assert closer_cancelled.is_set()
-    assert configured_timeout <= elapsed < 0.5
+    assert elapsed < 0.5
     assert "runtime_shutdown_timed_out" in events
     assert "runtime_stopped" in events

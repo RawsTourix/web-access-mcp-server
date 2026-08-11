@@ -34,6 +34,8 @@ class ProviderCapabilities(BaseModel):
     time_range: bool
     max_results: int = Field(ge=1, le=50)
     max_query_length: int = Field(default=4096, ge=1, le=4096)
+    max_query_words: int | None = Field(default=None, ge=1, le=4096)
+    max_result_window: int | None = Field(default=None, ge=1, le=10000)
     supported_time_ranges: tuple[SearchTimeRange, ...] = (
         SearchTimeRange.DAY,
         SearchTimeRange.MONTH,
@@ -70,7 +72,14 @@ class SearchRegionMapping(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     provider_id: SearchProviderId
-    provider_region: str = Field(min_length=1, max_length=128)
+    provider_region: str = Field(min_length=1, max_length=100)
+
+    @model_validator(mode="after")
+    def validate_provider_region(self) -> SearchRegionMapping:
+        if self.provider_id is SearchProviderId.YANDEX:
+            if not self.provider_region.isdecimal() or self.provider_region.startswith("0"):
+                raise ValueError("Yandex provider region must be a positive decimal ID")
+        return self
 
 
 class SearchRegionEntry(BaseModel):
@@ -173,7 +182,7 @@ class ProviderSearchRequest(BaseModel):
     limit: int = Field(ge=1, le=50)
     language: SearchLanguage | None = None
     region: SearchRegionId | None = None
-    provider_region: str | None = Field(default=None, min_length=1, max_length=128)
+    provider_region: str | None = Field(default=None, min_length=1, max_length=100)
     safe_search: SearchSafeMode | None = None
     time_range: SearchTimeRange | None = None
 

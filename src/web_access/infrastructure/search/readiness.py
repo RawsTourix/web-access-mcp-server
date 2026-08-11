@@ -12,6 +12,7 @@ from web_access.core.config import SearxngSettings, YandexSearchSettings
 from web_access.domain.search import SearchProviderId
 
 DependencyProbe = Callable[[], Awaitable[bool]]
+AdmissionProbe = Callable[[], Awaitable[Availability]]
 
 
 class SearxngProviderReadinessProbe:
@@ -22,14 +23,17 @@ class SearxngProviderReadinessProbe:
         *,
         settings: SearxngSettings,
         client: httpx.AsyncClient,
-        rate_dependency: DependencyProbe,
+        admission_dependency: AdmissionProbe,
     ) -> None:
         self._settings = settings
         self._client = client
-        self._rate_dependency = rate_dependency
+        self._admission_dependency = admission_dependency
 
     async def check(self) -> Availability:
-        if not self._settings.enabled or not await self._rate_dependency():
+        if (
+            not self._settings.enabled
+            or await self._admission_dependency() is not Availability.READY
+        ):
             return Availability.UNAVAILABLE
         try:
             async with self._client.stream(
@@ -58,11 +62,11 @@ class YandexProviderReadinessProbe:
         self,
         *,
         settings: YandexSearchSettings,
-        rate_dependency: DependencyProbe,
+        admission_dependency: AdmissionProbe,
         usage_database: DependencyProbe,
     ) -> None:
         self._settings = settings
-        self._rate_dependency = rate_dependency
+        self._admission_dependency = admission_dependency
         self._usage_database = usage_database
 
     async def check(self) -> Availability:
@@ -70,7 +74,11 @@ class YandexProviderReadinessProbe:
             return Availability.UNAVAILABLE
         if self._settings.folder_id is None or self._settings.api_key is None:
             return Availability.UNAVAILABLE
-        rate_ready, usage_ready = await asyncio.gather(
-            self._rate_dependency(), self._usage_database()
+        admission, usage_ready = await asyncio.gather(
+            self._admission_dependency(), self._usage_database()
         )
-        return Availability.READY if rate_ready and usage_ready else Availability.UNAVAILABLE
+        return (
+            Availability.READY
+            if admission is Availability.READY and usage_ready
+            else Availability.UNAVAILABLE
+        )

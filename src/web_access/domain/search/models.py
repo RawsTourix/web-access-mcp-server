@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 
 _REGION_ID = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
@@ -84,3 +84,7 @@ class SearchResultItem:
         ):
             if value is not None and len(value) > maximum:
                 raise ValueError(f"{field} exceeds public Search bound")
+        if self.published_at is not None:
+            if self.published_at.tzinfo is None or self.published_at.utcoffset() is None:
+                raise ValueError("published_at must be timezone-aware")
+            object.__setattr__(self, "published_at", self.published_at.astimezone(UTC))

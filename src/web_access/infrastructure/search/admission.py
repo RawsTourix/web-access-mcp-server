@@ -15,6 +15,7 @@ from typing import Any
 from redis.asyncio import Redis
 from redis.exceptions import RedisError
 
+from web_access.application.common.health import Availability
 from web_access.application.search.ports import (
     ConcurrencyLease,
     RateAdmission,
@@ -22,26 +23,32 @@ from web_access.application.search.ports import (
 )
 from web_access.domain.search import SearchProviderId
 
-TOKEN_BUCKET_SCRIPT_REVISION = "2"
-CONCURRENCY_ACQUIRE_SCRIPT_REVISION = "2"
+TOKEN_BUCKET_SCRIPT_REVISION = "3"
+CONCURRENCY_ACQUIRE_SCRIPT_REVISION = "3"
 CONCURRENCY_RELEASE_SCRIPT_REVISION = "1"
+FLOW_GENERATION_REVISION = "2"
 
 _TOKEN_BUCKET = """
 local now = redis.call('TIME')
 local now_ms = (tonumber(now[1]) * 1000) + math.floor(tonumber(now[2]) / 1000)
+local server_info = redis.call('INFO', 'server')
+local run_id = string.match(server_info, 'run_id:([^\\r\\n]+)')
+if not run_id then
+  return redis.error_reply('Redis server run_id is unavailable')
+end
 
 local generation = redis.call('HGET', KEYS[3], 'generation')
 local marker_run_id = redis.call('HGET', KEYS[3], 'run_id')
 local quarantine_until = tonumber(redis.call('HGET', KEYS[3], 'quarantine_until_ms')) or 0
 if not generation then
   generation = ARGV[8]
-  quarantine_until = ARGV[10] == '1' and 0 or now_ms + tonumber(ARGV[7])
-  redis.call('HSET', KEYS[3], 'generation', generation, 'run_id', ARGV[9],
+  quarantine_until = now_ms + tonumber(ARGV[7])
+  redis.call('HSET', KEYS[3], 'generation', generation, 'run_id', run_id,
     'quarantine_until_ms', quarantine_until)
-elseif marker_run_id ~= ARGV[9] then
+elseif marker_run_id ~= run_id then
   generation = ARGV[8]
   quarantine_until = now_ms + tonumber(ARGV[7])
-  redis.call('HSET', KEYS[3], 'generation', generation, 'run_id', ARGV[9],
+  redis.call('HSET', KEYS[3], 'generation', generation, 'run_id', run_id,
     'quarantine_until_ms', quarantine_until)
 end
 if quarantine_until > now_ms then
@@ -88,18 +95,23 @@ return {1, 0, generation}
 _CONCURRENCY_ACQUIRE = """
 local now = redis.call('TIME')
 local now_ms = (tonumber(now[1]) * 1000) + math.floor(tonumber(now[2]) / 1000)
+local server_info = redis.call('INFO', 'server')
+local run_id = string.match(server_info, 'run_id:([^\\r\\n]+)')
+if not run_id then
+  return redis.error_reply('Redis server run_id is unavailable')
+end
 local generation = redis.call('HGET', KEYS[2], 'generation')
 local marker_run_id = redis.call('HGET', KEYS[2], 'run_id')
 local quarantine_until = tonumber(redis.call('HGET', KEYS[2], 'quarantine_until_ms')) or 0
 if not generation then
   generation = ARGV[5]
-  quarantine_until = ARGV[7] == '1' and 0 or now_ms + tonumber(ARGV[4])
-  redis.call('HSET', KEYS[2], 'generation', generation, 'run_id', ARGV[6],
+  quarantine_until = now_ms + tonumber(ARGV[4])
+  redis.call('HSET', KEYS[2], 'generation', generation, 'run_id', run_id,
     'quarantine_until_ms', quarantine_until)
-elseif marker_run_id ~= ARGV[6] then
+elseif marker_run_id ~= run_id then
   generation = ARGV[5]
   quarantine_until = now_ms + tonumber(ARGV[4])
-  redis.call('HSET', KEYS[2], 'generation', generation, 'run_id', ARGV[6],
+  redis.call('HSET', KEYS[2], 'generation', generation, 'run_id', run_id,
     'quarantine_until_ms', quarantine_until)
 end
 if quarantine_until > now_ms then
@@ -118,16 +130,28 @@ _CONCURRENCY_RELEASE = """
 return redis.call('ZREM', KEYS[1], ARGV[1])
 """
 
+_FLOW_READINESS = """
+local now = redis.call('TIME')
+local now_ms = (tonumber(now[1]) * 1000) + math.floor(tonumber(now[2]) / 1000)
+local server_info = redis.call('INFO', 'server')
+local run_id = string.match(server_info, 'run_id:([^\\r\\n]+)')
+if not run_id then
+  return 0
+end
+local values = redis.call('HMGET', KEYS[1], 'generation', 'run_id', 'quarantine_until_ms')
+if not values[1] or values[2] ~= run_id then
+  return 0
+end
+local quarantine_until = tonumber(values[3])
+if not quarantine_until or quarantine_until > now_ms then
+  return 0
+end
+return 1
+"""
+
 
 async def _redis_result(value: Any) -> Any:
     return await value if inspect.isawaitable(value) else value
-
-
-async def _server_run_id(client: Redis) -> str:
-    info = await _redis_result(client.info(section="server"))
-    if not isinstance(info, dict) or not isinstance(info.get("run_id"), str):
-        raise RedisError("Redis server run_id is unavailable")
-    return info["run_id"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -153,13 +177,13 @@ class RedisProviderRateLimiter:
         *,
         namespace: str,
         policies: dict[SearchProviderId, ProviderRatePolicy],
+        state_loss_horizons: dict[SearchProviderId, float] | None = None,
     ) -> None:
         self._client = client
         self._prefix = f"{namespace}:search-rate:v{TOKEN_BUCKET_SCRIPT_REVISION}:"
-        self._generation_prefix = f"{namespace}:search-flow-generation:rate:"
+        self._generation_prefix = f"{namespace}:search-flow-generation:v{FLOW_GENERATION_REVISION}:"
         self._policies = dict(policies)
-        self._run_id: str | None = None
-        self._generations: dict[SearchProviderId, str] = {}
+        self._state_loss_horizons = dict(state_loss_horizons or {})
 
     def keys(self, principal_id: str, provider_id: SearchProviderId) -> tuple[str, str]:
         principal_hash = hashlib.sha256(principal_id.encode()).hexdigest()
@@ -184,13 +208,11 @@ class RedisProviderRateLimiter:
         if policy is None:
             return RateAdmission(RateAdmissionStatus.UNAVAILABLE)
         try:
-            run_id = await _server_run_id(self._client)
-            bootstrap = provider_id not in self._generations
-            self._run_id = run_id
-            horizon = max(
+            policy_horizon = max(
                 policy.principal.capacity / policy.principal.refill_per_second,
                 policy.global_.capacity / policy.global_.refill_per_second,
             )
+            horizon = max(policy_horizon, self._state_loss_horizons.get(provider_id, 0))
             ttl_ms = max(
                 1000,
                 round(
@@ -215,15 +237,13 @@ class RedisProviderRateLimiter:
                     ttl_ms,
                     max(1, round(horizon * 1000)),
                     secrets.token_hex(16),
-                    run_id,
-                    int(bootstrap),
                 )
             )
         except RedisError:
             return RateAdmission(RateAdmissionStatus.UNAVAILABLE)
         if not isinstance(result, (list, tuple)) or len(result) != 3:
             return RateAdmission(RateAdmissionStatus.UNAVAILABLE)
-        self._generations[provider_id] = _text_result(result[2])
+        _text_result(result[2])
         status = int(result[0])
         if status == 1:
             return RateAdmission(RateAdmissionStatus.ALLOWED)
@@ -261,12 +281,13 @@ class RedisProviderConcurrencyLimiter:
         namespace: str,
         policies: dict[SearchProviderId, ProviderConcurrencyPolicy],
         poll_seconds: float = 0.01,
+        state_loss_horizons: dict[SearchProviderId, float] | None = None,
     ) -> None:
         if poll_seconds <= 0:
             raise ValueError("concurrency poll interval must be positive")
         self._client = client
         self._prefix = f"{namespace}:search-concurrency:v1:"
-        self._generation_prefix = f"{namespace}:search-flow-generation:concurrency:"
+        self._generation_prefix = f"{namespace}:search-flow-generation:v{FLOW_GENERATION_REVISION}:"
         self._policies = dict(policies)
         self._local = {
             provider_id: asyncio.Semaphore(policy.local_limit)
@@ -274,8 +295,7 @@ class RedisProviderConcurrencyLimiter:
         }
         self._owned: dict[str, SearchProviderId] = {}
         self._poll = poll_seconds
-        self._run_id: str | None = None
-        self._generations: dict[SearchProviderId, str] = {}
+        self._state_loss_horizons = dict(state_loss_horizons or {})
 
     def key(self, provider_id: SearchProviderId) -> str:
         return f"{self._prefix}{{{provider_id.value}}}"
@@ -302,9 +322,10 @@ class RedisProviderConcurrencyLimiter:
         try:
             while True:
                 try:
-                    run_id = await _server_run_id(self._client)
-                    bootstrap = provider_id not in self._generations
-                    self._run_id = run_id
+                    horizon = max(
+                        policy.lease_seconds,
+                        self._state_loss_horizons.get(provider_id, 0),
+                    )
                     acquired = await _redis_result(
                         self._client.eval(
                             _CONCURRENCY_ACQUIRE,
@@ -314,15 +335,13 @@ class RedisProviderConcurrencyLimiter:
                             policy.global_limit,
                             max(1, round(policy.lease_seconds * 1000)),
                             token,
-                            max(1, round(policy.lease_seconds * 1000)),
+                            max(1, round(horizon * 1000)),
                             secrets.token_hex(16),
-                            run_id,
-                            int(bootstrap),
                         )
                     )
                     if not isinstance(acquired, (list, tuple)) or len(acquired) != 2:
                         return None
-                    self._generations[provider_id] = _text_result(acquired[1])
+                    _text_result(acquired[1])
                     if int(acquired[0]) == 1:
                         self._owned[token] = provider_id
                         return ConcurrencyLease(provider_id, token)
@@ -347,6 +366,30 @@ class RedisProviderConcurrencyLimiter:
         except RedisError:
             pass
         self._local[provider_id].release()
+
+
+class RedisProviderFlowControlReadiness:
+    """Read the shared generation quarantine without reserving flow-control capacity."""
+
+    def __init__(self, client: Redis, *, namespace: str) -> None:
+        self._client = client
+        self._generation_prefix = f"{namespace}:search-flow-generation:v{FLOW_GENERATION_REVISION}:"
+
+    def generation_key(self, provider_id: SearchProviderId) -> str:
+        return f"{self._generation_prefix}{{{provider_id.value}}}"
+
+    async def check(self, provider_id: SearchProviderId) -> Availability:
+        try:
+            result = await _redis_result(
+                self._client.eval(
+                    _FLOW_READINESS,
+                    1,
+                    self.generation_key(provider_id),
+                )
+            )
+        except RedisError:
+            return Availability.UNAVAILABLE
+        return Availability.READY if result == 1 else Availability.UNAVAILABLE
 
 
 def _text_result(value: object) -> str:

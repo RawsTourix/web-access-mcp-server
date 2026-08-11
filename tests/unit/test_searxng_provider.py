@@ -74,7 +74,7 @@ async def test_maps_official_query_parameters_and_preserves_result_order() -> No
                         "url": "https://first.example/a",
                         "content": "One",
                         "score": 999,
-                        "publishedDate": "2026-08-01T10:00:00Z",
+                        "publishedDate": "2026-08-11T15:00:00+03:00",
                     },
                     {"title": "Second", "url": "http://second.example/b", "content": "Two"},
                     {"title": "Not requested", "url": "https://third.example"},
@@ -107,7 +107,8 @@ async def test_maps_official_query_parameters_and_preserves_result_order() -> No
     assert [item.rank for item in result.results] == [1, 2]
     assert [item.title for item in result.results] == ["First", "Second"]
     assert [item.host for item in result.results] == ["first.example", "second.example"]
-    assert result.results[0].published_at == datetime(2026, 8, 1, 10, tzinfo=UTC)
+    assert result.results[0].published_at == datetime(2026, 8, 11, 12, tzinfo=UTC)
+    assert result.model_dump(mode="json")["results"][0]["published_at"] == "2026-08-11T12:00:00Z"
     assert result.provider_request_id == "sx-request-1"
     assert result.retrieved_at == NOW
     assert result.next_page_available is None
