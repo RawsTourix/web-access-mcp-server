@@ -1,0 +1,80 @@
+services:
+  api:
+    environment:
+      WEB_ACCESS_SEARCH__SEARXNG__REQUEST_TIMEOUT_SECONDS: "10"
+      WEB_ACCESS_SEARCH__CONCURRENCY__SEARXNG__LEASE_SECONDS: "12"
+      WEB_ACCESS_SEARCH__RATE_LIMIT__SEARXNG__PRINCIPAL__REFILL_PER_SECOND: "20"
+      WEB_ACCESS_SEARCH__RATE_LIMIT__SEARXNG__GLOBAL__REFILL_PER_SECOND: "100"
+
+  mock-yandex:
+    image: python:3.11-alpine
+    command: ["python", "/app/mock_yandex.py"]
+    environment:
+      MOCK_YANDEX_API_KEY: controlled-yandex-api-key
+    volumes:
+      - ./tests/e2e/mock_yandex.py:/app/mock_yandex.py:ro
+      - ./tests/fixtures/yandex:/fixtures:ro
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/healthz', timeout=2).read()"
+      interval: 2s
+      timeout: 2s
+      retries: 30
+    restart: unless-stopped
+
+  api-yandex-test:
+    build:
+      context: .
+      target: runtime
+    image: web-access-mcp-server:0.1
+    init: true
+    environment:
+      WEB_ACCESS_APP__ENVIRONMENT: test
+      WEB_ACCESS_DATABASE__URL: postgresql+asyncpg://web_access:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/web_access
+      WEB_ACCESS_REDIS__URL: redis://redis:6379/0
+      WEB_ACCESS_REDIS__NAMESPACE: web-access:yandex-e2e
+      WEB_ACCESS_CONTENT_STORE__ROOT: /var/lib/web-access/content
+      WEB_ACCESS_AUTH__PRINCIPALS: ${WEB_ACCESS_AUTH__PRINCIPALS:?Set WEB_ACCESS_AUTH__PRINCIPALS in .env}
+      WEB_ACCESS_OBSERVABILITY__LOG_FORMAT: json
+      WEB_ACCESS_SEARCH__SEARXNG__ENDPOINT: http://searxng:8080
+      WEB_ACCESS_SEARCH__SEARXNG__PROFILE_REVISION: searxng-2026.7.28-c01178d03-v1
+      WEB_ACCESS_SEARCH__YANDEX__ENABLED: "true"
+      WEB_ACCESS_SEARCH__YANDEX__ENDPOINT: http://mock-yandex:8080/v2/web/search
+      WEB_ACCESS_SEARCH__YANDEX__FOLDER_ID: controlled-folder
+      WEB_ACCESS_SEARCH__YANDEX__API_KEY: controlled-yandex-api-key
+      WEB_ACCESS_SEARCH__YANDEX__PROFILE_REVISION: controlled-yandex-v2-e2e
+      WEB_ACCESS_SEARCH__YANDEX__REQUEST_TIMEOUT_SECONDS: "2"
+      WEB_ACCESS_SEARCH__CONCURRENCY__YANDEX__LEASE_SECONDS: "4"
+      WEB_ACCESS_SEARCH__RATE_LIMIT__YANDEX__PRINCIPAL__REFILL_PER_SECOND: "20"
+      WEB_ACCESS_SEARCH__RATE_LIMIT__YANDEX__GLOBAL__REFILL_PER_SECOND: "100"
+      WEB_ACCESS_SEARCH__REGIONS: '[{"region_id":"ru","label":"Russia","mappings":[{"provider_id":"yandex","provider_region":"213"}]}]'
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      searxng:
+        condition: service_healthy
+      mock-yandex:
+        condition: service_healthy
+      migration:
+        condition: service_completed_successfully
+    ports:
+      - "127.0.0.1:${WEB_ACCESS_YANDEX_TEST_API_PORT:-18084}:8000"
+    volumes:
+      - content_data:/var/lib/web-access/content
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/ready', timeout=2).read()"
+      interval: 3s
+      timeout: 3s
+      retries: 30
+      start_period: 5s
+    stop_grace_period: 15s
+    restart: unless-stopped

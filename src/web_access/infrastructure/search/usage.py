@@ -51,7 +51,7 @@ class PostgresSearchUsageRepository:
                     "attempt_number": attempt_number,
                 },
             )
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, OSError, TimeoutError) as exc:
             raise SearchUsageUnavailable("cannot create Search attempt evidence") from exc
 
     async def mark_stage(
@@ -110,7 +110,7 @@ class PostgresSearchUsageRepository:
             )
             if cast(CursorResult[Any], result).rowcount != 1:
                 raise SearchUsageUnavailable("Search attempt evidence was missing or stale")
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, OSError, TimeoutError) as exc:
             raise SearchUsageUnavailable("cannot update Search attempt evidence") from exc
 
 
@@ -138,7 +138,7 @@ class SqlAlchemySearchUsageUnitOfWork:
         try:
             await self._session.commit()
             self._committed = True
-        except SQLAlchemyError as exc:
+        except (SQLAlchemyError, OSError, TimeoutError) as exc:
             raise SearchUsageUnavailable("cannot commit Search attempt evidence") from exc
 
     async def __aexit__(
@@ -151,9 +151,15 @@ class SqlAlchemySearchUsageUnitOfWork:
             return
         try:
             if exc_type is not None or not self._committed:
-                await self._session.rollback()
+                try:
+                    await self._session.rollback()
+                except (SQLAlchemyError, OSError, TimeoutError):
+                    pass
         finally:
-            await self._session.close()
+            try:
+                await self._session.close()
+            except (SQLAlchemyError, OSError, TimeoutError):
+                pass
             self._session = None
             self._usage = None
             self._committed = False

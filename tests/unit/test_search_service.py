@@ -82,6 +82,7 @@ class FakeProvider:
         self.wait_event: asyncio.Event | None = None
         self.called_event = asyncio.Event()
         self.before_search: Callable[[], None] | None = None
+        self.results: tuple[SearchResultItem, ...] | None = None
 
     async def search(
         self, context: ExecutionContext, request: ProviderSearchRequest
@@ -97,7 +98,11 @@ class FakeProvider:
             raise self.failures.pop(0)
         return ProviderSearchResult(
             provider_id=self.descriptor.provider_id,
-            results=(SearchResultItem(rank=1, title=request.query, url="https://example.test"),),
+            results=(
+                self.results
+                if self.results is not None
+                else (SearchResultItem(rank=1, title=request.query, url="https://example.test"),)
+            ),
             retrieved_at=NOW,
             next_page_available=None,
         )
@@ -260,6 +265,31 @@ class CommitUnavailableUsage(FakeUsage):
         raise SearchUsageUnavailable("commit unavailable")
 
 
+class FailAtCommitUsage(FakeUsage):
+    def __init__(self, fail_at: int) -> None:
+        super().__init__()
+        self.fail_at = fail_at
+        self.committed_rows: dict[tuple[str, int, int], dict[str, object]] = {}
+
+    async def commit(self) -> None:
+        self.commits += 1
+        if self.commits == self.fail_at:
+            raise SearchUsageUnavailable("commit unavailable")
+        self.committed_rows = {key: dict(value) for key, value in self.rows.items()}
+
+
+class ReleaseLostSingleFlight(FakeSingleFlight):
+    def __init__(self, cache: FakeCache) -> None:
+        super().__init__()
+        self._cache = cache
+        self.cache_was_filled = False
+
+    async def release(self, lease: SingleFlightLease) -> None:
+        _ = lease
+        self.releases += 1
+        self.cache_was_filled = bool(self._cache.values)
+
+
 def context(
     *,
     scopes: frozenset[str] = frozenset({"search:read"}),
@@ -348,7 +378,7 @@ async def test_cache_hit_consumes_no_provider_rate_concurrency_or_usage() -> Non
     assert data.usage.upstream_attempts == 0
     assert len(searxng.calls) == len(rate.calls) == len(concurrency.acquires) == 1
     assert usage.starts == []
-    assert cache.gets == 2
+    assert cache.gets == 3
 
 
 @pytest.mark.asyncio
@@ -359,6 +389,23 @@ async def test_cache_write_failure_keeps_success_and_adds_warning() -> None:
     result = await service.search(context(), SearchBatchRequest(queries=(SearchQuery(query="q"),)))
     assert result.outcome is OperationOutcome.SUCCEEDED
     assert result.data and result.data.items[0].warnings[0].code == "cache_write_failed"
+
+
+@pytest.mark.asyncio
+async def test_cache_fill_survives_single_flight_release_loss() -> None:
+    cache = FakeCache()
+    flight = ReleaseLostSingleFlight(cache)
+    service, searxng, _, _, rate, _, _ = build(cache=cache, single_flight=flight)
+    request = SearchBatchRequest(queries=(SearchQuery(query="release-loss"),))
+
+    first = await service.search(context(operation_id="op_first"), request)
+    second = await service.search(context(operation_id="op_second"), request)
+
+    assert first.outcome is second.outcome is OperationOutcome.SUCCEEDED
+    assert flight.cache_was_filled is True
+    assert len(searxng.calls) == len(rate.calls) == 1
+    assert second.data and second.data.items[0].data
+    assert second.data.items[0].data.cache.cached is True
 
 
 @pytest.mark.asyncio
@@ -435,6 +482,61 @@ async def test_partial_batch_preserves_input_order_and_empty_result_is_success()
         LeafOutcome.SUCCEEDED,
         LeafOutcome.FAILED,
     ]
+
+
+@pytest.mark.asyncio
+async def test_empty_paid_result_is_success_without_fallback() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    yandex.results = ()
+    service, searxng, *_ = build(yandex=yandex)
+
+    result = await service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(SearchQuery(query="empty", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert result.data and result.data.items[0].data
+    assert result.data.items[0].data.results == ()
+    assert len(yandex.calls) == 1
+    assert searxng.calls == []
+
+
+@pytest.mark.asyncio
+async def test_timeout_item_does_not_erase_sibling_or_trigger_fallback() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    yandex.failures.append(
+        ProviderAttemptError(
+            OperationError(
+                category=ErrorCategory.TIMEOUT,
+                code="provider_timeout",
+                message="provider timed out",
+                retryable=True,
+            ),
+            stage=ExecutionStage.RESPONSE_LOST,
+        )
+    )
+    service, searxng, *_ = build(yandex=yandex, policy=SearchServicePolicy(yandex_max_attempts=2))
+
+    result = await service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(
+                SearchQuery(query="sibling"),
+                SearchQuery(query="timeout", provider=SearchProviderSelection.YANDEX),
+            )
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.PARTIAL_SUCCESS
+    assert result.data
+    assert [item.outcome for item in result.data.items] == [
+        LeafOutcome.SUCCEEDED,
+        LeafOutcome.UNKNOWN,
+    ]
+    assert len(searxng.calls) == len(yandex.calls) == 1
 
 
 @pytest.mark.asyncio
@@ -529,6 +631,31 @@ async def test_billable_provider_fails_closed_when_pre_dispatch_commit_fails() -
     )
     assert result.outcome is OperationOutcome.FAILED
     assert yandex.calls == []
+
+
+@pytest.mark.asyncio
+async def test_dispatch_evidence_commit_failure_keeps_durable_pre_dispatch_only() -> None:
+    service, _, yandex, *_ = build()
+    usage = FailAtCommitUsage(fail_at=2)
+    service._usage = usage
+
+    result = await service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+
+    assert result.outcome is OperationOutcome.FAILED
+    assert yandex.calls == []
+    assert usage.commits == 2
+    assert usage.committed_rows == {
+        ("op_test", 0, 1): {
+            "stage": AttemptStage.PRE_DISPATCH,
+            "outcome_code": None,
+            "retry_reason": None,
+        }
+    }
 
 
 @pytest.mark.asyncio
