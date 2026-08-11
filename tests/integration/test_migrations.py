@@ -39,10 +39,10 @@ async def _drop_version_table(url: str) -> None:
 
 def test_single_alembic_head() -> None:
     heads = ScriptDirectory.from_config(Config("alembic.ini")).get_heads()
-    assert heads == ["0002_search_attempts"]
+    assert heads == ["0003_content_core"]
 
 
-def test_empty_database_upgrade_is_repeatable_and_search_scoped() -> None:
+def test_empty_database_upgrade_is_repeatable_and_content_scoped() -> None:
     config = _config()
     url = os.environ["WEB_ACCESS_TEST_DATABASE_URL"]
     command.downgrade(config, "base")
@@ -50,21 +50,31 @@ def test_empty_database_upgrade_is_repeatable_and_search_scoped() -> None:
     command.upgrade(config, "head")
     command.upgrade(config, "head")
     tables, revision = asyncio.run(_schema_state(url))
-    assert tables == {"alembic_version", "search_provider_attempts"}
-    assert revision == "0002_search_attempts"
+    assert tables == {
+        "alembic_version",
+        "search_provider_attempts",
+        "content_objects",
+        "content_relations",
+    }
+    assert revision == "0003_content_core"
 
 
-def test_previous_accepted_head_upgrades_to_v02_head() -> None:
+def test_previous_accepted_v02_head_upgrades_to_v03_head() -> None:
     config = _config()
     url = os.environ["WEB_ACCESS_TEST_DATABASE_URL"]
-    command.downgrade(config, "0001_foundation")
-    tables, revision = asyncio.run(_schema_state(url))
-    assert tables == {"alembic_version"}
-    assert revision == "0001_foundation"
-    command.upgrade(config, "head")
+    command.downgrade(config, "0002_search_attempts")
     tables, revision = asyncio.run(_schema_state(url))
     assert tables == {"alembic_version", "search_provider_attempts"}
     assert revision == "0002_search_attempts"
+    command.upgrade(config, "head")
+    tables, revision = asyncio.run(_schema_state(url))
+    assert tables == {
+        "alembic_version",
+        "search_provider_attempts",
+        "content_objects",
+        "content_relations",
+    }
+    assert revision == "0003_content_core"
 
 
 def test_attempt_schema_has_bounded_evidence_and_no_search_content() -> None:
@@ -117,3 +127,69 @@ def test_attempt_schema_has_bounded_evidence_and_no_search_content() -> None:
         "provider_id",
         "attempt_number",
     ) in unique
+
+
+def test_content_schema_has_lifecycle_provenance_and_reuse_constraints() -> None:
+    config = _config()
+    command.upgrade(config, "head")
+    url = os.environ["WEB_ACCESS_TEST_DATABASE_URL"]
+
+    async def inspect_schema() -> tuple[set[str], set[str], set[str], set[str]]:
+        engine = create_async_engine(url)
+        async with engine.connect() as connection:
+            columns = await connection.run_sync(
+                lambda sync: {
+                    column["name"] for column in inspect(sync).get_columns("content_objects")
+                }
+            )
+            indexes = await connection.run_sync(
+                lambda sync: {
+                    index["name"]
+                    for index in inspect(sync).get_indexes("content_objects")
+                    if index["name"] is not None
+                }
+            )
+            checks = await connection.run_sync(
+                lambda sync: {
+                    check["name"]
+                    for check in inspect(sync).get_check_constraints("content_objects")
+                    if check["name"] is not None
+                }
+            )
+            relation_foreign_keys = await connection.run_sync(
+                lambda sync: {
+                    next(iter(foreign_key["constrained_columns"]))
+                    for foreign_key in inspect(sync).get_foreign_keys("content_relations")
+                }
+            )
+        await engine.dispose()
+        return columns, indexes, checks, relation_foreign_keys
+
+    columns, indexes, checks, relation_foreign_keys = asyncio.run(inspect_schema())
+    assert {
+        "content_id",
+        "owner_principal_id",
+        "state",
+        "revision",
+        "storage_key",
+        "staging_key",
+        "source_content_id",
+        "producer_capability",
+        "producer_revision",
+        "representation_schema_revision",
+        "processing_profile_revision",
+        "parameters_hash",
+    } <= columns
+    assert {
+        "ix_content_owner_content",
+        "ix_content_state_updated",
+        "ix_content_storage_key",
+        "ix_content_source",
+        "uq_content_active_representation_identity",
+    } <= indexes
+    assert {
+        "ck_content_state",
+        "ck_content_available_integrity",
+        "ck_content_derived_identity",
+    } <= checks
+    assert relation_foreign_keys == {"source_content_id", "target_content_id"}
