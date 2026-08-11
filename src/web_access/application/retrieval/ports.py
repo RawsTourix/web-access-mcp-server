@@ -2,12 +2,46 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterable, AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol
 
 from web_access.application.common.context import ExecutionContext
+from web_access.application.content.models import ContentInspection, ContentRef, NativeParseResult
+from web_access.domain.content import ContentRepresentationKind
 from web_access.domain.retrieval import RedirectHop, RetrievedResource
+
+
+class RetrievalTransportError(RuntimeError):
+    code = "retrieval_transport_error"
+
+
+class RetrievalPolicyError(RetrievalTransportError):
+    code = "retrieval_url_blocked"
+
+
+class RetrievalConnectionError(RetrievalTransportError):
+    code = "retrieval_connection_error"
+
+
+class ResponseTooLarge(RetrievalTransportError):
+    code = "response_too_large"
+
+
+class DecompressionLimitExceeded(RetrievalTransportError):
+    code = "decompression_limit"
+
+
+class UnsupportedContentEncoding(RetrievalTransportError):
+    code = "unsupported_content_encoding"
+
+
+class TooManyRedirects(RetrievalTransportError):
+    code = "too_many_redirects"
+
+
+class RedirectBlocked(RetrievalPolicyError):
+    code = "redirect_blocked"
 
 
 @dataclass(slots=True)
@@ -44,3 +78,21 @@ class SafeFetchResponse:
 
 class SafeHttpFetcher(Protocol):
     async def fetch(self, context: ExecutionContext, url: str) -> SafeFetchResponse: ...
+
+
+class RetrievalContentPipeline(Protocol):
+    async def ingest(
+        self,
+        context: ExecutionContext,
+        stream: AsyncIterable[bytes],
+        *,
+        representation_kind: ContentRepresentationKind,
+        media_type: str | None = None,
+        source_filename: str | None = None,
+    ) -> ContentRef: ...
+
+    async def inspect(self, context: ExecutionContext, content_id: str) -> ContentInspection: ...
+
+    async def native_parse(
+        self, context: ExecutionContext, content_id: str
+    ) -> NativeParseResult: ...

@@ -10,15 +10,26 @@ from email.message import Message
 from typing import Protocol
 from urllib.parse import urljoin
 
-from aiohttp import ClientPayloadError, ClientResponse
+from aiohttp import ClientError, ClientPayloadError, ClientResponse
 
 from web_access.application.common.context import ExecutionContext
-from web_access.application.retrieval.ports import FetchCounters, SafeFetchResponse
+from web_access.application.retrieval.ports import (
+    DecompressionLimitExceeded,
+    FetchCounters,
+    RedirectBlocked,
+    ResponseTooLarge,
+    RetrievalConnectionError,
+    RetrievalPolicyError,
+    SafeFetchResponse,
+    TooManyRedirects,
+    UnsupportedContentEncoding,
+)
 from web_access.core.config import RetrievalSettings
 from web_access.domain.retrieval import RedirectHop
 from web_access.infrastructure.retrieval.client import SafeAioHttpClient
 from web_access.infrastructure.retrieval.security import (
     BlockedDestinationError,
+    InvalidRetrievalUrl,
     RetrievalUrlPolicy,
 )
 
@@ -33,30 +44,6 @@ class _Decompressor(Protocol):
     def decompress(self, data: bytes, max_length: int = 0, /) -> bytes: ...
 
     def flush(self, length: int = ..., /) -> bytes: ...
-
-
-class RetrievalTransportError(RuntimeError):
-    code = "retrieval_transport_error"
-
-
-class ResponseTooLarge(RetrievalTransportError):
-    code = "response_too_large"
-
-
-class DecompressionLimitExceeded(RetrievalTransportError):
-    code = "decompression_limit"
-
-
-class UnsupportedContentEncoding(RetrievalTransportError):
-    code = "unsupported_content_encoding"
-
-
-class TooManyRedirects(RetrievalTransportError):
-    code = "too_many_redirects"
-
-
-class RedirectBlocked(RetrievalTransportError):
-    code = "redirect_blocked"
 
 
 class SafeHttpFetcher:
@@ -76,11 +63,18 @@ class SafeHttpFetcher:
         current_url = url
         redirects: list[RedirectHop] = []
         while True:
-            self._policy.validate_url(current_url)
-            response = await self._client.get(
-                current_url,
-                timeout_seconds=self._remaining_timeout(context),
-            )
+            try:
+                self._policy.validate_url(current_url)
+                response = await self._client.get(
+                    current_url,
+                    timeout_seconds=self._remaining_timeout(context),
+                )
+            except (BlockedDestinationError, InvalidRetrievalUrl) as error:
+                raise RetrievalPolicyError("Retrieval destination is blocked") from error
+            except TimeoutError:
+                raise
+            except (ClientError, OSError) as error:
+                raise RetrievalConnectionError("Retrieval connection failed") from error
             if response.status not in _REDIRECT_STATUSES:
                 return self._response(requested_url, current_url, redirects, response)
             location = response.headers.get("Location")
@@ -171,6 +165,10 @@ class SafeHttpFetcher:
                 if tail:
                     yield tail
             self._check_ratio(counters)
+        except TimeoutError:
+            raise
+        except (zlib.error, ClientPayloadError, OSError) as error:
+            raise RetrievalConnectionError("invalid or incomplete response body") from error
         finally:
             response.close()
 
