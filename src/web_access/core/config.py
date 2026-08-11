@@ -222,6 +222,16 @@ class ParserSettings(BaseModel):
     html_max_headings: int = Field(default=200, ge=0, le=5000)
     html_max_metadata_chars: int = Field(default=4096, ge=128, le=64 * 1024)
     html_max_jsonld_items: int = Field(default=32, ge=0, le=256)
+    child_timeout_seconds: float = Field(default=10.0, gt=0, le=120)
+    child_output_bytes: int = Field(default=16 * 1024 * 1024, ge=4096, le=128 * 1024 * 1024)
+    child_concurrency: int = Field(default=2, ge=1, le=16)
+    child_memory_bytes: int = Field(default=512 * 1024 * 1024, ge=64 * 1024 * 1024)
+    child_cpu_seconds: int = Field(default=10, ge=1, le=120)
+    child_open_files: int = Field(default=32, ge=8, le=256)
+    child_processes: int = Field(default=1, ge=1, le=8)
+    child_temp_root: Path = Path("/tmp/web-access-parser")  # noqa: S108 -- private root.
+    child_temp_cleanup_age_seconds: int = Field(default=3600, ge=60, le=7 * 24 * 3600)
+    linux_unshare_path: Path = Path("/usr/bin/unshare")
 
 
 class SearxngSettings(BaseModel):

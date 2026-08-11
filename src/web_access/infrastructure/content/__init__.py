@@ -10,6 +10,7 @@ from web_access.infrastructure.content.identifier import (
     RegistryContentIdentifier,
     default_identification_registry,
 )
+from web_access.infrastructure.content.parser_isolation import SubprocessParserExecutor
 
 __all__ = [
     "ContentIdentificationRegistry",
@@ -17,5 +18,6 @@ __all__ = [
     "IdentificationDescriptor",
     "InvalidStorageKey",
     "RegistryContentIdentifier",
+    "SubprocessParserExecutor",
     "default_identification_registry",
 ]

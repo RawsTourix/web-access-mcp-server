@@ -7,6 +7,8 @@ from datetime import datetime
 from types import TracebackType
 from typing import Protocol, Self
 
+from pydantic import JsonValue
+
 from web_access.application.common.content_store import (
     ContentStore,
     StagedBlob,
@@ -15,7 +17,6 @@ from web_access.application.common.content_store import (
 )
 from web_access.application.content.models import (
     ContentInspection,
-    NativeParseResult,
     NativeParserOutput,
     ParserDescriptor,
 )
@@ -131,8 +132,12 @@ class NativeParserExecutor(Protocol):
 
 class IsolatedParserExecutor(Protocol):
     async def execute(
-        self, descriptor: ParserDescriptor, source: ContentObject, data: bytes
-    ) -> NativeParseResult: ...
+        self,
+        parser_id: str,
+        data: bytes,
+        *,
+        parameters: dict[str, JsonValue] | None = None,
+    ) -> NativeParserOutput: ...
 
 
 class ContentUnitOfWork(Protocol):
