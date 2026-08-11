@@ -13,6 +13,7 @@ from web_access.bootstrap.lifespan import runtime_lifespan
 from web_access.core.config import Settings
 from web_access.infrastructure.auth.static_bearer import StaticBearerAuthProvider
 from web_access.infrastructure.observability.tracing import configure_tracing, instrument_fastapi
+from web_access.transport.mcp.dependencies import McpRuntimeBinding
 from web_access.transport.mcp.server import create_mcp_server
 from web_access.transport.rest.app import create_rest_app
 
@@ -21,6 +22,7 @@ def assemble_control_plane(
     settings: Settings,
     auth_provider: StaticBearerAuthProvider,
     mcp: FastMCP,
+    mcp_runtime: McpRuntimeBinding | None = None,
 ) -> FastAPI:
     tracer_provider = configure_tracing(settings.observability, settings.app.service_name)
 
@@ -30,7 +32,13 @@ def assemble_control_plane(
             settings, auth_provider, tracer_provider=tracer_provider
         ) as container:
             app.state.container = container
-            yield
+            if mcp_runtime is not None:
+                mcp_runtime.bind(container)
+            try:
+                yield
+            finally:
+                if mcp_runtime is not None:
+                    mcp_runtime.clear()
 
     app = create_rest_app(rest_lifespan)
     instrument_fastapi(app, tracer_provider)
@@ -41,14 +49,17 @@ def assemble_control_plane(
     )
     app.mount("/mcp", mcp_app, name="mcp")
     app.state.mcp_server = mcp
+    app.state.mcp_runtime = mcp_runtime
     return app
 
 
 def create_control_plane(settings: Settings | None = None) -> FastAPI:
     selected_settings = settings or Settings()
     auth_provider = StaticBearerAuthProvider(selected_settings.auth.principals)
+    mcp_runtime = McpRuntimeBinding()
     return assemble_control_plane(
         selected_settings,
         auth_provider,
-        create_mcp_server(auth_provider),
+        create_mcp_server(auth_provider, mcp_runtime),
+        mcp_runtime,
     )
