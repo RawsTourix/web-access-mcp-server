@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from web_access.application.content.service import ContentApplicationService
+from web_access.application.retrieval.service import RetrievalApplicationService
 from web_access.application.search.service import SearchApplicationService
 from web_access.core.config import Settings
 from web_access.core.ids import IdGenerator
@@ -19,6 +21,12 @@ class McpDependencies(Protocol):
 
     @property
     def search(self) -> SearchApplicationService: ...
+
+    @property
+    def content(self) -> ContentApplicationService: ...
+
+    @property
+    def retrieval(self) -> RetrievalApplicationService: ...
 
     @property
     def settings(self) -> Settings: ...
