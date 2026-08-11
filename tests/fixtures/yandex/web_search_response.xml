@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="utf-8"?>
+<yandexsearch version="1.0">
+  <request>
+    <query>официальный контракт</query>
+    <page>0</page>
+  </request>
+  <response date="20260811T090000">
+    <reqid>provider-fixture-request</reqid>
+    <results>
+      <grouping mode="flat" groups-on-page="2" docs-in-group="1">
+        <group>
+          <doc id="1">
+            <url>https://first.example/docs</url>
+            <domain>first.example</domain>
+            <title>First <hlword>official</hlword> result</title>
+            <modtime>20260810T120000</modtime>
+            <passages>
+              <passage>First <hlword>bounded</hlword> passage.</passage>
+              <passage>Second passage.</passage>
+            </passages>
+          </doc>
+        </group>
+        <group>
+          <doc id="2">
+            <url>https://second.example/path</url>
+            <domain>second.example</domain>
+            <title>Second result</title>
+            <passages><passage>Another snippet.</passage></passages>
+          </doc>
+        </group>
+      </grouping>
+    </results>
+  </response>
+</yandexsearch>

@@ -32,7 +32,23 @@ class ProviderCapabilities(BaseModel):
     safe_search: bool
     time_range: bool
     max_results: int = Field(ge=1, le=50)
+    max_query_length: int = Field(default=4096, ge=1, le=4096)
+    supported_time_ranges: tuple[SearchTimeRange, ...] = (
+        SearchTimeRange.DAY,
+        SearchTimeRange.MONTH,
+        SearchTimeRange.YEAR,
+    )
     billable: bool
+
+    @model_validator(mode="after")
+    def validate_time_range_capability(self) -> ProviderCapabilities:
+        if self.time_range and not self.supported_time_ranges:
+            raise ValueError("time range capability requires at least one supported value")
+        if not self.time_range and self.supported_time_ranges:
+            raise ValueError("unsupported time range capability cannot declare supported values")
+        if len(self.supported_time_ranges) != len(set(self.supported_time_ranges)):
+            raise ValueError("duplicate supported time range")
+        return self
 
 
 class ProviderDescriptor(BaseModel):

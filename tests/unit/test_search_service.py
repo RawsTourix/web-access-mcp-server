@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
 from datetime import UTC, datetime
 from types import TracebackType
 from typing import Self
@@ -26,6 +27,7 @@ from web_access.application.search.models import (
     SearchQueryData,
 )
 from web_access.application.search.ports import (
+    AttemptStage,
     CacheLookup,
     CacheLookupState,
     ConcurrencyLease,
@@ -70,11 +72,14 @@ class FakeProvider:
         self.failures: list[ProviderAttemptError] = []
         self.wait_event: asyncio.Event | None = None
         self.called_event = asyncio.Event()
+        self.before_search: Callable[[], None] | None = None
 
     async def search(
         self, context: ExecutionContext, request: ProviderSearchRequest
     ) -> ProviderSearchResult:
         _ = context
+        if self.before_search is not None:
+            self.before_search()
         self.calls.append(request)
         self.called_event.set()
         if self.wait_event is not None:
@@ -402,6 +407,27 @@ async def test_billable_retry_only_happens_for_proven_pre_dispatch_failure() -> 
     assert len(yandex.calls) == len(rate.calls) == len(concurrency.acquires) == 2
     assert [attempt for _, attempt in usage.starts] == [1, 2]
     assert usage.commits == 6
+
+
+@pytest.mark.asyncio
+async def test_billable_network_code_runs_only_after_durable_dispatch_evidence() -> None:
+    yandex = FakeProvider(SearchProviderId.YANDEX, billable=True)
+    service, _, _, _, _, _, usage = build(yandex=yandex)
+
+    def verify_preconditions() -> None:
+        assert usage.commits == 2
+        assert usage.stages == [AttemptStage.DISPATCH_POSSIBLE.value]
+
+    yandex.before_search = verify_preconditions
+    result = await service.search(
+        context(),
+        SearchBatchRequest(
+            queries=(SearchQuery(query="paid", provider=SearchProviderSelection.YANDEX),)
+        ),
+    )
+    assert result.outcome is OperationOutcome.SUCCEEDED
+    assert usage.commits == 3
+    assert usage.stages == [AttemptStage.DISPATCH_POSSIBLE.value, AttemptStage.COMPLETED.value]
 
 
 @pytest.mark.asyncio

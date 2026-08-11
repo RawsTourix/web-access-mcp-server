@@ -110,8 +110,15 @@ class SearchProviderRegistry:
             unsupported.append("safe_search")
         if query.time_range is not None and not capabilities.time_range:
             unsupported.append("time_range")
+        elif (
+            query.time_range is not None
+            and query.time_range not in capabilities.supported_time_ranges
+        ):
+            unsupported.append("time_range")
         if query.limit > capabilities.max_results:
             unsupported.append("limit")
+        if len(query.query) > capabilities.max_query_length:
+            unsupported.append("query")
         if unsupported:
             raise ProviderResolutionError(
                 "unsupported_option", f"Provider does not support: {', '.join(unsupported)}"

@@ -1,0 +1,18 @@
+{
+  "query": {
+    "searchType": "SEARCH_TYPE_RU",
+    "queryText": "официальный контракт",
+    "page": "0",
+    "familyMode": "FAMILY_MODE_STRICT"
+  },
+  "groupSpec": {
+    "groupMode": "GROUP_MODE_FLAT",
+    "groupsOnPage": "2",
+    "docsInGroup": "1"
+  },
+  "maxPassages": "3",
+  "folderId": "fixture-folder-id",
+  "responseFormat": "FORMAT_XML",
+  "region": "213",
+  "period": "PERIOD_MONTH"
+}

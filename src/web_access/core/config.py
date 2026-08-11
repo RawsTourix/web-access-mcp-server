@@ -173,6 +173,15 @@ class YandexSearchSettings(BaseModel):
     endpoint: AnyHttpUrl = AnyHttpUrl("https://searchapi.api.cloud.yandex.net/v2/web/search")
     folder_id: str | None = Field(default=None, min_length=1, max_length=128)
     api_key: SecretStr | None = None
+    search_type: Literal[
+        "SEARCH_TYPE_RU",
+        "SEARCH_TYPE_TR",
+        "SEARCH_TYPE_COM",
+        "SEARCH_TYPE_KK",
+        "SEARCH_TYPE_BE",
+        "SEARCH_TYPE_UZ",
+    ] = "SEARCH_TYPE_RU"
+    profile_revision: str = Field(default="yandex-search-v2-v1", min_length=8, max_length=128)
     request_timeout_seconds: float = Field(default=10.0, gt=0, le=60)
     max_response_bytes: int = Field(default=2 * 1024 * 1024, ge=1024, le=8 * 1024 * 1024)
     max_results: int = Field(default=50, ge=1, le=50)
