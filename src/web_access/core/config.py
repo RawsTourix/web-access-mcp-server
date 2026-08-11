@@ -190,7 +190,18 @@ class RetrievalSettings(BaseModel):
     max_connections: int = Field(default=32, ge=1, le=256)
     max_connections_per_host: int = Field(default=4, ge=1, le=32)
     max_redirects: int = Field(default=5, ge=0, le=10)
+    stream_chunk_size: int = Field(default=64 * 1024, ge=4096, le=1024 * 1024)
+    max_wire_bytes: int = Field(default=16 * 1024 * 1024, ge=1024, le=256 * 1024 * 1024)
+    max_entity_bytes: int = Field(default=32 * 1024 * 1024, ge=1024, le=512 * 1024 * 1024)
+    max_decompression_ratio: float = Field(default=100.0, ge=1, le=1000)
+    read_inactivity_seconds: float = Field(default=5.0, gt=0, le=60)
     security: RetrievalSecuritySettings = Field(default_factory=RetrievalSecuritySettings)
+
+    @model_validator(mode="after")
+    def validate_body_limits(self) -> Self:
+        if self.max_entity_bytes < self.max_wire_bytes:
+            raise ValueError("Retrieval entity limit cannot be below wire limit")
+        return self
 
 
 class SearxngSettings(BaseModel):
