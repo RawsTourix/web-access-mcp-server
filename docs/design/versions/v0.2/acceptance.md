@@ -8,7 +8,7 @@ This is coding-agent handoff evidence, not self-acceptance. An independent revie
 
 ## Candidate identity
 
-- Implementation HEAD: `<S16-candidate-commit>`.
+- Implementation HEAD: `3c10cde78f8be8b01519d3b577bdee770e893982`.
 - S0 characterization base: `7a190d5be4e34b001a5e6e6555c032062f0235c3`.
 - Package/service version: `0.2.0`; Python support: `>=3.11,<3.13`; exercised with Python 3.11.
 - Alembic head: `0002_search_attempts` over accepted `0001_foundation`.
@@ -31,7 +31,7 @@ S12 951d40f REST
 S13 8ab56b5 MCP
 S14 c49e50f response-loss/cost
 S15 8278668 E2E/race/fault
-S16 <S16-candidate-commit> acceptance closure/version/docs
+S16 3c10cde acceptance closure/version/docs
 ```
 
 ## Provider and protocol revisions
