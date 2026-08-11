@@ -18,6 +18,7 @@ from web_access.domain.content import (
 from web_access.infrastructure.content.parsers import (
     ContentNativeParserRegistry,
     CsvNativeParser,
+    HtmlNativeParser,
     JsonNativeParser,
     TextNativeParser,
     XmlNativeParser,
@@ -135,10 +136,17 @@ def test_registry_rejects_ambiguous_format_ownership() -> None:
             JsonNativeParser(settings),
             XmlNativeParser(settings),
             CsvNativeParser(settings),
+            HtmlNativeParser(settings),
         )
     )
     assert registry.available_formats == frozenset(
-        {ContentFormat.TEXT, ContentFormat.JSON, ContentFormat.XML, ContentFormat.CSV}
+        {
+            ContentFormat.TEXT,
+            ContentFormat.JSON,
+            ContentFormat.XML,
+            ContentFormat.CSV,
+            ContentFormat.HTML,
+        }
     )
     selected = registry.select(_inspection(ContentFormat.JSON))
     assert selected is not None

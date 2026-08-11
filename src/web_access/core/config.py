@@ -217,6 +217,11 @@ class ParserSettings(BaseModel):
     csv_max_rows: int = Field(default=10_000, ge=1, le=100_000)
     csv_max_columns: int = Field(default=256, ge=1, le=4096)
     csv_max_cell_chars: int = Field(default=64 * 1024, ge=1, le=1024 * 1024)
+    html_max_text_chars: int = Field(default=1_000_000, ge=1024, le=8_000_000)
+    html_max_links: int = Field(default=500, ge=0, le=10_000)
+    html_max_headings: int = Field(default=200, ge=0, le=5000)
+    html_max_metadata_chars: int = Field(default=4096, ge=128, le=64 * 1024)
+    html_max_jsonld_items: int = Field(default=32, ge=0, le=256)
 
 
 class SearxngSettings(BaseModel):
