@@ -92,6 +92,13 @@ class NativeParserOutput(BaseModel):
     warnings: tuple[Warning, ...] = Field(default=(), max_length=16)
     hints: tuple[StructuredHint, ...] = Field(default=(), max_length=16)
 
+    @model_validator(mode="after")
+    def unique_representation_identities(self) -> NativeParserOutput:
+        identities = [(item.representation, item.schema_revision) for item in self.representations]
+        if len(identities) != len(set(identities)):
+            raise ValueError("parser output contains duplicate representation identities")
+        return self
+
 
 class ContentReadResult(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)

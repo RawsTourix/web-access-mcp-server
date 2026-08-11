@@ -37,10 +37,18 @@ class ContentRecord:
     inspection: ContentInspection | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class ContentRepresentationClaim:
+    record: ContentRecord
+    claimed: bool
+
+
 class ContentRepository(Protocol):
     async def add(self, content: ContentObject) -> None: ...
 
     async def get(self, content_id: ContentId) -> ContentRecord | None: ...
+
+    async def claim_representation(self, content: ContentObject) -> ContentRepresentationClaim: ...
 
     async def set_staged(
         self,

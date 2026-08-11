@@ -52,6 +52,8 @@ class ContentApplicationService:
         inspection_sample_bytes: int = 256 * 1024,
         max_inspection_json_bytes: int = 64 * 1024,
         parser_input_bytes: int = 16 * 1024 * 1024,
+        representation_wait_seconds: float = 10.0,
+        representation_poll_seconds: float = 0.02,
     ) -> None:
         self._ids = ids
         self._uow_factory = uow_factory
@@ -62,7 +64,18 @@ class ContentApplicationService:
         self._inspection_sample_bytes = inspection_sample_bytes
         self._max_inspection_json_bytes = max_inspection_json_bytes
         self._parser_input_bytes = parser_input_bytes
-        if min(inspection_sample_bytes, max_inspection_json_bytes, parser_input_bytes) < 1:
+        self._representation_wait_seconds = representation_wait_seconds
+        self._representation_poll_seconds = representation_poll_seconds
+        if (
+            min(
+                inspection_sample_bytes,
+                max_inspection_json_bytes,
+                parser_input_bytes,
+                representation_wait_seconds,
+                representation_poll_seconds,
+            )
+            <= 0
+        ):
             raise ValueError("Content processing limits must be positive")
 
     async def ingest(
@@ -93,12 +106,20 @@ class ContentApplicationService:
         created: ContentObject,
         relation: ContentRelation | None = None,
     ) -> ContentRef:
-        content_id = created.content_id
         async with self._uow_factory() as uow:
             await uow.contents.add(created)
             if relation is not None:
                 await uow.relations.add(relation)
             await uow.commit()
+
+        return await self._publish_reserved(stream, created)
+
+    async def _publish_reserved(
+        self,
+        stream: AsyncIterable[bytes],
+        created: ContentObject,
+    ) -> ContentRef:
+        content_id = created.content_id
 
         staged: StagedBlob | None = None
         revision = 1
@@ -235,14 +256,17 @@ class ContentApplicationService:
         data = await self._read_bounded(record.storage_key, self._parser_input_bytes)
         output = await executor.execute(parser, record.content, inspection, data)
         representation_refs: list[ContentRef] = []
+        created_any = False
         for parsed in output.representations:
-            representation_refs.append(
-                await self._ingest_derived(context, record.content, parser.descriptor, parsed)
+            representation_ref, created_representation = await self._ingest_derived(
+                context, record.content, parser.descriptor, parsed
             )
+            representation_refs.append(representation_ref)
+            created_any = created_any or created_representation
         return NativeParseResult(
             source=source_ref,
             representations=tuple(representation_refs),
-            reused=False,
+            reused=not created_any,
             parser_capability=parser.descriptor.capability,
             warnings=output.warnings,
             hints=output.hints,
@@ -254,7 +278,7 @@ class ContentApplicationService:
         source: ContentObject,
         descriptor: ParserDescriptor,
         parsed: ParsedRepresentation,
-    ) -> ContentRef:
+    ) -> tuple[ContentRef, bool]:
         content_id = ContentId(self._ids.new(IdPrefix.CONTENT))
         created = ContentObject(
             content_id=content_id,
@@ -277,7 +301,31 @@ class ContentApplicationService:
             relation_type=ContentRelationType.DERIVED_FROM,
             created_at=context.clock.utc_now(),
         )
-        return await self._publish_created(_single_chunk(parsed.data), created, relation)
+        wait_seconds = self._representation_wait_seconds
+        if context.remaining_seconds() is not None:
+            wait_seconds = min(wait_seconds, context.remaining_seconds() or 0)
+        loop = asyncio.get_running_loop()
+        wait_deadline = loop.time() + wait_seconds
+        while True:
+            if context.cancellation.requested:
+                raise asyncio.CancelledError
+            claimed = False
+            async with self._uow_factory() as uow:
+                claim = await uow.contents.claim_representation(created)
+                if claim.claimed:
+                    await uow.relations.add(relation)
+                    await uow.commit()
+                    claimed = True
+                existing = claim.record
+            if claimed:
+                published = await self._publish_reserved(_single_chunk(parsed.data), created)
+                return published, True
+            if existing.content.state is ContentState.AVAILABLE:
+                return _content_ref(existing.content), False
+            remaining_wait = wait_deadline - loop.time()
+            if remaining_wait <= 0:
+                raise ContentLifecycleError("compatible Content representation wait expired")
+            await asyncio.sleep(min(self._representation_poll_seconds, remaining_wait))
 
     async def _read_inspection_sample(self, storage_key: str) -> bytes:
         return await self._read_bounded(storage_key, self._inspection_sample_bytes, strict=False)

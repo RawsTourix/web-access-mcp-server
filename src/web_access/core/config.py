@@ -241,6 +241,8 @@ class ParserSettings(BaseModel):
         default=8 * 1024 * 1024, ge=1024, le=128 * 1024 * 1024
     )
     pdf_max_resource_entries: int = Field(default=2048, ge=1, le=100_000)
+    representation_wait_seconds: float = Field(default=10.0, gt=0, le=120)
+    representation_poll_seconds: float = Field(default=0.02, gt=0, le=1)
 
 
 class SearxngSettings(BaseModel):

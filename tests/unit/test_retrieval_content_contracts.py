@@ -5,7 +5,12 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 
-from web_access.application.content.models import ContentRef, ParserDescriptor
+from web_access.application.content.models import (
+    ContentRef,
+    NativeParserOutput,
+    ParsedRepresentation,
+    ParserDescriptor,
+)
 from web_access.application.retrieval.models import RetrievalItemResult
 from web_access.domain.content import (
     ContentFormat,
@@ -90,6 +95,17 @@ def test_parser_descriptor_identity_and_format_uniqueness() -> None:
                 "supported_formats": (ContentFormat.TEXT, ContentFormat.TEXT),
             }
         )
+
+
+def test_native_parser_output_rejects_duplicate_representation_identity() -> None:
+    parsed = ParsedRepresentation(
+        representation=ContentRepresentationKind.STRUCTURED,
+        media_type="application/json",
+        schema_revision="structured-v1",
+        data=b"{}",
+    )
+    with pytest.raises(ValidationError, match="duplicate representation identities"):
+        NativeParserOutput(representations=(parsed, parsed))
 
 
 def test_retrieval_result_requires_raw_content_and_rejects_internal_fields() -> None:

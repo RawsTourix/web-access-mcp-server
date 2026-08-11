@@ -7,10 +7,11 @@ from types import TracebackType
 from typing import Self
 
 from sqlalchemy import func, select, text, update
+from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from web_access.application.content.models import ContentInspection
-from web_access.application.content.ports import ContentRecord
+from web_access.application.content.ports import ContentRecord, ContentRepresentationClaim
 from web_access.domain.content import (
     ContentFormat,
     ContentId,
@@ -63,44 +64,80 @@ def _record(row: ContentObjectRow) -> ContentRecord:
     )
 
 
+def _content_values(content: ContentObject) -> dict[str, object]:
+    return {
+        "content_id": str(content.content_id),
+        "owner_principal_id": content.owner_principal_id,
+        "state": content.state.value,
+        "revision": content.revision,
+        "representation_kind": content.representation_kind.value,
+        "declared_media_type": content.media_type,
+        "detected_format": (
+            content.detected_format.value if content.detected_format is not None else None
+        ),
+        "source_filename": content.source_filename,
+        "size_bytes": content.size_bytes,
+        "sha256": content.sha256,
+        "created_at": content.created_at,
+        "updated_at": content.created_at,
+        "expires_at": content.expires_at,
+        "source_content_id": (
+            str(content.source_content_id) if content.source_content_id else None
+        ),
+        "producer_capability": content.producer_capability,
+        "producer_revision": content.producer_revision,
+        "representation_schema_revision": content.representation_schema_revision,
+        "processing_profile_revision": content.processing_profile_revision,
+        "parameters_hash": content.parameters_hash,
+    }
+
+
 class PostgresContentRepository:
     def __init__(self, session: AsyncSession) -> None:
         self._session = session
 
     async def add(self, content: ContentObject) -> None:
-        self._session.add(
-            ContentObjectRow(
-                content_id=str(content.content_id),
-                owner_principal_id=content.owner_principal_id,
-                state=content.state.value,
-                revision=content.revision,
-                representation_kind=content.representation_kind.value,
-                declared_media_type=content.media_type,
-                detected_format=(
-                    content.detected_format.value if content.detected_format is not None else None
-                ),
-                source_filename=content.source_filename,
-                size_bytes=content.size_bytes,
-                sha256=content.sha256,
-                created_at=content.created_at,
-                updated_at=content.created_at,
-                expires_at=content.expires_at,
-                source_content_id=(
-                    str(content.source_content_id) if content.source_content_id else None
-                ),
-                producer_capability=content.producer_capability,
-                producer_revision=content.producer_revision,
-                representation_schema_revision=content.representation_schema_revision,
-                processing_profile_revision=content.processing_profile_revision,
-                parameters_hash=content.parameters_hash,
-            )
-        )
+        self._session.add(ContentObjectRow(**_content_values(content)))
 
     async def get(self, content_id: ContentId) -> ContentRecord | None:
         row = await self._session.scalar(
             select(ContentObjectRow).where(ContentObjectRow.content_id == str(content_id))
         )
         return None if row is None else _record(row)
+
+    async def claim_representation(self, content: ContentObject) -> ContentRepresentationClaim:
+        if content.source_content_id is None:
+            raise ValueError("representation claim requires derived Content identity")
+        inserted = await self._session.scalar(
+            insert(ContentObjectRow)
+            .values(**_content_values(content))
+            .on_conflict_do_nothing()
+            .returning(ContentObjectRow.id)
+        )
+        if inserted is not None:
+            record = await self.get(content.content_id)
+            if record is None:
+                raise RuntimeError("claimed Content representation was not readable")
+            return ContentRepresentationClaim(record=record, claimed=True)
+        row = await self._session.scalar(
+            select(ContentObjectRow).where(
+                ContentObjectRow.owner_principal_id == content.owner_principal_id,
+                ContentObjectRow.source_content_id == str(content.source_content_id),
+                ContentObjectRow.producer_capability == content.producer_capability,
+                ContentObjectRow.producer_revision == content.producer_revision,
+                ContentObjectRow.processing_profile_revision == content.processing_profile_revision,
+                ContentObjectRow.parameters_hash == content.parameters_hash,
+                ContentObjectRow.representation_kind == content.representation_kind.value,
+                ContentObjectRow.representation_schema_revision
+                == content.representation_schema_revision,
+                ContentObjectRow.state.in_(
+                    (ContentState.CREATING.value, ContentState.AVAILABLE.value)
+                ),
+            )
+        )
+        if row is None:
+            raise RuntimeError("representation conflict had no compatible active winner")
+        return ContentRepresentationClaim(record=_record(row), claimed=False)
 
     async def set_staged(
         self,
