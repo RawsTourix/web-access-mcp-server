@@ -8,7 +8,12 @@ from typing import Annotated
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from web_access.application.common.hints import StructuredHint, Warning
-from web_access.domain.content import ContentFormat, ContentRepresentationKind, ParserAvailability
+from web_access.domain.content import (
+    ContentFormat,
+    ContentRepresentationKind,
+    ParserAvailability,
+    ParserExecutionMode,
+)
 
 ContentIdValue = Annotated[str, Field(min_length=1, max_length=128)]
 
@@ -49,6 +54,7 @@ class ParserDescriptor(BaseModel):
     supported_formats: tuple[ContentFormat, ...] = Field(min_length=1, max_length=16)
     primary_representation: ContentRepresentationKind
     representation_schema_revision: str = Field(min_length=1, max_length=128)
+    execution_mode: ParserExecutionMode = ParserExecutionMode.INLINE
 
     @model_validator(mode="after")
     def unique_formats(self) -> ParserDescriptor:

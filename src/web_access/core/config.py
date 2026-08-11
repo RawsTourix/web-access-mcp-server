@@ -232,6 +232,15 @@ class ParserSettings(BaseModel):
     child_temp_root: Path = Path("/tmp/web-access-parser")  # noqa: S108 -- private root.
     child_temp_cleanup_age_seconds: int = Field(default=3600, ge=60, le=7 * 24 * 3600)
     linux_unshare_path: Path = Path("/usr/bin/unshare")
+    pdf_max_bytes: int = Field(default=16 * 1024 * 1024, ge=1024, le=128 * 1024 * 1024)
+    pdf_max_pages: int = Field(default=200, ge=1, le=2000)
+    pdf_max_page_chars: int = Field(default=200_000, ge=1, le=2_000_000)
+    pdf_max_output_chars: int = Field(default=2_000_000, ge=1, le=16_000_000)
+    pdf_max_metadata_chars: int = Field(default=4096, ge=128, le=64 * 1024)
+    pdf_max_content_stream_bytes: int = Field(
+        default=8 * 1024 * 1024, ge=1024, le=128 * 1024 * 1024
+    )
+    pdf_max_resource_entries: int = Field(default=2048, ge=1, le=100_000)
 
 
 class SearxngSettings(BaseModel):

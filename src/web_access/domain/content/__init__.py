@@ -9,6 +9,7 @@ from web_access.domain.content.models import (
     ContentRepresentationKind,
     ContentState,
     ParserAvailability,
+    ParserExecutionMode,
     can_transition_content,
 )
 
@@ -21,5 +22,6 @@ __all__ = [
     "ContentRepresentationKind",
     "ContentState",
     "ParserAvailability",
+    "ParserExecutionMode",
     "can_transition_content",
 ]

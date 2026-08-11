@@ -47,6 +47,11 @@ class ParserAvailability(StrEnum):
     JOB_REQUIRED = "job_required"
 
 
+class ParserExecutionMode(StrEnum):
+    INLINE = "inline"
+    ISOLATED = "isolated"
+
+
 _TRANSITIONS: dict[ContentState, frozenset[ContentState]] = {
     ContentState.CREATING: frozenset({ContentState.AVAILABLE, ContentState.FAILED}),
     ContentState.AVAILABLE: frozenset({ContentState.EXPIRED, ContentState.DELETED}),

@@ -51,7 +51,7 @@ class ContentApplicationService:
         parser_executor: NativeParserExecutor | None = None,
         inspection_sample_bytes: int = 256 * 1024,
         max_inspection_json_bytes: int = 64 * 1024,
-        parser_input_bytes: int = 8 * 1024 * 1024,
+        parser_input_bytes: int = 16 * 1024 * 1024,
     ) -> None:
         self._ids = ids
         self._uow_factory = uow_factory

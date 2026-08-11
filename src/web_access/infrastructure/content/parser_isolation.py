@@ -107,7 +107,12 @@ class SubprocessParserExecutor:
     ) -> NativeParserOutput:
         if parser_id not in self._allowed_parser_ids:
             raise ParserIsolationError("isolated parser ID is not allowlisted")
-        if len(data) > self._settings.inline_max_input_bytes:
+        input_limit = (
+            self._settings.pdf_max_bytes
+            if parser_id == "pdf"
+            else self._settings.inline_max_input_bytes
+        )
+        if len(data) > input_limit:
             raise ParserIsolationError("isolated parser input exceeds configured limit")
         await self.start()
         async with self._semaphore:
@@ -128,7 +133,11 @@ class SubprocessParserExecutor:
             await asyncio.to_thread(os.chmod, input_path, 0o600)
             request = IsolatedParserRequest(
                 parser_id=parser_id,
-                max_input_bytes=self._settings.inline_max_input_bytes,
+                max_input_bytes=(
+                    self._settings.pdf_max_bytes
+                    if parser_id == "pdf"
+                    else self._settings.inline_max_input_bytes
+                ),
                 max_output_bytes=self._settings.child_output_bytes,
                 cpu_seconds=self._settings.child_cpu_seconds,
                 memory_bytes=self._settings.child_memory_bytes,

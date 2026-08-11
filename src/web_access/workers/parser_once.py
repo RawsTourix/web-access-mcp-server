@@ -76,6 +76,10 @@ def main() -> int:
 
 
 def _handler(parser_id: str) -> Handler:
+    if parser_id == "pdf":
+        from web_access.workers.pdf_parser import parse_pdf
+
+        return parse_pdf
     if os.environ.get("WEB_ACCESS_PARSER_TEST_MODE") == "1":
         test_handlers: dict[str, Handler] = {
             "test_crash": _crash,
