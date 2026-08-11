@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import shutil
+from dataclasses import replace
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Literal
+from typing import Literal, cast
 
 import httpx
 import pytest
@@ -13,6 +15,28 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import SpanKind
 from pydantic import SecretStr
 
+from web_access.application.common.context import ExecutionContext
+from web_access.application.common.errors import ErrorCategory, OperationError
+from web_access.application.common.health import Availability
+from web_access.application.common.results import (
+    BatchItemResult,
+    LeafOutcome,
+    OperationOutcome,
+    OperationResult,
+)
+from web_access.application.search.models import (
+    CacheMetadata,
+    PaginationMetadata,
+    SearchBatchRequest,
+    SearchBatchResult,
+    SearchQueryData,
+)
+from web_access.application.search.readiness import (
+    PublicProviderCapabilities,
+    SearchProviderDiscovery,
+    SearchProviderReadinessService,
+)
+from web_access.application.search.service import SearchApplicationService
 from web_access.bootstrap.app import create_control_plane
 from web_access.core.config import (
     AppSettings,
@@ -23,6 +47,7 @@ from web_access.core.config import (
     PrincipalSettings,
     Settings,
 )
+from web_access.domain.search import SearchProviderId, SearchResultItem
 
 TOKEN = "a" * 32
 NO_SCOPE_TOKEN = "b" * 32
@@ -47,7 +72,7 @@ def _settings(
                 PrincipalSettings(
                     principal_id="diagnostic-agent",
                     tokens=(SecretStr(TOKEN),),
-                    scopes=frozenset({"admin:read"}),
+                    scopes=frozenset({"admin:read", "search:read"}),
                 ),
                 PrincipalSettings(
                     principal_id="limited-agent",
@@ -159,20 +184,197 @@ async def test_correlation_headers_are_bounded_and_server_owned(tmp_path: Path) 
             assert rejected.headers["X-Request-ID"].startswith("req_")
 
 
-def test_openapi_has_only_foundation_routes_and_bearer_security(tmp_path: Path) -> None:
+def test_openapi_has_only_v02_routes_and_bearer_security(tmp_path: Path) -> None:
     schema = create_control_plane(_settings(tmp_path)).openapi()
     assert set(schema["paths"]) == {
         "/health/live",
         "/health/ready",
         "/health/status",
         "/metrics",
+        "/api/v1/search",
+        "/api/v1/search/providers",
     }
     assert "BearerAuth" in schema["components"]["securitySchemes"]
     status_operation = schema["paths"]["/health/status"]["get"]
     assert status_operation["security"] == [{"BearerAuth": []}]
+    assert schema["paths"]["/api/v1/search"]["post"]["security"] == [{"BearerAuth": []}]
+    assert schema["paths"]["/api/v1/search/providers"]["get"]["security"] == [{"BearerAuth": []}]
     rendered = str(schema).lower()
-    for forbidden in ("search", "retrieval", "browser", "jobs", "sqlalchemy", "redis_url"):
+    for forbidden in ("retrieval", "browser", "jobs", "sqlalchemy", "redis_url"):
         assert f'"/{forbidden}' not in rendered
+
+
+class _FakeSearch:
+    def __init__(self) -> None:
+        self.context: ExecutionContext | None = None
+        self.request: SearchBatchRequest | None = None
+
+    async def search(
+        self, context: ExecutionContext, request: SearchBatchRequest
+    ) -> OperationResult[SearchBatchResult]:
+        self.context = context
+        self.request = request
+        now = datetime(2026, 8, 11, tzinfo=UTC)
+        succeeded = BatchItemResult[SearchQueryData](
+            index=0,
+            outcome=LeafOutcome.SUCCEEDED,
+            data=SearchQueryData(
+                query=request.queries[0].query,
+                provider_id=SearchProviderId.SEARXNG,
+                page=request.queries[0].page,
+                requested_limit=request.queries[0].limit,
+                results=(
+                    SearchResultItem(
+                        rank=1,
+                        title="Result",
+                        url="https://example.test/result",
+                    ),
+                ),
+                cache=CacheMetadata(cached=False, retrieved_at=now),
+                pagination=PaginationMetadata(page=request.queries[0].page),
+            ),
+        )
+        rejected = BatchItemResult[SearchQueryData](
+            index=1,
+            outcome=LeafOutcome.REJECTED,
+            error=OperationError(
+                category=ErrorCategory.UNSUPPORTED,
+                code="unsupported_option",
+                message="The selected provider does not support this option.",
+            ),
+        )
+        return OperationResult[SearchBatchResult](
+            operation_id=context.operation_id,
+            outcome=OperationOutcome.PARTIAL_SUCCESS,
+            data=SearchBatchResult(items=(succeeded, rejected)),
+        )
+
+
+class _FakeReadiness:
+    async def providers(self) -> tuple[SearchProviderDiscovery, ...]:
+        return (
+            SearchProviderDiscovery(
+                provider_id=SearchProviderId.SEARXNG,
+                name="SearXNG",
+                enabled=True,
+                billable=False,
+                capabilities=PublicProviderCapabilities(
+                    pagination=True,
+                    language=True,
+                    region=True,
+                    safe_search=True,
+                    time_range=True,
+                ),
+                readiness=Availability.READY,
+            ),
+        )
+
+
+@pytest.mark.asyncio
+async def test_search_routes_are_exact_scoped_and_project_canonical_results(
+    tmp_path: Path,
+) -> None:
+    fake_search = _FakeSearch()
+    app = create_control_plane(_settings(tmp_path))
+    async with app.router.lifespan_context(app):
+        app.state.container = replace(
+            app.state.container,
+            search=cast(SearchApplicationService, fake_search),
+            search_readiness=cast(SearchProviderReadinessService, _FakeReadiness()),
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            missing = await client.post("/api/v1/search", json={"queries": [{"query": "x"}]})
+            denied = await client.get(
+                "/api/v1/search/providers",
+                headers={"Authorization": f"Bearer {NO_SCOPE_TOKEN}"},
+            )
+            response = await client.post(
+                "/api/v1/search",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                json={
+                    "queries": [
+                        {"query": "  first query  "},
+                        {
+                            "query": "second query",
+                            "provider": "yandex",
+                            "language": "EN-us",
+                            "region": "ru-moscow",
+                            "safe_search": "strict",
+                            "time_range": "month",
+                        },
+                    ]
+                },
+            )
+            providers = await client.get(
+                "/api/v1/search/providers",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+            )
+
+    assert missing.status_code == 401
+    assert denied.status_code == 403
+    assert response.status_code == 200
+    body = response.json()
+    assert body["operation_id"] == response.headers["X-Operation-ID"]
+    assert body["outcome"] == "partial"
+    assert [item["index"] for item in body["data"]["items"]] == [0, 1]
+    assert body["data"]["items"][0]["data"]["query"] == "first query"
+    assert fake_search.context is not None
+    assert fake_search.context.principal.principal_id == "diagnostic-agent"
+    assert fake_search.context.operation_id == body["operation_id"]
+    assert fake_search.request is not None
+    assert str(fake_search.request.queries[1].language) == "en-US"
+
+    assert providers.status_code == 200
+    provider = providers.json()[0]
+    assert set(provider) == {
+        "provider_id",
+        "name",
+        "enabled",
+        "billable",
+        "capabilities",
+        "readiness",
+    }
+    assert set(provider["capabilities"]) == {
+        "pagination",
+        "language",
+        "region",
+        "safe_search",
+        "time_range",
+    }
+    assert provider["readiness"] == "ready"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "query",
+    [
+        {"query": "x", "unknown": True},
+        {"query": "x", "provider": "unknown"},
+        {"query": "x", "language": None},
+        {"query": "x", "language": "not_a_language"},
+        {"query": "x", "region": "RU"},
+        {"query": "x", "limit": 51},
+        {"query": "x" * 4097},
+    ],
+)
+async def test_search_rest_rejects_non_contract_inputs(
+    tmp_path: Path, query: dict[str, object]
+) -> None:
+    app = create_control_plane(_settings(tmp_path))
+    async with app.router.lifespan_context(app):
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=app), base_url="http://test"
+        ) as client:
+            response = await client.post(
+                "/api/v1/search",
+                headers={"Authorization": f"Bearer {TOKEN}"},
+                json={"queries": [query]},
+            )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "invalid_request"
 
 
 @pytest.mark.asyncio

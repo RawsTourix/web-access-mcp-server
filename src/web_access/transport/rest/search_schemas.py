@@ -4,11 +4,17 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from pydantic import BaseModel, ConfigDict, Field, StringConstraints
+from pydantic import BaseModel, ConfigDict, Field, StringConstraints, field_validator
 from pydantic.experimental.missing_sentinel import MISSING
 
 from web_access.application.search.models import SearchBatchRequest, SearchQuery
-from web_access.domain.search import SearchSafeMode, SearchTimeRange
+from web_access.domain.search import (
+    SearchLanguage,
+    SearchProviderSelection,
+    SearchRegionId,
+    SearchSafeMode,
+    SearchTimeRange,
+)
 
 RestQueryText = Annotated[
     str, StringConstraints(strip_whitespace=True, min_length=1, max_length=4096)
@@ -20,13 +26,27 @@ class RestSearchQuery(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     query: RestQueryText
-    provider: Annotated[str, StringConstraints(min_length=1, max_length=64)] = "default"
+    provider: SearchProviderSelection = SearchProviderSelection.DEFAULT
     page: int = Field(default=1, ge=1, le=100)
     limit: int = Field(default=10, ge=1, le=50)
     language: BoundedOption | MISSING = MISSING
     region: BoundedOption | MISSING = MISSING
     safe_search: SearchSafeMode | MISSING = MISSING
     time_range: SearchTimeRange | MISSING = MISSING
+
+    @field_validator("language")
+    @classmethod
+    def validate_language(cls, value: str | MISSING) -> str | MISSING:
+        if value is MISSING:
+            return value
+        return str(SearchLanguage.parse(value))
+
+    @field_validator("region")
+    @classmethod
+    def validate_region(cls, value: str | MISSING) -> str | MISSING:
+        if value is MISSING:
+            return value
+        return str(SearchRegionId(value))
 
     def to_application(self) -> SearchQuery:
         payload: dict[str, object] = {

@@ -10,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncEngine
 from web_access.application.common.auth import AuthProvider
 from web_access.application.common.health import HealthService
 from web_access.application.common.observability import Metrics
+from web_access.application.search.readiness import SearchProviderReadinessService
+from web_access.application.search.service import SearchApplicationService
 from web_access.core.config import Settings
 from web_access.core.ids import IdGenerator
 from web_access.core.time import Clock
@@ -31,3 +33,5 @@ class RuntimeContainer:
     health: HealthService
     metrics: Metrics
     tracer_provider: TracerProvider | None
+    search: SearchApplicationService
+    search_readiness: SearchProviderReadinessService

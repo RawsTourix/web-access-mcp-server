@@ -15,9 +15,16 @@ from starlette.middleware.base import RequestResponseEndpoint
 from starlette.types import Lifespan
 
 from web_access.application.common.auth import require_scope
-from web_access.application.common.context import PrincipalContext
+from web_access.application.common.context import (
+    CancellationToken,
+    ExecutionContext,
+    PrincipalContext,
+)
 from web_access.application.common.correlation import bind_correlation, clear_correlation
 from web_access.application.common.errors import AuthorizationError
+from web_access.application.common.results import PublicOperationResult, project_result
+from web_access.application.search.models import SearchBatchResult
+from web_access.application.search.readiness import SearchProviderDiscovery
 from web_access.core.ids import IdPrefix
 from web_access.transport.rest.auth import RestAuthAdapter, RestAuthenticationError
 from web_access.transport.rest.dependencies import RestDependencies, dependencies_from_request
@@ -28,6 +35,7 @@ from web_access.transport.rest.errors import (
     validation_error_handler,
 )
 from web_access.transport.rest.schemas import LiveResponse, ReadyResponse, StatusResponse
+from web_access.transport.rest.search_schemas import RestSearchRequest
 
 _REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9_.:-]+$")
 _bearer = HTTPBearer(auto_error=False, scheme_name="BearerAuth")
@@ -49,6 +57,28 @@ async def diagnostic_principal(
 ) -> PrincipalContext:
     require_scope(principal, dependencies_from_request(request).settings.auth.diagnostic_scope)
     return principal
+
+
+async def search_principal(
+    principal: PrincipalContext = Depends(authenticated_principal),
+) -> PrincipalContext:
+    require_scope(principal, "search:read")
+    return principal
+
+
+def _execution_context(
+    request: Request,
+    dependencies: RestDependencies,
+    principal: PrincipalContext,
+) -> ExecutionContext:
+    return ExecutionContext(
+        operation_id=request.state.operation_id,
+        principal=principal,
+        clock=dependencies.clock,
+        cancellation=CancellationToken(),
+        request_id=request.state.request_id,
+        trace_id=request.state.trace_id,
+    )
 
 
 def _request_id(request: Request, dependencies: RestDependencies) -> str:
@@ -136,5 +166,33 @@ def create_rest_app(lifespan: Lifespan[FastAPI]) -> FastAPI:
             content=dependencies_from_request(request).metrics.render(),
             media_type=CONTENT_TYPE_LATEST,
         )
+
+    @app.post(
+        "/api/v1/search",
+        response_model=PublicOperationResult[SearchBatchResult],
+        tags=["search"],
+    )
+    async def search(
+        payload: RestSearchRequest,
+        request: Request,
+        principal: PrincipalContext = Depends(search_principal),
+    ) -> PublicOperationResult[SearchBatchResult]:
+        dependencies = dependencies_from_request(request)
+        result = await dependencies.search.search(
+            _execution_context(request, dependencies, principal),
+            payload.to_application(),
+        )
+        return project_result(result)
+
+    @app.get(
+        "/api/v1/search/providers",
+        response_model=tuple[SearchProviderDiscovery, ...],
+        tags=["search"],
+    )
+    async def search_providers(
+        request: Request,
+        _principal: PrincipalContext = Depends(search_principal),
+    ) -> tuple[SearchProviderDiscovery, ...]:
+        return await dependencies_from_request(request).search_readiness.providers()
 
     return app
