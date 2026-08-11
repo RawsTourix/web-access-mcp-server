@@ -104,6 +104,17 @@ def test_content_read_cursor_binary_and_authorized_stream(tmp_path) -> None:
             await service.read(_context("other-owner", clock), text_ref.content_id)
         with pytest.raises(AuthorizationError):
             await service.read(_context("read-owner", clock, scoped=False), text_ref.content_id)
+        with pytest.raises(ContentCursorError, match="size bound"):
+            await service.read(owner, text_ref.content_id, cursor="x" * 2049)
+
+        other_text_ref = await service.ingest(
+            owner,
+            _body(b"another text resource"),
+            representation_kind=ContentRepresentationKind.TEXT,
+            media_type="text/plain; charset=utf-8",
+        )
+        with pytest.raises(ContentCursorError, match="does not match"):
+            await service.read(owner, other_text_ref.content_id, cursor=first_cursor)
 
         await service.inspect(owner, text_ref.content_id)
         with pytest.raises(ContentCursorError, match="revision"):

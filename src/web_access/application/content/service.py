@@ -9,7 +9,7 @@ import json
 from collections.abc import AsyncIterable, AsyncIterator
 
 from web_access.application.common.auth import require_owner, require_scope
-from web_access.application.common.content_store import ContentStore, StagedBlob
+from web_access.application.common.content_store import ContentStore, StagedBlob, StoredBlob
 from web_access.application.common.context import ExecutionContext
 from web_access.application.common.errors import AuthorizationError, ErrorCategory, OperationError
 from web_access.application.common.hints import Warning, native_processing_unsupported
@@ -171,6 +171,7 @@ class ContentApplicationService:
         content_id = created.content_id
 
         staged: StagedBlob | None = None
+        final: StoredBlob | None = None
         revision = 1
         try:
             staged = await self._store.stage_write(str(content_id), stream)
@@ -200,10 +201,12 @@ class ContentApplicationService:
                 await uow.commit()
             return _content_ref(published.content)
         except asyncio.CancelledError:
-            await self._cleanup_failed(content_id, revision, staged, "cancelled")
+            await self._cleanup_failed(content_id, revision, staged, final, "cancelled")
             raise
         except Exception:
-            await self._cleanup_failed(content_id, revision, staged, "content_creation_failed")
+            await self._cleanup_failed(
+                content_id, revision, staged, final, "content_creation_failed"
+            )
             raise
 
     async def _cleanup_failed(
@@ -211,6 +214,7 @@ class ContentApplicationService:
         content_id: ContentId,
         revision: int,
         staged: StagedBlob | None,
+        final: StoredBlob | None,
         failure_code: str,
     ) -> None:
         if staged is not None:
@@ -226,6 +230,15 @@ class ContentApplicationService:
                 await uow.commit()
         except (OSError, RuntimeError):
             pass
+        if final is not None:
+            try:
+                async with self._uow_factory() as uow:
+                    await uow.contents.lock_storage_key(final.key)
+                    if not await uow.contents.has_active_storage_reference(final.key):
+                        await self._store.remove(final.key)
+                    await uow.commit()
+            except (OSError, RuntimeError, ValueError):
+                pass
 
     async def inspect(self, context: ExecutionContext, content_id: str) -> ContentInspection:
         require_scope(context.principal, "content:read")
@@ -511,6 +524,8 @@ class ContentApplicationService:
             raise ContentLifecycleError("Content cursor codec is not configured")
         offset = 0
         if cursor is not None:
+            if len(cursor) > 2048:
+                raise ContentCursorError("Content cursor exceeds its size bound")
             try:
                 claims = codec.decode(cursor)
             except ValueError as error:

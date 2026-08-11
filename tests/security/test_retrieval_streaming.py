@@ -62,6 +62,20 @@ class TestOnlyLoopbackValidator:
         return tuple(ipaddress.ip_address(address) for address in addresses)
 
 
+class FirstResolutionControlledValidator:
+    """Treat the controlled origin as vetted, then enforce real policy on redirects."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self._policy = RetrievalUrlPolicy(RetrievalSecuritySettings())
+
+    def validate_addresses(self, addresses: tuple[str, ...]) -> tuple[object, ...]:
+        self.calls += 1
+        if self.calls == 1:
+            return tuple(ipaddress.ip_address(address) for address in addresses)
+        return self._policy.validate_addresses(addresses)
+
+
 def _context() -> ExecutionContext:
     return ExecutionContext(
         operation_id="op_stream",
@@ -247,6 +261,25 @@ async def test_decompression_ratio_and_unsupported_encoding_are_rejected() -> No
         finally:
             await client.close()
 
+
+@pytest.mark.asyncio
+async def test_decompressed_entity_ceiling_is_independent_of_ratio_ceiling() -> None:
+    entity = b"bounded-but-too-large" * 500
+    compressor = zlib.compressobj(wbits=zlib.MAX_WBITS | 16)
+    wire = compressor.compress(entity) + compressor.flush()
+
+    async def respond(_target: str) -> bytes:
+        return _response(wire, headers=(("Content-Encoding", "gzip"),))
+
+    async for port, _requests in _server(respond):
+        fetcher, client, _resolver = _fetcher(port, max_decompression_ratio=1000)
+        try:
+            result = await fetcher.fetch(_context(), f"http://content.test:{port}/entity")
+            with pytest.raises(DecompressionLimitExceeded):
+                await _read(result.body)
+        finally:
+            await client.close()
+
     async def unsupported(_target: str) -> bytes:
         return _response(b"encoded", headers=(("Content-Encoding", "br"),))
 
@@ -277,6 +310,34 @@ async def test_redirect_to_private_literal_is_rejected_before_second_request() -
             await client.close()
         assert requests == ["/redirect"]
         assert resolver.calls == 1
+
+
+@pytest.mark.asyncio
+async def test_redirect_to_private_hostname_is_rejected_before_second_request() -> None:
+    async def respond(_target: str) -> bytes:
+        return _response(
+            b"",
+            headers=(("Location", f"http://private.test:{port}/private"),),
+            status="302 Found",
+        )
+
+    async for port, requests in _server(respond):
+        security = RetrievalSecuritySettings(additional_allowed_ports=frozenset({port}))
+        settings = RetrievalSettings(security=security)
+        url_policy = RetrievalUrlPolicy(security)
+        underlying = LoopbackResolver()
+        validator = FirstResolutionControlledValidator()
+        resolver = ValidatingResolver(validator, underlying)
+        client = SafeAioHttpClient(settings=settings, policy=url_policy, resolver=resolver)
+        fetcher = SafeHttpFetcher(client=client, policy=url_policy, settings=settings)
+        try:
+            with pytest.raises(RedirectBlocked):
+                await fetcher.fetch(_context(), f"http://content.test:{port}/redirect-host")
+        finally:
+            await client.close()
+        assert requests == ["/redirect-host"]
+        assert underlying.calls == 2
+        assert validator.calls == 2
 
 
 @pytest.mark.asyncio

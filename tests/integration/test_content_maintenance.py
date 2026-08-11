@@ -191,3 +191,110 @@ def test_gc_is_reference_aware_for_same_hash_across_owners(tmp_path) -> None:
         await engine.dispose()
 
     asyncio.run(run())
+
+
+def test_reconciler_handles_stale_finalized_missing_and_corrupt_content(tmp_path) -> None:
+    url = os.environ.get("WEB_ACCESS_TEST_DATABASE_URL")
+    if url is None:
+        pytest.fail("WEB_ACCESS_TEST_DATABASE_URL is required for Content maintenance tests")
+    _upgrade(url)
+
+    async def run() -> None:
+        now = datetime(2026, 8, 11, 12, tzinfo=UTC)
+        old = now - timedelta(hours=2)
+        engine = create_async_engine(url)
+        uow_factory = SqlAlchemyContentUnitOfWorkFactory(create_session_factory(engine))
+        store = FilesystemContentStore(ContentStoreSettings(root=tmp_path))
+
+        stale_id = ContentId(f"cnt_{uuid4().hex}")
+        finalized_id = ContentId(f"cnt_{uuid4().hex}")
+        for content_id in (stale_id, finalized_id):
+            async with uow_factory() as uow:
+                await uow.contents.add(
+                    ContentObject(
+                        content_id=content_id,
+                        owner_principal_id="maintenance-owner",
+                        state=ContentState.CREATING,
+                        revision=1,
+                        representation_kind=ContentRepresentationKind.RAW,
+                        created_at=old,
+                    )
+                )
+                await uow.commit()
+
+        staged = await store.stage_write(str(finalized_id), _chunks(b"already finalized"))
+        async with uow_factory() as uow:
+            assert await uow.contents.set_staged(
+                finalized_id,
+                expected_revision=1,
+                staging_key=staged.handle,
+                sha256=staged.sha256,
+                size_bytes=staged.size,
+            )
+            await uow.commit()
+        final = await store.finalize(staged)
+
+        service = ContentApplicationService(
+            ids=DeterministicIdGenerator(iter((uuid4().hex, uuid4().hex))),
+            uow_factory=uow_factory,
+            store=store,
+        )
+        context = ExecutionContext(
+            operation_id="op_integrity",
+            principal=PrincipalContext("maintenance-owner", frozenset({"content:write"})),
+            clock=FakeClock(now),
+            cancellation=CancellationToken(),
+        )
+        missing = await service.ingest(
+            context,
+            _chunks(b"missing blob"),
+            representation_kind=ContentRepresentationKind.RAW,
+        )
+        corrupt = await service.ingest(
+            context,
+            _chunks(b"corrupt blob"),
+            representation_kind=ContentRepresentationKind.RAW,
+        )
+        async with uow_factory() as uow:
+            missing_record = await uow.contents.get(ContentId(missing.content_id))
+            corrupt_record = await uow.contents.get(ContentId(corrupt.content_id))
+        assert missing_record is not None and missing_record.storage_key is not None
+        assert corrupt_record is not None and corrupt_record.storage_key is not None
+        await store.remove(missing_record.storage_key)
+        (tmp_path / "blobs" / corrupt_record.storage_key).write_bytes(b"tampered")
+
+        async with engine.begin() as connection:
+            await connection.execute(
+                text(
+                    "UPDATE content_objects SET updated_at=:old "
+                    "WHERE content_id IN (:stale_id, :finalized_id)"
+                ),
+                {
+                    "old": old,
+                    "stale_id": str(stale_id),
+                    "finalized_id": str(finalized_id),
+                },
+            )
+
+        maintenance = ContentMaintenanceService(
+            clock=FakeClock(now),
+            uow_factory=uow_factory,
+            store=store,
+            stale_after_seconds=60,
+            gc_grace_seconds=60,
+            batch_size=100,
+        )
+        result = await maintenance.run_once()
+
+        async with uow_factory() as uow:
+            stale = await uow.contents.get(stale_id)
+            recovered = await uow.contents.get(finalized_id)
+        assert stale is not None and stale.content.state is ContentState.FAILED
+        assert recovered is not None and recovered.content.state is ContentState.AVAILABLE
+        assert recovered.storage_key == final.key
+        assert result.recovered == 1
+        assert result.failed_stale == 1
+        assert result.integrity_errors >= 2
+        await engine.dispose()
+
+    asyncio.run(run())

@@ -46,6 +46,17 @@ class _Decompressor(Protocol):
     def flush(self, length: int = ..., /) -> bytes: ...
 
 
+def _has_cause(error: BaseException, expected: type[BaseException]) -> bool:
+    observed: BaseException | None = error
+    visited: set[int] = set()
+    while observed is not None and id(observed) not in visited:
+        if isinstance(observed, expected):
+            return True
+        visited.add(id(observed))
+        observed = observed.__cause__ or observed.__context__
+    return False
+
+
 class SafeHttpFetcher:
     def __init__(
         self,
@@ -74,6 +85,10 @@ class SafeHttpFetcher:
             except TimeoutError:
                 raise
             except (ClientError, OSError) as error:
+                if redirects and _has_cause(error, BlockedDestinationError):
+                    raise RedirectBlocked(
+                        "redirect target resolved to a blocked address"
+                    ) from error
                 raise RetrievalConnectionError("Retrieval connection failed") from error
             if response.status not in _REDIRECT_STATUSES:
                 return self._response(requested_url, current_url, redirects, response)

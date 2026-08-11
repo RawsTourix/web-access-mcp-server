@@ -37,6 +37,7 @@ dependencies = [
 
 [dependency-groups]
 dev = [
+  "cryptography>=45,<51",
   "pyright>=1.1.403,<2",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.0,<2",

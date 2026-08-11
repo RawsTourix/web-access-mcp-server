@@ -124,6 +124,9 @@ class FakeContentPipeline:
         self.ingested: list[bytes] = []
         self.inspected: list[str] = []
         self.parsed: list[str] = []
+        self.browser_calls = 0
+        self.advanced_processing_calls = 0
+        self.job_calls = 0
 
     async def ingest(
         self,
@@ -227,6 +230,9 @@ async def test_processing_levels_delegate_without_parser_logic(
     assert (item.data.native_content is not None) is has_native
     assert len(content.inspected) == inspections
     assert len(content.parsed) == parses
+    assert content.browser_calls == 0
+    assert content.advanced_processing_calls == 0
+    assert content.job_calls == 0
 
 
 @pytest.mark.asyncio
@@ -391,6 +397,30 @@ async def test_content_creation_response_loss_is_unknown_and_never_reacquired() 
     assert result.error.details == {"retrieval_phase": "content_staging"}
     assert fetcher.calls == [url]
     assert content.ingested == [b"body"]
+
+
+@pytest.mark.asyncio
+async def test_explicit_second_caller_operation_is_a_new_acquisition() -> None:
+    url = "https://example.com/explicit-retry"
+    fetcher = FakeFetcher()
+    content = FakeContentPipeline()
+    service = _service(fetcher, content)
+    request = RetrievalBatchRequest((RetrievalRequestItem(url),))
+    first_context = _context()
+    second_context = ExecutionContext(
+        operation_id="op_explicit_second",
+        principal=first_context.principal,
+        clock=first_context.clock,
+        cancellation=CancellationToken(),
+    )
+
+    first = await service.fetch(first_context, request)
+    second = await service.fetch(second_context, request)
+
+    assert first.operation_id != second.operation_id
+    assert first.outcome is second.outcome is OperationOutcome.SUCCEEDED
+    assert fetcher.calls == [url, url]
+    assert content.ingested == [b"body", b"body"]
 
 
 @pytest.mark.asyncio

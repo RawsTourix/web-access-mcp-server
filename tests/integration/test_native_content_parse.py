@@ -163,7 +163,7 @@ def test_concurrent_html_parse_converges_each_representation_identity(tmp_path) 
         store = FilesystemContentStore(content_settings)
         registry = ContentNativeParserRegistry((HtmlNativeParser(parser_settings),))
         service = ContentApplicationService(
-            ids=DeterministicIdGenerator(iter(uuid4().hex for _ in range(16))),
+            ids=DeterministicIdGenerator(iter(uuid4().hex for _ in range(64))),
             uow_factory=uow_factory,
             store=store,
             identifier=RegistryContentIdentifier(available_formats=registry.available_formats),
@@ -195,9 +195,8 @@ def test_concurrent_html_parse_converges_each_representation_identity(tmp_path) 
             source_filename="article.html",
         )
 
-        first, second = await asyncio.gather(
-            service.native_parse(context, source.content_id),
-            service.native_parse(context, source.content_id),
+        concurrent = await asyncio.gather(
+            *(service.native_parse(context, source.content_id) for _ in range(8))
         )
         replay = await service.native_parse(context, source.content_id)
 
@@ -205,25 +204,25 @@ def test_concurrent_html_parse_converges_each_representation_identity(tmp_path) 
             ContentRepresentationKind.MARKDOWN,
             ContentRepresentationKind.STRUCTURED,
         )
-        first_identity = tuple(
-            (item.content_id, item.representation) for item in first.representations
-        )
-        second_identity = tuple(
-            (item.content_id, item.representation) for item in second.representations
-        )
+        identities = [
+            tuple((item.content_id, item.representation) for item in result.representations)
+            for result in concurrent
+        ]
         replay_identity = tuple(
             (item.content_id, item.representation) for item in replay.representations
         )
-        assert tuple(item.representation for item in first.representations) == expected_kinds
-        assert first_identity == second_identity == replay_identity
-        assert first.reused is False or second.reused is False
+        assert (
+            tuple(item.representation for item in concurrent[0].representations) == expected_kinds
+        )
+        assert all(identity == replay_identity for identity in identities)
+        assert any(not result.reused for result in concurrent)
         assert replay.reused is True
 
         async with uow_factory() as uow:
             relations = await uow.relations.for_source(ContentId(source.content_id))
         assert len(relations) == 2
         assert {str(item.target_content_id) for item in relations} == {
-            item.content_id for item in first.representations
+            item.content_id for item in concurrent[0].representations
         }
         await engine.dispose()
 

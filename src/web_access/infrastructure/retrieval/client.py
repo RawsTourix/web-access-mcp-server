@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import ssl
 
 from aiohttp import (
     ClientResponse,
@@ -25,10 +26,12 @@ class SafeAioHttpClient:
         settings: RetrievalSettings,
         policy: RetrievalUrlPolicy,
         resolver: AbstractResolver | None = None,
+        ssl_context: ssl.SSLContext | None = None,
     ) -> None:
         self._settings = settings
         self._policy = policy
         self._resolver = resolver or ValidatingResolver(policy)
+        self._ssl_context = ssl_context
         self._session: ClientSession | None = None
         self._lifecycle_lock = asyncio.Lock()
 
@@ -46,6 +49,7 @@ class SafeAioHttpClient:
                 limit=self._settings.max_connections,
                 limit_per_host=self._settings.max_connections_per_host,
                 enable_cleanup_closed=True,
+                ssl=self._ssl_context or True,
             )
             self._session = ClientSession(
                 connector=connector,

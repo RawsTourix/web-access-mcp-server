@@ -83,4 +83,7 @@ def _encode(value: bytes) -> str:
 
 def _decode(value: str) -> bytes:
     padding = "=" * (-len(value) % 4)
-    return base64.b64decode(value + padding, altchars=b"-_", validate=True)
+    decoded = base64.b64decode(value + padding, altchars=b"-_", validate=True)
+    if _encode(decoded) != value:
+        raise ValueError("non-canonical base64url")
+    return decoded
