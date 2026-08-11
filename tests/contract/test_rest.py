@@ -186,6 +186,7 @@ async def test_correlation_headers_are_bounded_and_server_owned(tmp_path: Path) 
 
 def test_openapi_has_only_v02_routes_and_bearer_security(tmp_path: Path) -> None:
     schema = create_control_plane(_settings(tmp_path)).openapi()
+    assert schema["info"]["version"] == "0.2.0"
     assert set(schema["paths"]) == {
         "/health/live",
         "/health/ready",

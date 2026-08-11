@@ -102,3 +102,20 @@ def test_transports_use_ports_not_concrete_infrastructure_or_bootstrap() -> None
 def test_rest_and_mcp_facades_do_not_import_each_other() -> None:
     _assert_no_prefixes("transport/rest", ("web_access.transport.mcp",))
     _assert_no_prefixes("transport/mcp", ("web_access.transport.rest",))
+
+
+def test_search_application_cannot_fetch_results_or_write_future_resources() -> None:
+    service = SOURCE_ROOT / "application" / "search" / "service.py"
+    imports = _imports(service)
+    forbidden_imports = (
+        "httpx",
+        "urllib",
+        "requests",
+        "web_access.application.common.content_store",
+        "web_access.application.retrieval",
+        "web_access.application.browser",
+    )
+    assert not any(name.startswith(forbidden_imports) for name in imports)
+    source = service.read_text(encoding="utf-8").lower()
+    for forbidden_operation in ("content_store", "browser_call", "fetch_result_url"):
+        assert forbidden_operation not in source

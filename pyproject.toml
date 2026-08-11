@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "web-access-mcp-server"
-version = "0.1.0"
-description = "Production-oriented service foundation for Web Access MCP"
+version = "0.2.0"
+description = "Production-oriented Search Runtime for Web Access MCP"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
 license = { text = "Proprietary" }

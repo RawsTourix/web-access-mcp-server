@@ -95,7 +95,7 @@ def _request_id(request: Request, dependencies: RestDependencies) -> str:
 def create_rest_app(lifespan: Lifespan[FastAPI]) -> FastAPI:
     app = FastAPI(
         title="Web Access Control Plane",
-        version="0.1.0",
+        version="0.2.0",
         lifespan=lifespan,
     )
     app.add_exception_handler(RestAuthenticationError, authentication_error_handler)

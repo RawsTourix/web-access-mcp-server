@@ -13,8 +13,8 @@ Version docs не создают новую архитектуру без отд
 | Версия | Название | Status |
 |---|---|---|
 | `v0.1` | Service Foundation | accepted |
-| `v0.2` | Search Runtime | ready for implementation |
-| `v0.3` | Retrieval & Content Core | ready for implementation |
+| `v0.2` | Search Runtime | implemented, pending acceptance |
+| `v0.3` | Retrieval & Content Core | ready; allowed only after v0.2 acceptance |
 | `v0.4` | Managed Browser Runtime | ready for implementation |
 | `v0.5` | Native Content Expansion | ready for implementation |
 | `v0.6` | Durable Jobs Runtime | ready for implementation |
@@ -124,7 +124,7 @@ Each patch specifies:
 - `design in progress` — version design/ADR open;
 - `ready for implementation` — architecture blockers closed;
 - `in implementation` — code work active;
-- `implemented, pending acceptance` — code exists, gates incomplete;
+- `implemented, pending acceptance` — code and coding-agent evidence exist; independent acceptance is not yet granted;
 - `accepted` — required gates/evidence green;
 - `superseded` — explicit replacement;
 - `release contract defined` — stable release milestone defined, reachable only after prerequisites.

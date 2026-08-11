@@ -21,21 +21,15 @@ MCP      — компактный LLM-friendly interface
 
 ## Статус
 
-**v0.1 Service Foundation принят.**
+**v0.2 Search Runtime implemented, pending acceptance.**
 
-Acceptance HEAD:
+Acceptance v0.1 остаётся зафиксирован на:
 
 ```text
 3e5df8775f99cf15a30e17b56db740c08b00233c
 ```
 
-Следующий разрешённый implementation milestone:
-
-```text
-v0.2 — Search Runtime
-```
-
-v0.2 готов к реализации по design, но его implementation ещё не начат. Реализация идёт строго version-by-version с acceptance gates.
+Search доступен через REST и MCP. Остальные Web Access capabilities ещё не реализованы. v0.3 Retrieval & Content Core разрешён только после factual acceptance v0.2; v0.3 не начат.
 
 ## Основные принципы
 
@@ -125,11 +119,11 @@ RawsTourix/kudago-nominatim-mcp-server
 
 при этом остаётся самостоятельным сервисом без runtime dependency на эти репозитории.
 
-## Локальный запуск v0.1 Service Foundation
+## Локальный запуск v0.2 Search Runtime
 
-Требуются Docker Engine с Compose v2. Скопируйте `.env.example` в `.env` и замените оба placeholder. Например, URL-safe значения можно сгенерировать менеджером секретов или `openssl rand -hex 32`.
+Требуются Docker Engine с Compose v2. Скопируйте `.env.example` в `.env` и заполните все три обязательных значения. Например, URL-safe значения можно сгенерировать менеджером секретов или `openssl rand -hex 32`.
 
-Reference stack содержит только Control Plane, PostgreSQL, Redis и one-shot migration:
+Reference stack содержит Control Plane, PostgreSQL, Redis, private SearXNG и one-shot migration:
 
 ```bash
 docker compose up --build
@@ -140,10 +134,11 @@ docker compose up --build
 ```text
 REST liveness   http://127.0.0.1:8000/health/live
 REST readiness  http://127.0.0.1:8000/health/ready
+REST Search      http://127.0.0.1:8000/api/v1/search
 MCP              http://127.0.0.1:8000/mcp/
 ```
 
-Detailed status требует `Authorization: Bearer <token>` и scope `admin:read` либо явно настроенный wildcard `*`. MCP использует тот же bearer registry. В production-каталоге v0.1 нет business tools — это ожидаемое состояние foundation.
+Detailed status требует scope `admin:read`; REST Search и единственный production MCP tool `web_search` требуют `search:read`. Оба фасада используют один bearer registry и общий SearchApplicationService. Search возвращает metadata/snippets и не читает содержимое найденных страниц.
 
 Миграции выполняются отдельным one-shot service. Ручной повторный запуск безопасен:
 

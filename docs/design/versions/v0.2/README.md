@@ -2,11 +2,13 @@
 
 ## Статус
 
-`ready for implementation`
+`implemented, pending acceptance`
 
 v0.2 реализует первую полноценную Web Access capability — Search — через общий application backend, REST и MCP.
 
 Implementation order: `implementation-sequence.md`.
+
+Implementation evidence: `acceptance.md`. Independent review, not the coding agent, changes this status to `accepted`.
 
 ---
 
@@ -330,7 +332,7 @@ No provider raw exception trusted as agent hint.
 
 # 18. Definition of Done
 
-v0.2 accepted only if:
+Independent review may accept v0.2 only if:
 
 1. SearXNG free provider works through clean adapter.
 2. Yandex is separate optional billable adapter.

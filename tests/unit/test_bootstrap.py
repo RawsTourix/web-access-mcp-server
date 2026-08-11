@@ -97,6 +97,37 @@ async def test_multiple_runtime_instances_are_isolated(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_provider_http_clients_are_owned_and_closed_in_reverse_order(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    created: list[RecordingHttpClient] = []
+
+    class RecordingHttpClient:
+        def __init__(self) -> None:
+            self.name = f"provider-http-{len(created) + 1}"
+            self.closed = False
+
+        async def aclose(self) -> None:
+            self.closed = True
+            close_order.append(self.name)
+
+    close_order: list[str] = []
+
+    def create_client(**_options: object) -> RecordingHttpClient:
+        client = RecordingHttpClient()
+        created.append(client)
+        return client
+
+    monkeypatch.setattr(lifespan.httpx, "AsyncClient", create_client)
+    async with lifespan.runtime_lifespan(_settings(tmp_path)):
+        assert len(created) == 2
+        assert not any(client.closed for client in created)
+
+    assert all(client.closed for client in created)
+    assert close_order == ["provider-http-2", "provider-http-1"]
+
+
+@pytest.mark.asyncio
 async def test_failed_startup_releases_created_dependencies(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:

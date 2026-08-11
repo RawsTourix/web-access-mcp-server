@@ -214,6 +214,7 @@ def test_production_server_object_and_trusted_retry_descriptor(tmp_path: Path) -
     provider = StaticBearerAuthProvider(settings.auth.principals)
     mcp = create_mcp_server(provider)
     assert mcp.name == "Web Access"
+    assert mcp.version == "0.2.0"
     descriptor = trusted_retry_descriptor("web_search")
     assert descriptor is not None
     assert descriptor.retry_class is RetryClass.PHASE_EVIDENCE_REQUIRED
