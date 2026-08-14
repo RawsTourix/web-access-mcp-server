@@ -50,7 +50,7 @@ services:
     build:
       context: .
       target: runtime
-    image: web-access-mcp-server:0.2
+    image: web-access-mcp-server:0.3
     init: true
     environment:
       WEB_ACCESS_APP__ENVIRONMENT: test

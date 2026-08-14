@@ -128,7 +128,7 @@ web_fetch resource creation ≠ blind safe replay
 content_parse idempotent only after canonical reuse proof
 ```
 
-**Status:** ready for implementation. Next allowed milestone; not started.
+**Status:** implemented, pending acceptance.
 
 ---
 
@@ -160,7 +160,7 @@ Browser is expensive **explicit** capability, not hidden Retrieval mode.
 
 Stateful action/result ambiguity never becomes blind retry.
 
-**Status:** ready for implementation.
+**Status:** ready for implementation, but not allowed until factual v0.3 acceptance.
 
 ---
 

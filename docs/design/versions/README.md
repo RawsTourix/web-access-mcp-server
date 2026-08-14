@@ -14,8 +14,8 @@ Version docs не создают новую архитектуру без отд
 |---|---|---|
 | `v0.1` | Service Foundation | accepted |
 | `v0.2` | Search Runtime | accepted |
-| `v0.3` | Retrieval & Content Core | ready for implementation; next allowed milestone |
-| `v0.4` | Managed Browser Runtime | ready for implementation |
+| `v0.3` | Retrieval & Content Core | implemented, pending acceptance |
+| `v0.4` | Managed Browser Runtime | ready for implementation; blocked until v0.3 acceptance |
 | `v0.5` | Native Content Expansion | ready for implementation |
 | `v0.6` | Durable Jobs Runtime | ready for implementation |
 | `v0.7` | Distributed Operations & Policy Hardening | ready for implementation |

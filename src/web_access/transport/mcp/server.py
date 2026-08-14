@@ -98,8 +98,10 @@ def create_mcp_server(
         name="Web Access",
         version="0.3.0",
         instructions=(
-            "Web Access v0.3 ищет URL, безопасно получает известные HTTP(S)-ресурсы, "
-            "читает сохранённые ContentObjects и запускает их L1 Native Parsing."
+            "Production-каталог Web Access v0.3 предоставляет Search, Retrieval и Content: "
+            "ищет URL, безопасно получает известные HTTP(S)-ресурсы, читает сохранённые "
+            "ContentObjects и запускает их L1 Native Parsing. Browser и Durable Jobs в этом "
+            "каталоге отсутствуют."
         ),
         auth=auth,
         mask_error_details=True,

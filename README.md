@@ -2,14 +2,12 @@
 
 Production-oriented Web Access service для ИИ-агентов и других программных клиентов.
 
-Проект предоставляет единый backend для:
+Текущий production-кандидат предоставляет единый backend для:
 
 ```text
 Search
 Retrieval
 Content
-Browser
-Durable Jobs
 ```
 
 с двумя публичными фасадами:
@@ -21,7 +19,7 @@ MCP      — компактный LLM-friendly interface
 
 ## Статус
 
-**v0.2 Search Runtime accepted.**
+**v0.3 Retrieval & Content Core — implemented, pending acceptance.**
 
 Acceptance v0.1 остаётся зафиксирован на:
 
@@ -35,7 +33,7 @@ Acceptance v0.2 зафиксирован на repository HEAD:
 a6af55ba5e6b2781af580f335342e356a8fbe747
 ```
 
-Search доступен через REST и MCP. Остальные Web Access capabilities ещё не реализованы. v0.3 Retrieval & Content Core — следующий разрешённый implementation milestone; v0.3 ещё не начат.
+Search, Retrieval и Content доступны через общий application backend, REST и точный MCP-каталог из четырёх tools. Browser и Durable Jobs не реализованы и не рекламируются как callable. v0.4 design готов к реализации, но начинать его нельзя до фактического независимого acceptance v0.3.
 
 ## Основные принципы
 
@@ -125,7 +123,7 @@ RawsTourix/kudago-nominatim-mcp-server
 
 при этом остаётся самостоятельным сервисом без runtime dependency на эти репозитории.
 
-## Локальный запуск v0.2 Search Runtime
+## Локальный запуск v0.3 Retrieval & Content Core
 
 Требуются Docker Engine с Compose v2. Скопируйте `.env.example` в `.env` и заполните все три обязательных значения. Например, URL-safe значения можно сгенерировать менеджером секретов или `openssl rand -hex 32`.
 
@@ -141,10 +139,12 @@ docker compose up --build
 REST liveness   http://127.0.0.1:8000/health/live
 REST readiness  http://127.0.0.1:8000/health/ready
 REST Search      http://127.0.0.1:8000/api/v1/search
+REST Retrieval   http://127.0.0.1:8000/api/v1/retrieval/fetch
+REST Content     http://127.0.0.1:8000/api/v1/content/{content_id}
 MCP              http://127.0.0.1:8000/mcp/
 ```
 
-Detailed status требует scope `admin:read`; REST Search и единственный production MCP tool `web_search` требуют `search:read`. Оба фасада используют один bearer registry и общий SearchApplicationService. Search возвращает metadata/snippets и не читает содержимое найденных страниц.
+Detailed status требует scope `admin:read`. Production MCP-каталог содержит ровно `web_search`, `web_fetch`, `content_get`, `content_parse`; соответствующие REST/MCP операции проверяют Search/Retrieval/Content scopes и используют общий bearer registry и application services. Search возвращает metadata/snippets, а содержимое известного URL получает только явный Retrieval-вызов.
 
 Миграции выполняются отдельным one-shot service. Ручной повторный запуск безопасен:
 

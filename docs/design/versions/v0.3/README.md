@@ -2,7 +2,9 @@
 
 ## Статус
 
-`ready for implementation`
+`implemented, pending acceptance`
+
+Coding-agent evidence: [`acceptance.md`](acceptance.md). Independent acceptance has not been granted.
 
 v0.3 реализует законченный безопасный flow:
 

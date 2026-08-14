@@ -47,7 +47,7 @@ services:
     build:
       context: .
       target: runtime
-    image: web-access-mcp-server:0.2
+    image: web-access-mcp-server:0.3
     command: ["alembic", "upgrade", "head"]
     environment:
       WEB_ACCESS_DATABASE__URL: postgresql+asyncpg://web_access:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/web_access
@@ -60,7 +60,7 @@ services:
     build:
       context: .
       target: runtime
-    image: web-access-mcp-server:0.2
+    image: web-access-mcp-server:0.3
     init: true
     environment:
       WEB_ACCESS_APP__ENVIRONMENT: production

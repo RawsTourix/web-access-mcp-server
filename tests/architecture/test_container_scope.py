@@ -1,7 +1,7 @@
 from pathlib import Path
 
 
-def test_compose_contains_v02_control_plane_and_one_public_port() -> None:
+def test_compose_contains_v03_control_plane_and_one_public_port() -> None:
     compose = Path("docker-compose.yml").read_text(encoding="utf-8")
     for required in (
         "  postgres:\n",
@@ -22,7 +22,8 @@ def test_compose_contains_v02_control_plane_and_one_public_port() -> None:
     assert compose.count("ports:") == 1
     assert "127.0.0.1:${WEB_ACCESS_API_PORT:-8000}:8000" in compose
     assert "searxng/searxng:2026.7.28-c01178d03@sha256:" in compose
-    assert compose.count("image: web-access-mcp-server:0.2") == 2
+    assert compose.count("image: web-access-mcp-server:0.3") == 2
+    assert "image: web-access-mcp-server:0.2" not in compose
     assert "image: web-access-mcp-server:0.1" not in compose
     searxng_service = compose.split("  searxng:\n", 1)[1].split("\n  migration:", 1)[0]
     assert "ports:" not in searxng_service
