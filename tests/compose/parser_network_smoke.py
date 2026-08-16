@@ -9,7 +9,13 @@ from web_access.infrastructure.content.parser_isolation import SubprocessParserE
 
 
 async def main() -> None:
-    server = await asyncio.start_server(lambda _reader, _writer: None, "127.0.0.1", 0)
+    async def close_control_connection(
+        _reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        writer.close()
+        await writer.wait_closed()
+
+    server = await asyncio.start_server(close_control_connection, "127.0.0.1", 0)
     port = server.sockets[0].getsockname()[1]
     settings = ParserSettings(
         child_temp_root=Path.cwd() / ".parser-network-smoke",
@@ -22,6 +28,9 @@ async def main() -> None:
         test_mode=True,
     )
     try:
+        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.close()
+        await writer.wait_closed()
         result = await executor.execute(
             "test_network_probe",
             b"",
@@ -29,7 +38,10 @@ async def main() -> None:
         )
         assert json.loads(result.representations[0].data) == {"blocked": True}
         assert executor.hard_network_isolation
-        print("Parser child hard network isolation blocked controlled TCP connection.")
+        print(
+            "Parser child seccomp no-network filter blocked a parent-reachable "
+            f"TCP endpoint at 127.0.0.1:{port}."
+        )
     finally:
         server.close()
         await server.wait_closed()

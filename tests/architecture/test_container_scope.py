@@ -38,6 +38,18 @@ def test_runtime_image_is_non_root_and_locked() -> None:
     assert "latest" not in dockerfile.lower()
 
 
+def test_parser_isolation_uses_explicit_least_privilege_container_posture() -> None:
+    compose = Path("docker-compose.yml").read_text(encoding="utf-8").lower()
+    dockerfile = Path("Dockerfile").read_text(encoding="utf-8").lower()
+    assert "seccomp=builtin" in compose
+    assert "seccomp=unconfined" not in compose
+    assert "privileged:" not in compose
+    assert "cap_add:" not in compose
+    assert "cap_sys_admin" not in compose
+    assert "docker.sock" not in compose
+    assert "libseccomp2" in dockerfile
+
+
 def test_searxng_profile_enables_json_without_stored_secrets() -> None:
     profile = Path("deployment/searxng/settings.yml").read_text(encoding="utf-8")
     assert "    - json" in profile

@@ -62,6 +62,8 @@ services:
       target: runtime
     image: web-access-mcp-server:0.3
     init: true
+    security_opt:
+      - seccomp=builtin
     environment:
       WEB_ACCESS_APP__ENVIRONMENT: production
       WEB_ACCESS_DATABASE__URL: postgresql+asyncpg://web_access:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@postgres:5432/web_access

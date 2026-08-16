@@ -42,7 +42,7 @@ async def main() -> None:
     )
     assert result.warnings[0].code == "pdf_native_text_unavailable"
     assert executor.hard_network_isolation
-    print("Isolated PDF parser smoke passed under hard Linux process/network limits.")
+    print("Isolated PDF parser smoke passed under Linux seccomp/process limits.")
 
 
 if __name__ == "__main__":

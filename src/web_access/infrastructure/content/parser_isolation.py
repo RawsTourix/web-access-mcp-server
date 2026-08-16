@@ -29,6 +29,13 @@ _BOOTSTRAP: Final = (
     "sys.path.insert(0,sys.argv.pop(1));"
     "runpy.run_module('web_access.workers.parser_once',run_name='__main__',alter_sys=True)"
 )
+_HARD_ISOLATION_BOOTSTRAP: Final = (
+    "import runpy,sys;"
+    "sys.path.insert(0,sys.argv.pop(1));"
+    "from web_access.workers.parser_sandbox import install_no_network_filter;"
+    "install_no_network_filter();"
+    "runpy.run_module('web_access.workers.parser_once',run_name='__main__',alter_sys=True)"
+)
 
 
 class ParserIsolationError(RuntimeError):
@@ -89,9 +96,15 @@ class SubprocessParserExecutor:
             await asyncio.to_thread(root.mkdir, mode=0o700, parents=True, exist_ok=True)
             await self._cleanup_stale(root)
             if self.hard_network_isolation:
-                unshare = self._settings.linux_unshare_path
-                if not unshare.is_file():
-                    raise ParserIsolationUnavailable("Linux unshare executable is unavailable")
+                from web_access.workers.parser_sandbox import (
+                    ParserSandboxUnavailable,
+                    assert_no_network_filter_available,
+                )
+
+                try:
+                    assert_no_network_filter_available()
+                except ParserSandboxUnavailable as error:
+                    raise ParserIsolationUnavailable(str(error)) from error
             elif not self._allow_reduced_isolation:
                 raise ParserIsolationUnavailable(
                     "hard parser network isolation is unavailable on this development platform"
@@ -190,24 +203,19 @@ class SubprocessParserExecutor:
 
     def _command(self, request_path: Path, result_path: Path) -> tuple[str, ...]:
         python = sys.executable
+        bootstrap = _HARD_ISOLATION_BOOTSTRAP if self.hard_network_isolation else _BOOTSTRAP
         worker = (
             python,
             "-I",
             "-c",
-            _BOOTSTRAP,
+            bootstrap,
             str(self._source_root),
             str(request_path),
             str(result_path),
         )
         if not self.hard_network_isolation:
             return worker
-        return (
-            str(self._settings.linux_unshare_path),
-            "--user",
-            "--map-root-user",
-            "--net",
-            *worker,
-        )
+        return worker
 
     def _minimal_environment(self, work: Path) -> dict[str, str]:
         if os.name == "nt":

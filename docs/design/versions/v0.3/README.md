@@ -213,6 +213,14 @@ Riskier parser (initially PDF) runs through bounded isolated process executor:
 - no DB/Redis/provider credentials;
 - structured protocol, no pickle.
 
+The production Linux child installs a `no_new_privs` libseccomp filter before importing
+parser code. The filter returns `EPERM` for socket/network and `io_uring` syscalls, while
+the parent API process retains its normal network access. The runtime image requires
+`libseccomp2`, and Compose applies Docker's `seccomp=builtin` profile without privileged
+mode, added capabilities, `CAP_SYS_ADMIN`, or an unconfined seccomp profile. Production
+startup fails closed if this kernel boundary cannot be installed. CI exercises both the
+parent-reachable/child-blocked network probe and a real PDF parse in that image.
+
 Later v0.5 reuses/extents this model.
 
 ---
