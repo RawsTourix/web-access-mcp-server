@@ -83,6 +83,22 @@ async def test_concurrent_same_content_physically_deduplicates(tmp_path) -> None
 
 
 @pytest.mark.asyncio
+async def test_concurrent_duplicate_finalize_of_same_staging_converges(tmp_path) -> None:
+    store = FilesystemContentStore(ContentStoreSettings(root=tmp_path, chunk_size=4096))
+    data = b"same-staging-finalize" * 10_000
+    staged = await store.stage_write(
+        "cnt_0123456789abcdef0123456789abcdef",
+        _chunks(data[:5000], data[5000:]),
+    )
+
+    results = await asyncio.gather(*(store.finalize(staged) for _ in range(8)))
+
+    assert len(set(results)) == 1
+    assert results[0].sha256 == hashlib.sha256(data).hexdigest()
+    assert await store.stat_staging(staged.handle) is None
+
+
+@pytest.mark.asyncio
 async def test_failed_stream_never_publishes_and_cleans_staging(tmp_path) -> None:
     store = FilesystemContentStore(ContentStoreSettings(root=tmp_path))
 

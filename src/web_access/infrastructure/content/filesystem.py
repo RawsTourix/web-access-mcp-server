@@ -172,6 +172,11 @@ class FilesystemContentStore:
                 raise OSError(
                     "existing content-addressed blob failed integrity verification"
                 ) from None
+        except FileNotFoundError:
+            # A concurrent finalizer can link and unlink the same staging handle after our
+            # integrity probe. The content-addressed target is the idempotent winner.
+            if not await asyncio.to_thread(self._verify_blob, target, staged.sha256, staged.size):
+                raise
         await asyncio.to_thread(self._safe_unlink_staging, staging)
         return StoredBlob(key=key, sha256=staged.sha256, size=staged.size)
 
