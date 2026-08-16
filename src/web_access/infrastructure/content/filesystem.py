@@ -217,7 +217,15 @@ class FilesystemContentStore:
             self._validate_managed_directories()
         except (InvalidStorageKey, OSError):
             return
-        path.unlink(missing_ok=True)
+        for attempt in range(8):
+            try:
+                path.unlink(missing_ok=True)
+                break
+            except PermissionError as error:
+                if getattr(error, "winerror", None) != 32 or attempt == 7:
+                    raise
+                # A concurrent Windows verifier can briefly hold the staging file open.
+                time.sleep(0.01 * (attempt + 1))
         self._prune_staging_parent(path.parent)
 
     def _prune_staging_parent(self, path: Path) -> None:
