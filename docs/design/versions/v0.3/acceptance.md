@@ -13,8 +13,11 @@ independent acceptance of this candidate.
 - Original implementation starting HEAD: `b46f1c28969d9d98facfbde4bf3089cf851e78b0`.
 - Initial R22 implementation candidate: `5bae49ee862034a9ab5746cdc49dc4225b7583ab`.
 - Initial evidence HEAD: `79ca7acbf7b5124445e81c3ade46148c765c8ac9`.
-- Final-correction starting HEAD: `79ca7acbf7b5124445e81c3ade46148c765c8ac9`.
-- Corrected implementation candidate HEAD: `051d1a9ed317e9cfba3767cf21cf8e1fd276462f`.
+- First corrected implementation candidate HEAD:
+  `051d1a9ed317e9cfba3767cf21cf8e1fd276462f`.
+- Previous evidence HEAD: `4b5375299ca956dcd2902f068f3a0fbc11ef56cf`.
+- Parser startup/readiness correction: `bb009a5e6ab7755580326079483ba7d4fafd8516`.
+- Final implementation candidate HEAD: `008269bb93a9628b1ae974f3e6867e5208da2d86`.
 - Final evidence: the commit containing this document; it changes documentation only.
 - Package/service version: `0.3.0`.
 - Supported Python range: `>=3.11,<3.13`.
@@ -56,6 +59,11 @@ Final correction chain (R1-R22 were not amended or rewritten):
 2fd83de hard parser isolation made reproducible with child-installed kernel seccomp
 98c4d0f duplicate finalization race found by the real integration run and fixed
 051d1a9 CI secret/catalog/production parser-smoke/package-metadata correction
+4b53752 previous final-correction evidence
+9f6d75d bounded Windows retry for concurrent staging cleanup
+bb009a5 real parser seccomp installation preflight before readiness
+49710fb parser soak sampling after transport-finalizer cleanup
+008269b concurrent staging enumeration/removal convergence
 ```
 
 The initial evidence was not sufficient for acceptance. Its parser network smoke passed only
@@ -63,6 +71,13 @@ because the local Docker daemon had a globally unconfined seccomp posture. Re-ru
 `unshare --user --map-root-user --net` mechanism under Docker's explicit builtin profile failed
 with `Operation not permitted`. The corrected candidate does not rely on `unshare` or an
 unconfined container profile.
+
+The first corrected candidate still did not prove at startup that a real parser child could
+install the production filter. The final correction runs a disposable `sys.executable -I -c`
+child that imports and calls the same `install_no_network_filter()` used by parser work. Lifespan
+awaits that child before health is marked bootstrapped. Spawn failure, timeout, cancellation, or
+non-zero exit is bounded, terminated/killed as needed, reaped, normalized as parser isolation
+unavailable, and prevents readiness. The API parent never installs the filter.
 
 ## Dependency and protocol revisions
 
@@ -143,7 +158,7 @@ owner/source/parser/representation convergence is proven.
 
 ## Security, race, fault, and recovery evidence
 
-The security suite collects 57 test items. It covers:
+The security suite collects 62 test items. It covers:
 
 - IPv4/IPv6 private, loopback, link-local, unspecified, multicast, reserved, metadata, internal
   CIDR, hostname, redirect, and DNS-rebinding cases;
@@ -152,9 +167,12 @@ The security suite collects 57 test items. It covers:
 - streamed Content-Length, wire, entity, compression ratio, unsupported encoding, inactivity,
   cancellation, and deadline bounds;
 - parser allowlist, minimal environment, no credentials, hard network-isolation Compose proof,
-  timeout/crash/cancel kill-and-reap, output bounds, and temp/path controls. The production child
-  installs `no_new_privs` plus a libseccomp deny filter for socket/network and `io_uring`
-  syscalls before importing parser code;
+  timeout/crash/cancel kill-and-reap, output bounds, and temp/path controls. A one-shot startup
+  preflight uses a fresh isolated interpreter, minimal environment, private temporary working
+  directory, five-second timeout, and the exact production filter installer without parsing,
+  PDF, Content, or network work. Tests cover success, non-zero exit, spawn failure, timeout, and
+  cancellation/reaping. Each production work child installs `no_new_privs` plus a libseccomp
+  deny filter for socket/network and `io_uring` syscalls before importing parser code;
 - cursor tamper, cross-owner, cross-content, stale-revision, malformed, non-canonical, and
   oversized token rejection.
 
@@ -164,13 +182,18 @@ and maintenance removes only unreferenced staging/final objects. Additional test
 rows, a final blob already present, missing/corrupt blobs, two reconcilers, response loss after
 publication, and reference-aware GC.
 
-The correction run exposed a real same-staging duplicate-finalize race: after one finalizer
-linked the content-addressed target and removed staging, another could observe staging first and
-then lose it at `link(2)`. Finalization now accepts that race only after verifying the immutable
-target hash and size. The new eight-way duplicate-finalize regression was repeated ten times
-alongside the two-reconciler case: `20 passed`, failures `0`.
+The correction runs exposed real Windows concurrency races. After one finalizer linked the
+content-addressed target and removed staging, another could observe staging first and then lose
+it at `link(2)`; finalization accepts that outcome only after verifying immutable target hash and
+size. A concurrent verifier can also hold staging briefly during unlink, so cleanup retries only
+Windows sharing violation 32 with a bounded eight-attempt delay. Finally, one reconciler can
+remove an orphan between another reconciler's enumeration and `stat`; that missing item is now
+treated as work already completed by the winner. The eight-way duplicate-finalize regression
+passed ten consecutive runs; the five-test race selector passed three consecutive runs; and the
+Content-store/soak group, including deterministic enumerate/remove coverage, passed five
+consecutive runs of `34 passed` with no threshold weakening.
 
-The audited race/concurrency selector contains 22 relevant items after excluding one unrelated
+The audited race/concurrency selector contains 23 relevant items after excluding one unrelated
 fixture whose parameter text matched the selector. It includes exact-last-token admission,
 cross-replica concurrency, single-flight ownership/expiry/cancellation, durable-attempt identity,
 same-hash CAS finalization, two reconcilers, parser concurrency, concurrent representation reuse,
@@ -234,17 +257,17 @@ Counted evidence:
 
 ```text
 suite                       passed  failed  skipped  xfail  xpass  duration
-unit                           237       0        0      0      0    8.57 s
-contract                        34       0        0      0      0   21.25 s
-architecture + security         72       0        0      0      0   16.21 s
-integration                     83       0        0      0      0   28.19 s
-full test suite                427       0        0      0      0   55.72 s
-migration regression             5       0        0      0      0    2.44 s
-R21 load/soak                    6       0        0      0      0    9.83 s
+unit                           238       0        0      0      0    5.62 s
+contract                        34       0        0      0      0   18.99 s
+architecture + security         77       0        0      0      0   13.68 s
+integration                     84       0        0      0      0   23.28 s
+full test suite                434       0        0      0      0   52.22 s
+migration regression             5       0        0      0      0    2.10 s
+R21 load/soak                    6       0        0      0      0    8.63 s
 ```
 
-The 427 total is 237 unit + 34 contract + 72 architecture/security + 83 integration + 1 package
-smoke. There are 57 security items, 7 dedicated lifecycle fault items, 22 audited
+The 434 total is 238 unit + 34 contract + 77 architecture/security + 84 integration + 1 package
+smoke. There are 62 security items, 7 dedicated lifecycle fault items, 23 audited
 race/concurrency items, and 6 R21 load/soak items. No flaky marker or broad ignore was added.
 
 Alembic reports exactly one head, `0003_content_core`. The migration suite proves clean DB to
@@ -252,19 +275,19 @@ head, accepted v0.2 DB to head, and repeated upgrade success; no schema correcti
 
 ## Production image and Compose evidence
 
-The clean corrected runtime image is `web-access-v03-corrected:local`, image ID
-`sha256:c18252c7ae7661197a6e4477259cd716fd375a41c139fa695c7da54c4a311ac9`.
+The final runtime image is `web-access-mcp-server:0.3`, image ID
+`sha256:dbf8f4942f5ae341feccd320d3b72676faaa2895a4aeac877642515e953eec42`.
 It contains Python `3.11.9` and `libseccomp2 2.5.4-1+deb12u1`, and runs as
 `uid=10001(webaccess) gid=10001(webaccess)`. Direct smokes under
 `--security-opt seccomp=builtin` passed:
 
 ```text
 parent process connected to controlled 127.0.0.1 TCP endpoint
-parser child network attempt blocked by the kernel seccomp filter
+parser child network attempt blocked by the kernel seccomp filter with errno=EPERM
 isolated real PDF parse passed under seccomp/process limits
 ```
 
-The full local Compose equivalent of the required CI job passed `config --quiet`, build,
+The full local Compose equivalent of the required CI job passed `config --quiet`, locked build,
 `up --wait`, REST/MCP smoke, pinned SearXNG smoke, PostgreSQL/Redis recovery, graceful shutdown,
 repeat migration, UID check, parser network smoke, PDF parser smoke, and cleanup. FastMCP
 discovery returned exactly `web_search`, `web_fetch`, `content_get`, `content_parse`. Runtime
@@ -282,6 +305,12 @@ socket monkeypatch, or reduced-isolation production path is used. The local daem
 global unconfined default, so the explicit per-container builtin profile was material and was
 verified on the running API container.
 
+The final current-source image was then rebuilt from implementation HEAD, resolving 137 locked
+packages and installing 125 runtime packages. A fresh scoped stack reached healthy only after
+the lifespan preflight completed. REST/MCP smoke again reported zero live Yandex calls; the
+production network smoke connected from the parent and observed exact `errno=EPERM` in the
+parser child; the isolated PDF smoke passed under the same builtin seccomp profile.
+
 CI now supplies the required synthetic `WEB_ACCESS_CONTENT_CURSOR_SECRET` in job scope and runs
 both production parser smokes through the built `api` image. Local Compose validation used
 `config --quiet`; no secret value was printed in command output or application logs. One first
@@ -291,9 +320,10 @@ The checked-in relative command remains the correct GitHub Actions/Linux form.
 
 Host evidence environment: Windows NT `10.0.26200` x86-64, Docker Desktop `4.40.0`, Docker
 Engine `28.0.4`, Compose `v2.34.0-desktop.1`, runc `1.2.5`, Docker VM Linux
-`5.15.167.4-microsoft-standard-WSL2` amd64. Cold image construction encountered transient
-registry/PyPI timeouts before succeeding with the locked BuildKit uv cache; those attempts did
-not produce a passing image and are not counted as green gates.
+`5.15.167.4-microsoft-standard-WSL2` amd64. Two no-cache image attempts encountered external
+registry/PyPI DNS/timeouts and did not produce passing images. The final current-source locked
+build passed with the existing BuildKit dependency cache; the failed external-download attempts
+are not counted as green gates.
 
 ## Hidden orchestration and scope boundary
 
@@ -306,6 +336,7 @@ VLM calls           0
 LibreOffice calls   0
 Job/arq calls       0
 public Search calls 0
+public Retrieval calls 0
 live Yandex calls   0
 ```
 
