@@ -10,9 +10,12 @@ independent acceptance of this candidate.
 
 ## Candidate identity
 
-- Starting HEAD: `b46f1c28969d9d98facfbde4bf3089cf851e78b0`.
-- Implementation candidate HEAD: `5bae49ee862034a9ab5746cdc49dc4225b7583ab`.
-- Evidence follow-up: the commit containing this document; it changes documentation only.
+- Original implementation starting HEAD: `b46f1c28969d9d98facfbde4bf3089cf851e78b0`.
+- Initial R22 implementation candidate: `5bae49ee862034a9ab5746cdc49dc4225b7583ab`.
+- Initial evidence HEAD: `79ca7acbf7b5124445e81c3ade46148c765c8ac9`.
+- Final-correction starting HEAD: `79ca7acbf7b5124445e81c3ade46148c765c8ac9`.
+- Corrected implementation candidate HEAD: `051d1a9ed317e9cfba3767cf21cf8e1fd276462f`.
+- Final evidence: the commit containing this document; it changes documentation only.
 - Package/service version: `0.3.0`.
 - Supported Python range: `>=3.11,<3.13`.
 - Exercised Python: `3.11.15` on Windows x86-64.
@@ -46,6 +49,20 @@ R20  f5eb1d2 Retrieval/Content security, race, and fault matrix
 R21  80584f2 load/soak/leak evidence
 R22  5bae49e version 0.3.0 and implementation-candidate documentation
 ```
+
+Final correction chain (R1-R22 were not amended or rewritten):
+
+```text
+2fd83de hard parser isolation made reproducible with child-installed kernel seccomp
+98c4d0f duplicate finalization race found by the real integration run and fixed
+051d1a9 CI secret/catalog/production parser-smoke/package-metadata correction
+```
+
+The initial evidence was not sufficient for acceptance. Its parser network smoke passed only
+because the local Docker daemon had a globally unconfined seccomp posture. Re-running the old
+`unshare --user --map-root-user --net` mechanism under Docker's explicit builtin profile failed
+with `Operation not permitted`. The corrected candidate does not rely on `unshare` or an
+unconfined container profile.
 
 ## Dependency and protocol revisions
 
@@ -135,7 +152,9 @@ The security suite collects 57 test items. It covers:
 - streamed Content-Length, wire, entity, compression ratio, unsupported encoding, inactivity,
   cancellation, and deadline bounds;
 - parser allowlist, minimal environment, no credentials, hard network-isolation Compose proof,
-  timeout/crash/cancel kill-and-reap, output bounds, and temp/path controls;
+  timeout/crash/cancel kill-and-reap, output bounds, and temp/path controls. The production child
+  installs `no_new_privs` plus a libseccomp deny filter for socket/network and `io_uring`
+  syscalls before importing parser code;
 - cursor tamper, cross-owner, cross-content, stale-revision, malformed, non-canonical, and
   oversized token rejection.
 
@@ -144,6 +163,12 @@ public partial Content remains unavailable, the operation converges to `availabl
 and maintenance removes only unreferenced staging/final objects. Additional tests cover stale
 rows, a final blob already present, missing/corrupt blobs, two reconcilers, response loss after
 publication, and reference-aware GC.
+
+The correction run exposed a real same-staging duplicate-finalize race: after one finalizer
+linked the content-addressed target and removed staging, another could observe staging first and
+then lose it at `link(2)`. Finalization now accepts that race only after verifying the immutable
+target hash and size. The new eight-way duplicate-finalize regression was repeated ten times
+alongside the two-reconciler case: `20 passed`, failures `0`.
 
 The audited race/concurrency selector contains 22 relevant items after excluding one unrelated
 fixture whose parameter text matched the selector. It includes exact-last-token admission,
@@ -167,9 +192,10 @@ recorded:
 ```text
 Retrieval requests                    12
 Retrieval entity bytes                393216
-elapsed                               0.250392 s
-observed throughput                   1570403.49 B/s
+elapsed                               0.214041 s
+observed throughput                   1837110.27 B/s
 configured/observed per-host pool     2 / 2
+observed HTTP connections             2
 
 large streamed entity                 6291456 B
 tracemalloc peak during stream        642028 B
@@ -179,7 +205,8 @@ parser child processes started        15
 peak live parser children             2
 orphan parser children                0
 process handle delta after warm-up    +4
-traced memory delta after warm-up     +17499 B
+traced memory delta after warm-up     +17611 B
+parser peak traced memory             100317 B
 
 same-hash logical Content sources     18
 repeated cursor reads                 144
@@ -193,39 +220,80 @@ disables SafeResolver, TLS, streaming/hash limits, CAS, ownership, or parser sub
 
 ## Test gate
 
-Final coding-agent commands:
+Final coding-agent gates used the locked environment and real temporary PostgreSQL/Redis
+containers. The production Docker builder also ran `uv sync --locked --no-dev --no-editable`.
 
 ```text
-uv lock --check
-uv sync --locked
-uv run ruff check .
-uv run ruff format --check .
-uv run pyright
-uv run pytest -q
+uv lock --check                    resolved 137 packages, lock unchanged
+ruff check .                       all checks passed
+ruff format --check .              276 files already formatted
+pyright                            0 errors, 0 warnings, 0 informations
 ```
-
-Final result: `425 passed in 57.72s`; skips `0`; xfail `0`; xpass `0`; flaky-marked
-tests `0`.
 
 Counted evidence:
 
 ```text
-full test suite                  425
-unit                             237
-contract                          34
-architecture + security           71
-integration                       82
-package smoke                      1
-security test items              57
-dedicated lifecycle fault items   7
-audited race/concurrency items    22
-R21 load/soak items                6
+suite                       passed  failed  skipped  xfail  xpass  duration
+unit                           237       0        0      0      0    8.57 s
+contract                        34       0        0      0      0   21.25 s
+architecture + security         72       0        0      0      0   16.21 s
+integration                     83       0        0      0      0   28.19 s
+full test suite                427       0        0      0      0   55.72 s
+migration regression             5       0        0      0      0    2.44 s
+R21 load/soak                    6       0        0      0      0    9.83 s
 ```
 
-PostgreSQL and Redis integration tests use real local containers. The v0.2 accepted Search gates
-remain green. The final `web-access-r22-candidate:local` image built successfully with package
-`0.3.0`; its Linux hard-network-isolation smoke blocked the controlled child TCP connection, and
-its isolated-pypdf smoke passed under the configured process/network limits.
+The 427 total is 237 unit + 34 contract + 72 architecture/security + 83 integration + 1 package
+smoke. There are 57 security items, 7 dedicated lifecycle fault items, 22 audited
+race/concurrency items, and 6 R21 load/soak items. No flaky marker or broad ignore was added.
+
+Alembic reports exactly one head, `0003_content_core`. The migration suite proves clean DB to
+head, accepted v0.2 DB to head, and repeated upgrade success; no schema correction was added.
+
+## Production image and Compose evidence
+
+The clean corrected runtime image is `web-access-v03-corrected:local`, image ID
+`sha256:c18252c7ae7661197a6e4477259cd716fd375a41c139fa695c7da54c4a311ac9`.
+It contains Python `3.11.9` and `libseccomp2 2.5.4-1+deb12u1`, and runs as
+`uid=10001(webaccess) gid=10001(webaccess)`. Direct smokes under
+`--security-opt seccomp=builtin` passed:
+
+```text
+parent process connected to controlled 127.0.0.1 TCP endpoint
+parser child network attempt blocked by the kernel seccomp filter
+isolated real PDF parse passed under seccomp/process limits
+```
+
+The full local Compose equivalent of the required CI job passed `config --quiet`, build,
+`up --wait`, REST/MCP smoke, pinned SearXNG smoke, PostgreSQL/Redis recovery, graceful shutdown,
+repeat migration, UID check, parser network smoke, PDF parser smoke, and cleanup. FastMCP
+discovery returned exactly `web_search`, `web_fetch`, `content_get`, `content_parse`. Runtime
+inspection reported:
+
+```text
+User=10001:10001
+Privileged=false
+CapAdd=null
+SecurityOpt=["seccomp=builtin"]
+```
+
+No `seccomp=unconfined`, privileged mode, added capability, `CAP_SYS_ADMIN`, Docker socket,
+socket monkeypatch, or reduced-isolation production path is used. The local daemon advertised a
+global unconfined default, so the explicit per-container builtin profile was material and was
+verified on the running API container.
+
+CI now supplies the required synthetic `WEB_ACCESS_CONTENT_CURSOR_SECRET` in job scope and runs
+both production parser smokes through the built `api` image. Local Compose validation used
+`config --quiet`; no secret value was printed in command output or application logs. One first
+Windows-only invocation used the Linux relative bind syntax and failed before the parser smoke
+because `/tests` was not mounted; the same command with an absolute Windows host path passed.
+The checked-in relative command remains the correct GitHub Actions/Linux form.
+
+Host evidence environment: Windows NT `10.0.26200` x86-64, Docker Desktop `4.40.0`, Docker
+Engine `28.0.4`, Compose `v2.34.0-desktop.1`, runc `1.2.5`, Docker VM Linux
+`5.15.167.4-microsoft-standard-WSL2` amd64. Cold image construction encountered transient
+registry/PyPI timeouts before succeeding with the locked BuildKit uv cache; those attempts did
+not produce a passing image and are not counted as green gates.
 
 ## Hidden orchestration and scope boundary
 
@@ -237,10 +305,15 @@ OCR calls           0
 VLM calls           0
 LibreOffice calls   0
 Job/arq calls       0
+public Search calls 0
+live Yandex calls   0
 ```
 
 No Browser, OCR/VLM, LibreOffice, durable Job, arq worker, public raw HTTP proxy, public storage
 path, or generic parser-selection capability was added. v0.4 implementation has not started.
+Application tests used only localhost-controlled servers and Compose mock providers. Docker Hub,
+GHCR, and the locked Python package registry were contacted only to construct infrastructure
+images; these were build dependency downloads, not Web Access product retrieval/search calls.
 
 ## Pending independent acceptance
 
