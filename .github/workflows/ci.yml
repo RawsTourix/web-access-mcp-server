@@ -76,6 +76,7 @@ jobs:
       POSTGRES_PASSWORD: compose-postgres-password-123456
       WEB_ACCESS_AUTH__PRINCIPALS: '[{"principal_id":"compose-agent","tokens":["compose-bearer-token-123456789012345"],"scopes":["*"]}]'
       WEB_ACCESS_SMOKE_TOKEN: compose-bearer-token-123456789012345
+      WEB_ACCESS_CONTENT_CURSOR_SECRET: compose-content-cursor-secret-12345678901234567890
       WEB_ACCESS_YANDEX_TEST_API_PORT: 18084
       SEARXNG_SECRET: compose-searxng-secret-123456789012345
     steps:
@@ -91,5 +92,7 @@ jobs:
       - run: uv run python tests/e2e/compose_recovery.py
       - run: docker compose run --rm migration
       - run: test "$(docker compose exec -T api id -u)" = "10001"
+      - run: docker compose run --rm --no-deps --volume ./tests:/tests:ro --workdir /tmp api python /tests/compose/parser_network_smoke.py
+      - run: docker compose run --rm --no-deps --volume ./tests:/tests:ro --workdir /tmp api python /tests/compose/pdf_parser_smoke.py
       - if: always()
         run: docker compose down --volumes --remove-orphans

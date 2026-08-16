@@ -145,7 +145,12 @@ async def main() -> None:
 
     async with Client(f"{base_url}/mcp/", auth=token) as mcp:
         tools = await mcp.list_tools()
-        assert [tool.name for tool in tools] == ["web_search"]
+        assert [tool.name for tool in tools] == [
+            "web_search",
+            "web_fetch",
+            "content_get",
+            "content_parse",
+        ]
         result = await mcp.call_tool("web_search", {"queries": ["Web Access MCP"], "limit": 2})
         assert result.structured_content is not None
         assert result.structured_content["outcome"] == "succeeded"
