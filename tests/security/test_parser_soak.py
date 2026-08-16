@@ -121,6 +121,9 @@ async def test_parser_subprocess_soak_reaps_children_and_resources(
     orphan_children = sum(process.returncode is None for process in created)
     all_reaped = all(process.returncode is not None for process in created)
     created.clear()
+    gc.collect()
+    # Let asyncio process transport cleanup callbacks scheduled by finalizers before
+    # sampling OS handles; the +8 leak budget itself remains unchanged.
     await asyncio.sleep(0.05)
     gc.collect()
     current_memory, peak_memory = tracemalloc.get_traced_memory()
