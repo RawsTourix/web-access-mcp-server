@@ -204,7 +204,11 @@ class FilesystemContentStore:
             handle = f"staging/{relative}"
             if _STAGING_PATTERN.fullmatch(handle) is None:
                 continue
-            modified = (await asyncio.to_thread(path.stat)).st_mtime
+            try:
+                modified = (await asyncio.to_thread(path.stat)).st_mtime
+            except FileNotFoundError:
+                # A concurrent reconciler can remove an orphan after enumeration.
+                continue
             entries.append(
                 StagingEntry(handle=handle, modified_at=datetime.fromtimestamp(modified, UTC))
             )

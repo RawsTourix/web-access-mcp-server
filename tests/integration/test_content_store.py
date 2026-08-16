@@ -5,6 +5,7 @@ import hashlib
 import os
 import shutil
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -124,6 +125,31 @@ async def test_cleanup_abandoned_staging_and_non_mutating_probe(tmp_path) -> Non
     assert set(tmp_path.rglob("*")) == before
     assert await store.cleanup_staging(0) == 1
     assert not abandoned.exists()
+
+
+@pytest.mark.asyncio
+async def test_list_staging_ignores_concurrent_removal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    store = FilesystemContentStore(ContentStoreSettings(root=tmp_path))
+    await store.start()
+    staged = await store.stage_write("cnt_0123456789abcdef0123456789abcdef", _chunks(b"orphan"))
+    staged_path = tmp_path / staged.handle
+    original_stat = Path.stat
+    followed_stat_calls = 0
+
+    def stat_with_concurrent_removal(path: Path, *, follow_symlinks: bool = True) -> os.stat_result:
+        nonlocal followed_stat_calls
+        if path == staged_path and follow_symlinks:
+            followed_stat_calls += 1
+            if followed_stat_calls == 2:
+                raise FileNotFoundError(staged_path)
+        return original_stat(path, follow_symlinks=follow_symlinks)
+
+    monkeypatch.setattr(Path, "stat", stat_with_concurrent_removal)
+
+    assert await store.list_staging(10) == ()
+    assert followed_stat_calls == 2
 
 
 @pytest.mark.asyncio
