@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import json
 from pathlib import Path
 
@@ -36,11 +37,14 @@ async def main() -> None:
             b"",
             parameters={"host": "127.0.0.1", "port": port},
         )
-        assert json.loads(result.representations[0].data) == {"blocked": True}
+        assert json.loads(result.representations[0].data) == {
+            "blocked": True,
+            "errno": errno.EPERM,
+        }
         assert executor.hard_network_isolation
         print(
-            "Parser child seccomp no-network filter blocked a parent-reachable "
-            f"TCP endpoint at 127.0.0.1:{port}."
+            "Parent TCP connection succeeded; parser child seccomp filter blocked the same "
+            f"endpoint at 127.0.0.1:{port} with errno=EPERM."
         )
     finally:
         server.close()

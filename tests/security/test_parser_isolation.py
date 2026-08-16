@@ -9,10 +9,12 @@ from pathlib import Path
 import pytest
 
 from web_access.core.config import ParserSettings
+from web_access.infrastructure.content import parser_isolation
 from web_access.infrastructure.content.parser_isolation import (
     ParserChildCrash,
     ParserChildTimeout,
     ParserIsolationError,
+    ParserIsolationUnavailable,
     SubprocessParserExecutor,
 )
 
@@ -34,6 +36,20 @@ class ReducedDevelopmentExecutor(SubprocessParserExecutor):
         return False
 
 
+class HardPreflightExecutor(SubprocessParserExecutor):
+    """Exercise the hard-isolation startup path on every development platform."""
+
+    preflight_reaped = False
+
+    @property
+    def hard_network_isolation(self) -> bool:
+        return True
+
+    async def _terminate_and_reap(self, process: asyncio.subprocess.Process) -> None:
+        await super()._terminate_and_reap(process)
+        self.preflight_reaped = process.returncode is not None
+
+
 def _executor(
     root: Path,
     *,
@@ -53,6 +69,119 @@ def _executor(
         allow_reduced_isolation=True,
         test_mode=True,
     )
+
+
+def _hard_executor(root: Path) -> HardPreflightExecutor:
+    return HardPreflightExecutor(
+        ParserSettings(
+            child_temp_root=root,
+            child_memory_bytes=256 * 1024 * 1024,
+        ),
+        allowed_parser_ids=frozenset({"test_echo"}),
+        test_mode=True,
+    )
+
+
+@pytest.mark.asyncio
+async def test_start_runs_disposable_sandbox_preflight_once_with_minimal_environment(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor = _hard_executor(tmp_path / "parser-root")
+    calls: list[dict[str, str]] = []
+
+    class CompletedProcess:
+        returncode = 0
+
+        async def wait(self) -> int:
+            return 0
+
+    async def create_process(*_command: str, **options: object) -> CompletedProcess:
+        environment = options["env"]
+        assert isinstance(environment, dict)
+        calls.append(environment)
+        return CompletedProcess()
+
+    monkeypatch.setenv("WEB_ACCESS_DATABASE__URL", "postgresql://secret")
+    monkeypatch.setenv("WEB_ACCESS_REDIS__URL", "redis://secret")
+    monkeypatch.setattr(parser_isolation.asyncio, "create_subprocess_exec", create_process)
+
+    await executor.start()
+    await executor.start()
+
+    assert len(calls) == 1
+    assert "WEB_ACCESS_DATABASE__URL" not in calls[0]
+    assert "WEB_ACCESS_REDIS__URL" not in calls[0]
+    assert executor._started
+
+
+@pytest.mark.asyncio
+async def test_sandbox_preflight_failure_keeps_executor_unstarted(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor = _hard_executor(tmp_path / "parser-root")
+    monkeypatch.setattr(parser_isolation, "_SANDBOX_PREFLIGHT_BOOTSTRAP", "raise SystemExit(23)")
+
+    with pytest.raises(ParserIsolationUnavailable, match="status 23"):
+        await executor.start()
+
+    assert not executor._started
+
+
+@pytest.mark.asyncio
+async def test_sandbox_preflight_spawn_failure_is_normalized(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor = _hard_executor(tmp_path / "parser-root")
+
+    async def fail_spawn(*_command: str, **_options: object) -> None:
+        raise OSError("forced spawn failure")
+
+    monkeypatch.setattr(parser_isolation.asyncio, "create_subprocess_exec", fail_spawn)
+
+    with pytest.raises(ParserIsolationUnavailable, match="could not start"):
+        await executor.start()
+
+    assert not executor._started
+
+
+@pytest.mark.asyncio
+async def test_sandbox_preflight_timeout_terminates_and_reaps_child(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor = _hard_executor(tmp_path / "parser-root")
+    monkeypatch.setattr(
+        parser_isolation,
+        "_SANDBOX_PREFLIGHT_BOOTSTRAP",
+        "import time;time.sleep(60)",
+    )
+    monkeypatch.setattr(parser_isolation, "_SANDBOX_PREFLIGHT_TIMEOUT_SECONDS", 0.05)
+
+    with pytest.raises(ParserIsolationUnavailable, match="timed out"):
+        await executor.start()
+
+    assert executor.preflight_reaped
+    assert not executor._started
+
+
+@pytest.mark.asyncio
+async def test_sandbox_preflight_cancellation_terminates_and_reaps_child(
+    tmp_path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    executor = _hard_executor(tmp_path / "parser-root")
+    monkeypatch.setattr(
+        parser_isolation,
+        "_SANDBOX_PREFLIGHT_BOOTSTRAP",
+        "import time;time.sleep(60)",
+    )
+
+    task = asyncio.create_task(executor.start())
+    await asyncio.sleep(0.05)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert executor.preflight_reaped
+    assert not executor._started
 
 
 @pytest.mark.asyncio

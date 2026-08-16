@@ -36,6 +36,13 @@ _HARD_ISOLATION_BOOTSTRAP: Final = (
     "install_no_network_filter();"
     "runpy.run_module('web_access.workers.parser_once',run_name='__main__',alter_sys=True)"
 )
+_SANDBOX_PREFLIGHT_BOOTSTRAP: Final = (
+    "import sys;"
+    "sys.path.insert(0,sys.argv.pop(1));"
+    "from web_access.workers.parser_sandbox import install_no_network_filter;"
+    "install_no_network_filter()"
+)
+_SANDBOX_PREFLIGHT_TIMEOUT_SECONDS: Final = 5.0
 
 
 class ParserIsolationError(RuntimeError):
@@ -96,20 +103,64 @@ class SubprocessParserExecutor:
             await asyncio.to_thread(root.mkdir, mode=0o700, parents=True, exist_ok=True)
             await self._cleanup_stale(root)
             if self.hard_network_isolation:
-                from web_access.workers.parser_sandbox import (
-                    ParserSandboxUnavailable,
-                    assert_no_network_filter_available,
-                )
-
-                try:
-                    assert_no_network_filter_available()
-                except ParserSandboxUnavailable as error:
-                    raise ParserIsolationUnavailable(str(error)) from error
+                await self._run_sandbox_preflight(root)
             elif not self._allow_reduced_isolation:
                 raise ParserIsolationUnavailable(
                     "hard parser network isolation is unavailable on this development platform"
                 )
             self._started = True
+
+    async def _run_sandbox_preflight(self, root: Path) -> None:
+        process: asyncio.subprocess.Process | None = None
+        command = (
+            sys.executable,
+            "-I",
+            "-c",
+            _SANDBOX_PREFLIGHT_BOOTSTRAP,
+            str(self._source_root),
+        )
+        try:
+            try:
+                if os.name == "nt":
+                    process = await asyncio.create_subprocess_exec(
+                        *command,
+                        cwd=str(root),
+                        env=self._minimal_environment(root),
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+                    )
+                else:
+                    process = await asyncio.create_subprocess_exec(
+                        *command,
+                        cwd=str(root),
+                        env=self._minimal_environment(root),
+                        stdin=asyncio.subprocess.DEVNULL,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                        start_new_session=True,
+                    )
+            except (OSError, ValueError) as error:
+                raise ParserIsolationUnavailable(
+                    "parser sandbox preflight child could not start"
+                ) from error
+            try:
+                async with asyncio.timeout(_SANDBOX_PREFLIGHT_TIMEOUT_SECONDS):
+                    return_code = await process.wait()
+            except TimeoutError as error:
+                await self._terminate_and_reap(process)
+                raise ParserIsolationUnavailable("parser sandbox preflight timed out") from error
+            except asyncio.CancelledError:
+                await self._terminate_and_reap(process)
+                raise
+            if return_code != 0:
+                raise ParserIsolationUnavailable(
+                    f"parser sandbox preflight exited with status {return_code}"
+                )
+        finally:
+            if process is not None and process.returncode is None:
+                await self._terminate_and_reap(process)
 
     async def execute(
         self,

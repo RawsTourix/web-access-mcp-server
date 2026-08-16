@@ -45,8 +45,8 @@ class ParserSandboxUnavailable(RuntimeError):
     """The kernel/libseccomp boundary required by production is unavailable."""
 
 
-def assert_no_network_filter_available() -> None:
-    """Fail closed before spawning if the production Linux boundary cannot be loaded."""
+def validate_no_network_filter_dependencies() -> None:
+    """Validate static dependencies without claiming that a filter was installed."""
 
     if not sys.platform.startswith("linux"):
         raise ParserSandboxUnavailable("Linux seccomp parser isolation is unavailable")
@@ -59,7 +59,7 @@ def assert_no_network_filter_available() -> None:
 def install_no_network_filter() -> None:
     """Deny network syscalls for this process and every descendant at kernel level."""
 
-    assert_no_network_filter_available()
+    validate_no_network_filter_dependencies()
     _set_no_new_privileges()
     library = _load_seccomp()
     context = library.seccomp_init(_SCMP_ACT_ALLOW)

@@ -130,12 +130,10 @@ def _network_probe(data: bytes, parameters: dict[str, object]) -> IsolatedParser
         raise WorkerRequestError("invalid_test_parameter", "invalid network probe target")
     try:
         with socket.create_connection((host, port), timeout=1):
-            blocked = False
-    except OSError:
-        blocked = True
-    if not blocked:
-        raise WorkerRequestError("network_isolation_failed", "parser child reached the network")
-    return _echo(json.dumps({"blocked": True}).encode(), {})
+            pass
+    except OSError as error:
+        return _echo(json.dumps({"blocked": True, "errno": error.errno}).encode(), {})
+    raise WorkerRequestError("network_isolation_failed", "parser child reached the network")
 
 
 def _environment(data: bytes, parameters: dict[str, object]) -> IsolatedParserResult:

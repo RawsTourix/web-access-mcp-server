@@ -13,10 +13,12 @@ from web_access.core.config import (
     ContentStoreSettings,
     Environment,
     ObservabilitySettings,
+    ParserSettings,
     PrincipalSettings,
     SecuritySettings,
     Settings,
 )
+from web_access.infrastructure.content.parser_isolation import ParserIsolationUnavailable
 
 
 def _settings(tmp_path: Path) -> Settings:
@@ -32,6 +34,7 @@ def _settings(tmp_path: Path) -> Settings:
             )
         ),
         content_store=ContentStoreSettings(root=tmp_path),
+        parser=ParserSettings(child_temp_root=tmp_path / "parser"),
         observability=ObservabilitySettings(log_format="console"),
     )
 
@@ -44,6 +47,8 @@ async def test_runtime_lifecycle_order_and_shared_dependencies(
     original_content_start = lifespan.FilesystemContentStore.start
     original_redis_start = lifespan.RedisDependency.start
     original_redis_close = lifespan.RedisDependency.close
+    original_parser_start = lifespan.SubprocessParserExecutor.start
+    original_mark_bootstrapped = lifespan.HealthService.mark_bootstrapped
 
     async def content_start(store: lifespan.FilesystemContentStore) -> None:
         events.append("content:start")
@@ -57,6 +62,14 @@ async def test_runtime_lifecycle_order_and_shared_dependencies(
         events.append("redis:close")
         await original_redis_close(redis)
 
+    async def parser_start(parser: lifespan.SubprocessParserExecutor) -> None:
+        events.append("parser:start")
+        await original_parser_start(parser)
+
+    def mark_bootstrapped(health: lifespan.HealthService) -> None:
+        events.append("health:bootstrapped")
+        original_mark_bootstrapped(health)
+
     async def engine_close(_engine) -> None:
         events.append("database:close")
 
@@ -66,6 +79,8 @@ async def test_runtime_lifecycle_order_and_shared_dependencies(
     monkeypatch.setattr(lifespan.FilesystemContentStore, "start", content_start)
     monkeypatch.setattr(lifespan.RedisDependency, "start", redis_start)
     monkeypatch.setattr(lifespan.RedisDependency, "close", redis_close)
+    monkeypatch.setattr(lifespan.SubprocessParserExecutor, "start", parser_start)
+    monkeypatch.setattr(lifespan.HealthService, "mark_bootstrapped", mark_bootstrapped)
     monkeypatch.setattr(lifespan, "close_engine", engine_close)
     monkeypatch.setattr(lifespan, "shutdown_tracing", tracing_close)
 
@@ -74,10 +89,17 @@ async def test_runtime_lifecycle_order_and_shared_dependencies(
         assert container.health is not None
         assert container.redis is not None
         assert container.content_store is not None
-        assert events == ["content:start", "redis:start"]
+        assert events == [
+            "content:start",
+            "redis:start",
+            "parser:start",
+            "health:bootstrapped",
+        ]
     assert events == [
         "content:start",
         "redis:start",
+        "parser:start",
+        "health:bootstrapped",
         "redis:close",
         "database:close",
         "tracing:close",
@@ -150,6 +172,56 @@ async def test_failed_startup_releases_created_dependencies(
         async with lifespan.runtime_lifespan(_settings(tmp_path)):
             pytest.fail("failed startup must not yield")
     assert events == ["redis:start:failed", "redis:close", "database:close"]
+
+
+@pytest.mark.asyncio
+async def test_parser_preflight_failure_aborts_readiness_and_cleans_started_dependencies(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    events: list[str] = []
+
+    async def content_start(_store: lifespan.FilesystemContentStore) -> None:
+        events.append("content:start")
+
+    async def redis_start(_redis: lifespan.RedisDependency) -> None:
+        events.append("redis:start")
+
+    async def parser_start(_parser: lifespan.SubprocessParserExecutor) -> None:
+        events.append("parser:start:failed")
+        raise ParserIsolationUnavailable("forced sandbox preflight failure")
+
+    def mark_bootstrapped(_health: lifespan.HealthService) -> None:
+        events.append("health:bootstrapped")
+
+    async def redis_close(_redis: lifespan.RedisDependency) -> None:
+        events.append("redis:close")
+
+    async def engine_close(_engine) -> None:
+        events.append("database:close")
+
+    def tracing_close(_provider) -> None:
+        events.append("tracing:close")
+
+    monkeypatch.setattr(lifespan.FilesystemContentStore, "start", content_start)
+    monkeypatch.setattr(lifespan.RedisDependency, "start", redis_start)
+    monkeypatch.setattr(lifespan.SubprocessParserExecutor, "start", parser_start)
+    monkeypatch.setattr(lifespan.HealthService, "mark_bootstrapped", mark_bootstrapped)
+    monkeypatch.setattr(lifespan.RedisDependency, "close", redis_close)
+    monkeypatch.setattr(lifespan, "close_engine", engine_close)
+    monkeypatch.setattr(lifespan, "shutdown_tracing", tracing_close)
+
+    with pytest.raises(ParserIsolationUnavailable, match="forced sandbox preflight failure"):
+        async with lifespan.runtime_lifespan(_settings(tmp_path)):
+            pytest.fail("failed parser preflight must not yield a runtime")
+
+    assert events == [
+        "content:start",
+        "redis:start",
+        "parser:start:failed",
+        "redis:close",
+        "database:close",
+        "tracing:close",
+    ]
 
 
 @pytest.mark.asyncio

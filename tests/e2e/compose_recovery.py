@@ -54,7 +54,10 @@ async def main() -> None:
 
         async def ready(expected: int) -> bool:
             try:
-                return (await client.get("/health/ready")).status_code == expected
+                # Docker Desktop can retain a stale host-port connection across container
+                # stop/start; readiness must probe the current listener with a fresh pool.
+                async with httpx.AsyncClient(base_url=base_url, timeout=35) as probe:
+                    return (await probe.get("/health/ready")).status_code == expected
             except httpx.HTTPError:
                 return False
 

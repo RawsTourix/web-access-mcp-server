@@ -29,6 +29,7 @@ from web_access.infrastructure.content import (
     SubprocessParserExecutor,
 )
 from web_access.infrastructure.content.filesystem import FilesystemContentStore
+from web_access.infrastructure.content.parser_isolation import ParserIsolationUnavailable
 from web_access.infrastructure.content.parsers import (
     ContentNativeParserRegistry,
     CsvNativeParser,
@@ -188,6 +189,11 @@ async def runtime_lifespan(
     try:
         await content_store.start()
         await redis.start()
+        try:
+            await isolated_parser.start()
+        except ParserIsolationUnavailable:
+            logger.error("parser_isolation_unavailable")
+            raise
         telemetry = SearchTelemetryAdapter(metrics)
         concrete_providers = (
             ObservedSearchProvider(
